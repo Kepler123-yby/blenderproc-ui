@@ -2,7 +2,7 @@
 
 日期：2026-10-16
 
-状态：设计草案，待用户确认；尚未开始产品实现。
+状态：用户已于 2026-10-16 要求以当前需求进入完整实施规划；尚未开始产品实现。
 
 ## 1. 用途与已确认的需求
 
@@ -180,6 +180,8 @@ BOP 的 `visib_fract` 和上述验收遮挡率保留为不同字段，不把它�
 
 ```text
 render_job/
+  run_job.py           # conda Python 下的离线预检与启动器
+  launch.json          # 启动器用标准库读取的环境定位与导出完成标志
   render_scene.py
   scene.yaml
   runtime/             # 任务需要的辅助代码，可按实施情况拆分
@@ -192,8 +194,10 @@ render_job/
 
 ```bash
 conda activate bop
-blenderproc run render_scene.py --config scene.yaml
+python run_job.py --config scene.yaml
 ```
+
+实施调研确认 BlenderProc 在实际渲染脚本的首个 import 阶段就可能安装依赖，因此正式命令先通过兼容 conda Python 3.8 的标准库启动器离线检查实际 Blender Python、包目录与安装缓存。检查通过后才调用 `blenderproc run render_scene.py`。`render_scene.py` 的首个有效行必须为 `import blenderproc as bproc`；该入口不能取代前置检查。
 
 提供生成可正确引用含空格路径的完整命令，并提供少量试渲染覆盖参数（例如 `--num-samples 5 --output <新目录>`）及 `--format rgb_masks|bop` 格式覆盖参数。关闭 UI 后导出的任务仍能运行，也不要求从原仓库目录执行。
 
@@ -291,4 +295,4 @@ blenderproc run render_scene.py --config scene.yaml
 - [Qt for Python 环境与 Qt Widgets](https://doc.qt.io/qtforpython-6/gettingstarted.html)
 - 本机参考：`dataset_rendering/render.py`、`samplers/` 和 BlenderProc 2.8.0 安装源码中的 `BopWriterUtility.py`、`SegMapRendererUtility.py`。
 
-本文中的默认值、第一版范围和技术方案为设计者提出的选择；用户已确认的需求仅以第 1 节为准。用户批准本文后，下一步编写实施计划，再开始产品代码。
+本文中的默认值、第一版范围和技术方案为设计者提出的选择；用户已确认的需求以第 1 节及后续明确修正为准。当前进入实施计划编写，产品代码按实施计划的审阅与交接流程开始。

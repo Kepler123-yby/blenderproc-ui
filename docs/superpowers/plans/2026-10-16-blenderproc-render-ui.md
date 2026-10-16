@@ -10,6 +10,16 @@
 
 **Spec:** [2026-10-16-blenderproc-render-ui-design.md](/home/kepler/rm_2027/blenderproc-ui/docs/superpowers/specs/2026-10-16-blenderproc-render-ui-design.md)。实施者先读设计，再读本计划；仓库根为 `/home/kepler/rm_2027/blenderproc-ui`。
 
+## 实施状态（2026-10-16）
+
+- [x] Task 1–4：配置、资源、单位、相机和可复现候选场景。
+- [x] Task 5–8：真实后端、有界重试、统计、两种格式与 BOP 后处理。
+- [x] Task 9：自包含任务、Python 3.8 启动器与只读离线预检。
+- [x] Task 10–13：原生 Blender 风格工作区、异步资源、双视口、参数与脚本导出。
+- [x] Task 14：145 项测试、真实双格式/近距离/失败/中断/GPU 视口验收及独立审查修复。
+
+实现与证据见 [验证记录](../../validation.md)、[使用说明](../../usage.md)。下面保留原执行步骤作为规划基线；没有发生的先红后绿历史命令和逐任务提交不补勾。实施通过可用原生协作工具并行完成，没有声称使用未安装的 superpowers 执行技能。当前启动器通过预检后直接使用 BlenderProc 2.8 的初始化参数启动指定 Blender，以准确转发中断信号，避免额外 CLI 转发层改写信号。
+
 ## Global Constraints
 
 - “在 Ubuntu 22.04 使用本地 UI，生成脚本后自行在终端运行。”
@@ -482,9 +492,9 @@ def test_verifier_detects_missing_target_mask(valid_rgb_masks_output):
 
 ## 执行交接与资料
 
-- 当前交付仅为计划，14 个任务都尚未执行；勾选步骤代表执行时完成，不代表写好计划即完成。
+- 原计划在实施前完成；当前 14 个任务的产品内容已实现，执行偏差与真实证据见开头实施状态。
 - 推荐逐任务子代理实施、逐任务新 reviewer 审核，最后全分支审查：本项目跨 Qt/GL、Python 3.8/3.10/3.11 和 BOP 坐标边界，及早审查比最终才发现错标更有价值。
-- 用户尚未指定实施方式。按 writing-plans 技能先请用户审阅并选“子代理逐任务”或“本会话直接实施”，不自动进入编码。
+- 用户随后明确授权“开始按方案进行”，本会话使用原生子代理并行实现并审查，无额外审批环节。
 - 当前可用技能目录未发现 `superpowers:subagent-driven-development` / `superpowers:executing-plans`；执行前先查找所选技能。若仍缺失，明确报告来源与限制，不能声称已读取；不为本次写计划安装执行技能。
 - Qt/VisPy 依据：[Qt for Python](https://doc.qt.io/qtforpython-6/gettingstarted.html)、[VisPy backend](https://vispy.org/installation.html)、[Qt 嵌入](https://vispy.org/gallery/scene/realtime_data/ex01_embedded_vispy.html)、[矩阵约定](https://vispy.org/api/vispy.visuals.transforms.linear.html)。
 - 实际 BlenderProc 源码依据：本机 `CameraUtility.py`, `SegMapRendererUtility.py`, `BopWriterUtility.py`, `SetupUtility.py`；适配器针对已核查的 2.8.0，不以最新网络文档替代本机实际行为。

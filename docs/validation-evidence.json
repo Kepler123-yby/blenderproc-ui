@@ -1,0 +1,346 @@
+{
+  "tested_at": "2026-10-16",
+  "platform": "Ubuntu 22.04.5 / x86_64",
+  "python": "3.10.12",
+  "blender": "4.2.1",
+  "blenderproc": "2.8.0",
+  "renders": {
+    "rgb_masks": {
+      "exit_code": 0,
+      "status": "completed",
+      "requested": 4,
+      "written_frames": 4,
+      "saved": 4,
+      "skipped": 0,
+      "failures_by_reason": {
+        "invisible_target": 2,
+        "occlusion": 4,
+        "collision": 1
+      },
+      "started_at": "2026-10-16T13:49:38.893234+00:00",
+      "finished_at": "2026-10-16T13:49:40.584428+00:00"
+    },
+    "bop": {
+      "exit_code": 0,
+      "status": "completed",
+      "requested": 4,
+      "written_frames": 4,
+      "saved": 4,
+      "skipped": 0,
+      "failures_by_reason": {
+        "invisible_target": 2,
+        "occlusion": 4,
+        "collision": 1
+      },
+      "started_at": "2026-10-16T13:49:43.095980+00:00",
+      "finished_at": "2026-10-16T13:49:45.600326+00:00"
+    }
+  },
+  "edge_cases": {
+    "close_bop": {
+      "exit_code": 0,
+      "saved": 1,
+      "max_depth_m": 0.0363
+    },
+    "bounded_impossible": {
+      "exit_code": 2,
+      "status": "partial",
+      "requested": 1,
+      "written_frames": 0,
+      "saved": 0,
+      "skipped": 1,
+      "failures_by_reason": {
+        "collision": 30
+      },
+      "started_at": "2026-10-16T13:49:05.229802+00:00",
+      "finished_at": "2026-10-16T13:49:05.284269+00:00"
+    },
+    "existing_output": {
+      "exit_code": 1,
+      "unchanged_sha256": "6ad32be25bb0d1eda3edfc11ffcc2a251b92e1f54d2af93594a0c8127b16799d"
+    },
+    "sigint": {
+      "process_exit_code": 130,
+      "status": "interrupted",
+      "requested": 1000,
+      "written_frames": 1,
+      "saved": 1,
+      "skipped": 999,
+      "failures_by_reason": {
+        "sigint": 1
+      },
+      "exit_code": 130,
+      "started_at": "2026-10-16T13:49:08.657954+00:00",
+      "finished_at": "2026-10-16T13:49:09.515572+00:00"
+    },
+    "sigterm": {
+      "process_exit_code": 143,
+      "status": "interrupted",
+      "requested": 1000,
+      "written_frames": 1,
+      "saved": 1,
+      "skipped": 999,
+      "failures_by_reason": {
+        "sigterm": 1
+      },
+      "exit_code": 143,
+      "started_at": "2026-10-16T13:49:12.073535+00:00",
+      "finished_at": "2026-10-16T13:49:12.580829+00:00"
+    }
+  },
+  "viewport_projection": {
+    "camera": {
+      "width": 64,
+      "height": 48,
+      "fx": 81.3,
+      "fy": 67.8,
+      "cx": 25.3,
+      "cy": 18.7,
+      "auto_scale": true
+    },
+    "world_from_camera": [
+      [
+        -0.29237170472273677,
+        -0.4489578882815462,
+        0.8443669823171056,
+        0.8443669823171056
+      ],
+      [
+        0.9563047559630354,
+        -0.13726020113055823,
+        0.25814889290500137,
+        0.25814889290500137
+      ],
+      [
+        0.0,
+        0.8829475928589268,
+        0.4694715627858908,
+        0.4694715627858908
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "framebuffer_size": [
+      640,
+      480
+    ],
+    "viewport_pixels": [
+      [
+        25.3,
+        18.7
+      ],
+      [
+        37.5,
+        11.9
+      ],
+      [
+        12.1,
+        25.45
+      ]
+    ],
+    "blender_pixels": [
+      [
+        25.300000190734863,
+        18.700002074241638
+      ],
+      [
+        37.49500064849853,
+        11.920001959800718
+      ],
+      [
+        12.08874969482422,
+        25.480002188682555
+      ]
+    ],
+    "blender_rendered_pixels": [
+      [
+        25.470588235294116,
+        18.647058823529413
+      ],
+      [
+        37.25,
+        11.75
+      ],
+      [
+        12.08,
+        25.399999999999995
+      ]
+    ],
+    "max_projection_error_pixels": 0.030002188682555442,
+    "max_rendered_image_error_pixels": 0.25,
+    "status": "passed"
+  },
+  "gui": {
+    "project": "/home/kepler/rm_2027/blenderproc-ui/.artifacts/demo/demo.yaml",
+    "versions": {
+      "PySide6": "6.8.3",
+      "vispy": "0.15.2",
+      "numpy": "1.26.4",
+      "trimesh": "4.12.2"
+    },
+    "screenshots": [
+      "workspace-scene.png",
+      "camera-preview.png",
+      "scene-canvas.png",
+      "camera-canvas.png",
+      "camera-alternate-center.png",
+      "workspace-export-rgb_masks.png",
+      "workspace-export-bop.png",
+      "workspace-sampling.png",
+      "workspace-export.png",
+      "workspace-1024.png"
+    ],
+    "candidate": {
+      "request_index": 0,
+      "attempt_index": 0,
+      "region_key": "front",
+      "anchor_key": "target-2",
+      "camera": {
+        "world_from_camera": [
+          [
+            0.05331333563644201,
+            -0.5283166618260681,
+            0.8473719331440452,
+            0.5316374265325643
+          ],
+          [
+            0.9985778328419453,
+            0.02820643778371951,
+            -0.045240563924834956,
+            -0.028383730967630104
+          ],
+          [
+            -0.0,
+            0.8485787539789772,
+            0.5290690865052378,
+            0.3319356195383515
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "position_m": [
+          0.5316374265325643,
+          -0.028383730967630104,
+          0.3319356195383515
+        ],
+        "radius_m": 0.6273956048555964,
+        "azimuth_deg": -3.0560780123973927,
+        "elevation_deg": 31.942578308757174,
+        "clip_near_m": 0.0006273956048555965,
+        "clip_far_m": 62.73956048555964
+      },
+      "placements": [
+        {
+          "asset_key": "target-2",
+          "target_key": "target-2",
+          "obj_id": 2,
+          "world_from_model": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              -0.1
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.05
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              -0.025
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "role": "target"
+        },
+        {
+          "asset_key": "target-7",
+          "target_key": "target-7",
+          "obj_id": 7,
+          "world_from_model": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.03789472116237456
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.04376709391550597
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.009024894065470237
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "role": "target"
+        }
+      ],
+      "hdri_path": "/home/kepler/rm_2027/blenderproc-ui/.artifacts/demo/studio.hdr",
+      "hdri_strength": 1.5267649888486017,
+      "hdri_rotation_deg": 231.79144322903923,
+      "light": {
+        "position_m": [
+          -0.017751181201581877,
+          0.2532000588928718,
+          0.5037208729045273
+        ],
+        "energy_w": 89.00771875791135,
+        "color_rgb": [
+          1.0,
+          0.9125738861788176,
+          0.8394267799989482
+        ]
+      },
+      "wants_unoccluded": true
+    },
+    "mesh_count": 3,
+    "object_ids": [
+      2,
+      7
+    ],
+    "camera_pixels_range": 199,
+    "observer_navigation_preserves_config": true,
+    "camera_reopen_reuses_canvas": true,
+    "alternate_center_caption": "  中心 三角目标  |  正面  |  机位 1",
+    "alternate_center": "target-7",
+    "exported_jobs": {
+      "rgb_masks": "/home/kepler/rm_2027/blenderproc-ui/.artifacts/gui/jobs-1792158739111159905/rgb_masks",
+      "bop": "/home/kepler/rm_2027/blenderproc-ui/.artifacts/gui/jobs-1792158739111159905/bop"
+    },
+    "project_save_roundtrip": true,
+    "status": "passed",
+    "elapsed_seconds": 2.421
+  },
+  "automated_tests": {
+    "passed": 145,
+    "elapsed_seconds": 2.96
+  }
+}

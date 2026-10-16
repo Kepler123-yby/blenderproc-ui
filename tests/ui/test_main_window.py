@@ -1,0 +1,68 @@
+from types import SimpleNamespace
+
+from PySide6.QtCore import QItemSelectionModel
+from PySide6.QtWidgets import QWidget, QDialog
+
+from bproc_ui.main_window import MainWindow
+
+
+class FakeScene(QWidget):
+    def fit_scene(self):
+        pass
+
+    def set_selection(self, key):
+        self.selected = key
+
+    def set_scene(self, candidate, meshes):
+        self.candidate = candidate
+
+    def set_regions(self, config, selected_key=None):
+        self.regions = config.regions
+
+    def set_candidates(self, candidates):
+        pass
+
+
+class FakeCamera(QDialog):
+    def show_preview(self):
+        self.show()
+
+    def set_scene(self, candidate, meshes):
+        self.candidate = candidate
+
+    def set_camera(self, camera, pose):
+        self.camera = camera
+
+
+def test_editor_multi_selection_preserves_center_and_edits(state, qtbot):
+    window = MainWindow(state, scene_factory=FakeScene, camera_factory=FakeCamera, restore_settings=False)
+    qtbot.addWidget(window)
+    window.show()
+    root = window.objects.topLevelItem(0)
+    first, second = root.child(0), root.child(1)
+    first.setSelected(True)
+    second.setSelected(True)
+    window.objects.setCurrentItem(second, 0, QItemSelectionModel.NoUpdate)
+    window._tree_selection()
+    assert state.edited_target_key == "target-7"
+    assert state.config.anchor_key == "target-2"
+    assert set(window.resources.selected_keys) == {"target-2", "target-7"}
+    assert not state.dirty
+    window._set_workspace(2)
+    assert window.properties.currentIndex() == 2
+    assert window.bottom.currentIndex() == 1
+    qtbot.wait(220)
+    window._closing = True
+
+
+def test_large_preview_seed_is_not_truncated_and_refresh_increments(state, qtbot):
+    large = 2 ** 72 + 7
+    state.update(seed=large)
+    window = MainWindow(state, scene_factory=FakeScene, camera_factory=FakeCamera, restore_settings=False)
+    qtbot.addWidget(window)
+    assert window.preview_seed.value() == large
+    window._refresh_clicked()
+    assert window.preview_seed.value() == large + 1
+    assert state.config.seed == large
+    qtbot.wait(220)
+    window._closing = True

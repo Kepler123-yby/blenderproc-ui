@@ -1,0 +1,9 @@
+# First validated Ubuntu 22.04 UI environment. Do not install into conda bop.
+PySide6==6.8.3
+vispy==0.15.2
+numpy==1.26.4
+trimesh==4.12.2
+PyYAML==6.0.3
+Pillow==11.3.0
+pytest==8.4.2
+pytest-qt==4.5.0

@@ -1,0 +1,96 @@
+from dataclasses import replace
+from pathlib import Path
+import pytest
+
+from bproc_core.config import AssetSpec, Azimuth, Box, ConfigError, Range, RegionSpec, new_project, validate_project
+from bproc_core.project_io import load_project, save_project, project_to_dict
+from tests.factories import make_project
+
+
+def error_fields(config, check_files=False):
+    return {issue.field for issue in validate_project(config, check_files=check_files) if issue.severity == "error"}
+
+
+def test_defaults_and_complete_roundtrip(tmp_path):
+    project = make_project(tmp_path)
+    path = tmp_path / "中文 ' $(touch should-not-exist) 项目.yaml"
+    save_project(project, path)
+    assert load_project(path) == project
+    assert project.camera.width == 640 and project.camera.fx == 572.4114
+    assert project.output.format == "rgb_masks" and project.occlusion.max_attempts == 30
+    assert not error_fields(project, check_files=True)
+    assert not (tmp_path / "should-not-exist").exists()
+
+
+def test_incomplete_draft_can_be_saved_and_reloaded(tmp_path):
+    draft = new_project(tmp_path)
+    save_project(draft, tmp_path / "draft.yaml")
+    assert load_project(tmp_path / "draft.yaml") == draft
+    assert {"targets", "anchor_key", "hdri.files"} <= error_fields(draft)
+
+
+@pytest.mark.parametrize("change,expected", [
+    (lambda p: replace(p, anchor_key="missing"), "anchor_key"),
+    (lambda p: replace(p, targets=(replace(p.targets[0], enabled=False), p.targets[1])), "anchor_key"),
+    (lambda p: replace(p, targets=(p.targets[0], replace(p.targets[1], obj_id=2))), "targets[1].obj_id"),
+    (lambda p: replace(p, targets=(p.targets[0], replace(p.targets[1], asset=p.targets[0].asset))), "targets[1].asset.key"),
+    (lambda p: replace(p, regions=()), "regions"),
+    (lambda p: replace(p, regions=(replace(p.regions[0], radius_m=Range(0, 1)),)), "regions[0].radius_m.minimum"),
+    (lambda p: replace(p, camera=replace(p.camera, fx=float("nan"))), "camera.fx"),
+    (lambda p: replace(p, num_samples=True), "num_samples"),
+    (lambda p: replace(p, camera=replace(p.camera, height=False)), "camera.height"),
+    (lambda p: replace(p, output=replace(p.output, format="rgb")), "output.format"),
+    (lambda p: replace(p, occlusion=replace(p.occlusion, ratio=Range(.8, .2))), "occlusion.ratio"),
+])
+def test_invalid_configs_have_specific_fields(tmp_path, change, expected):
+    assert expected in error_fields(change(make_project(tmp_path)))
+
+
+@pytest.mark.parametrize("text", [
+    "schema_version: 2\n",
+    "schema_version: 1\nschema_version: 1\n",
+    "schema_version: 1\ncamera:\n  skew: 1\n",
+    "schema_version: 1\nnum_samples: true\n",
+    "schema_version: 1\ncamera:\n  fx: .nan\n",
+    "schema_version: 1\ncamera:\n  width: 10.5\n",
+    "schema_version: 1\nocclusion:\n  count: [1, 2, 3]\n",
+    "schema_version: 1\noutput:\n  format: rgb\n",
+])
+def test_strict_yaml_rejects_unknown_duplicate_and_invalid_scalars(tmp_path, text):
+    path = tmp_path / "bad.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_project(path)
+
+
+def test_relative_resource_paths_resolve_against_project_not_cwd(tmp_path, monkeypatch):
+    document = tmp_path / "project.yaml"
+    document.write_text("schema_version: 1\ntargets:\n- asset:\n    key: one\n    path: assets/模型.ply\n    unit: mm\n  name: 模型\n  obj_id: 7\nanchor_key: one\nhdri:\n  files: ['assets/light.hdr']\noutput:\n  root: results\n", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    config = load_project(document)
+    assert config.targets[0].asset.path == tmp_path / "assets/模型.ply"
+    assert config.hdri.files == (tmp_path / "assets/light.hdr",)
+    assert config.output.root == tmp_path / "results"
+
+
+def test_fixed_and_wrapping_azimuth_valid_and_existing_output_rejected(tmp_path):
+    config = make_project(tmp_path)
+    regions = tuple(replace(config.regions[0], key=f"r{i}", azimuth=azimuth) for i, azimuth in enumerate((Azimuth(170, -170, False), Azimuth(20, 20, False), Azimuth())))
+    config = replace(config, regions=regions)
+    assert not error_fields(config)
+    existing = config.output.root / config.output.dataset_name
+    existing.parent.mkdir()
+    existing.symlink_to(tmp_path / "missing-dir", target_is_directory=True)
+    assert "output.root" in error_fields(config, check_files=True)
+
+
+def test_atomic_save_rejects_nonfinite_without_changing_previous_document(tmp_path):
+    path = tmp_path / "project.yaml"
+    project = make_project(tmp_path)
+    save_project(project, path)
+    original = path.read_bytes()
+    with pytest.raises(ConfigError):
+        save_project(replace(project, light=replace(project.light, energy_w=Range(1, float("inf")))), path)
+    assert path.read_bytes() == original

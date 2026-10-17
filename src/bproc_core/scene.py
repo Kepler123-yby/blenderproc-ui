@@ -30,6 +30,13 @@ class LightState:
 
 
 @dataclass(frozen=True)
+class MaterialState:
+    """Target surface sampled for one scene, sampled once so views stay comparable."""
+    roughness: float
+    specular: float
+
+
+@dataclass(frozen=True)
 class SceneCandidate:
     scene_index: int
     view_index: int
@@ -44,6 +51,7 @@ class SceneCandidate:
     light: LightState
     wants_unoccluded: bool
     camera_kind: str = "random"
+    material: MaterialState = MaterialState(.65, .5)
 
 
 @dataclass(frozen=True)
@@ -56,6 +64,7 @@ class SceneState:
     hdri_rotation_deg: float
     light: LightState
     wants_unoccluded: bool
+    material: MaterialState = MaterialState(.65, .5)
 
 
 @dataclass(frozen=True)
@@ -150,10 +159,12 @@ def propose_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_i
     light = LightState(np.array([np.cos(alpha) * np.cos(phi), np.cos(alpha) * np.sin(phi), np.sin(alpha)]) * radius,
                        float(rng.uniform(config.light.energy_w.minimum, config.light.energy_w.maximum)),
                        _temperature_color(rng.uniform(config.light.temperature_k.minimum, config.light.temperature_k.maximum)))
+    material = MaterialState(float(rng.uniform(config.material.roughness.minimum, config.material.roughness.maximum)),
+                             float(rng.uniform(config.material.specular.minimum, config.material.specular.maximum)))
     return SceneState(scene_index, tuple(placements), hdri,
                       float(rng.uniform(config.hdri.strength.minimum, config.hdri.strength.maximum)),
                       float(rng.uniform(config.hdri.rotation_deg.minimum, config.hdri.rotation_deg.maximum)),
-                      light, wants_none)
+                      light, wants_none, material)
 
 
 def propose_candidate(config: ProjectConfig, meshes: Mapping[str, MeshData], scene: SceneState,
@@ -180,7 +191,7 @@ def propose_candidate(config: ProjectConfig, meshes: Mapping[str, MeshData], sce
             return Rejection('out_of_frame', placement.asset_key)
     return SceneCandidate(scene.scene_index, view_index, attempt_index, region_key, config.anchor_key, pose,
                           scene.placements, scene.hdri_path, scene.hdri_strength, scene.hdri_rotation_deg,
-                          scene.light, scene.wants_unoccluded, kind)
+                          scene.light, scene.wants_unoccluded, kind, material=scene.material)
 
 
 def candidate_to_dict(candidate: SceneCandidate) -> dict:
@@ -220,4 +231,6 @@ def candidate_from_dict(payload: Mapping) -> SceneCandidate:
         float(payload["hdri_rotation_deg"]),
         LightState(np.asarray(light["position_m"], dtype=float), float(light["energy_w"]),
                    tuple(float(c) for c in light["color_rgb"])),
-        bool(payload["wants_unoccluded"]), str(payload.get("camera_kind", "random")))
+        bool(payload["wants_unoccluded"]), str(payload.get("camera_kind", "random")),
+        MaterialState(float((payload.get("material") or {}).get("roughness", .65)),
+                      float((payload.get("material") or {}).get("specular", .5))))

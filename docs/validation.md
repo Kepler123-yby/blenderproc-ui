@@ -12,10 +12,11 @@
 
 | 检查 | 实际结果 |
 |---|---|
-| 单元与 Qt 测试 | **246 passed**，3.48 s（含 GPU、PLY、无 HDRI、Blender 查看、固定机位与场景/视角用例） |
+| 单元与 Qt 测试 | **255 passed**，3.63 s（含 GPU、PLY、无 HDRI、Blender 查看、固定机位、场景/视角与目标材质用例） |
 | RGB + mask + mask_visib | 同场景两个目标 ID 2 / 7，4 / 4 完成，语义检查通过 |
 | BOP | 4 / 4 完成；深度、K、位姿、模型毫米坐标、GT 索引和 gt_info 检查通过 |
 | 无 BOP toolkit 的轻格式 | toolkit_path=None，离线预检及 4 / 4 渲染通过 |
+| 目标材质 | 粗糙度 0.03 / 0.95 各渲染 1 帧：中心像素 40 → 58，`candidate.material` 写入 manifest；遮挡物未变 |
 | 近距离 BOP | 相机半径 35 mm，深度最大 36.3 mm；后处理未被固定 0.1 m 近裁剪面截空 |
 | 无法满足的布局 | 恰好 30 次碰撞拒绝；saved=0、skipped=1、partial、退出码 2 |
 | 已有输出目录 | 拒绝再次运行，退出码 1；结果树 SHA256 保持一致 |

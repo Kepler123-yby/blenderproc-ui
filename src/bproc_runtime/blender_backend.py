@@ -22,6 +22,7 @@ class BlenderBackend:
         self.targets = {}
         self.objects = []
         self._pools = {}
+        self._target_materials = {}
         self._temporary = None
         self.config = None
         self.candidate = None
@@ -61,6 +62,7 @@ class BlenderBackend:
         for target in config.targets:
             if target.enabled:
                 obj = self._make_object(meshes[target.asset.key], f"target_{target.obj_id:06d}")
+                self._target_materials[target.obj_id] = obj.get_materials()[0]
                 obj.set_cp("category_id", target.obj_id)
                 obj.set_cp("ui_target_id", target.obj_id)
                 self.targets[target.obj_id] = obj
@@ -140,10 +142,23 @@ class BlenderBackend:
         self.api.camera.set_intrinsics_from_K_matrix(K, camera.width, camera.height,
             clip_start=candidate.camera.clip_near_m, clip_end=candidate.camera.clip_far_m)
         self.api.camera.add_camera_pose(candidate.camera.world_from_camera, frame=0)
+        self._apply_material(candidate)
         self.light.set_location(candidate.light.position_m)
         self.light.set_energy(candidate.light.energy_w)
         self.light.set_color(candidate.light.color_rgb)
         self._apply_world(candidate)
+
+    def _apply_material(self, candidate) -> None:
+        """Keep the model's colour and vary only roughness/specular, as the reference renderer does."""
+        material = getattr(candidate, "material", None)
+        if material is None:
+            return
+        for target in self._target_materials.values():
+            target.set_principled_shader_value("Roughness", float(material.roughness))
+            try:
+                target.set_principled_shader_value("Specular IOR Level", float(material.specular))
+            except (KeyError, IndexError, ValueError):  # Blender 3.x calls the input "Specular"
+                target.set_principled_shader_value("Specular", float(material.specular))
 
     def _apply_world(self, candidate) -> None:
         """Follow the candidate's environment map, or a neutral studio grey without one."""

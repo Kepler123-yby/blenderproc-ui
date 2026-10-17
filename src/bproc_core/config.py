@@ -110,6 +110,17 @@ class LightSpec:
 
 
 @dataclass(frozen=True)
+class MaterialSpec:
+    """Surface parameters randomised per scene for the target objects only.
+
+    The model's own colour is kept: only ``Roughness`` and ``Specular IOR Level`` move, which is
+    how the reference dataset (bproc_project/dataset_rendering/samplers/target.py) diversifies.
+    """
+    roughness: Range = Range(0.05, 0.8)
+    specular: Range = Range(0.0, 1.0)
+
+
+@dataclass(frozen=True)
 class OcclusionSpec:
     none_fraction: float = 0.2
     ratio: Range = Range(0.1, 0.5)
@@ -160,6 +171,7 @@ class ProjectConfig:
     occluders: tuple[AssetSpec, ...] = ()
     hdri: HdriSpec = HdriSpec()
     light: LightSpec = LightSpec()
+    material: MaterialSpec = MaterialSpec()
     occlusion: OcclusionSpec = OcclusionSpec()
     seed: int = 42
     render: RenderSpec = RenderSpec()
@@ -330,6 +342,8 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
     interval("light.radius_m", config.light.radius_m, positive=True)
     interval("light.elevation_deg", config.light.elevation_deg, low=0, high=90)
     interval("light.temperature_k", config.light.temperature_k, low=1000, high=40000)
+    interval("material.roughness", config.material.roughness, low=0, high=1)
+    interval("material.specular", config.material.specular, low=0, high=1)
     occ = config.occlusion
     if finite("occlusion.none_fraction", occ.none_fraction) and not 0 <= occ.none_fraction <= 1:
         issue("occlusion.none_fraction", "无遮挡样本比例必须位于 0 到 1")

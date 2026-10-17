@@ -134,6 +134,15 @@ class SamplingPanel(QWidget):
         form.addRow("仰角", self.light_elevation)
         form.addRow("色温", self.temperature)
 
+        form = section("目标材质", layout)
+        self.roughness = RangeEditor(minimum=0, maximum=1, decimals=2)
+        self.specular = RangeEditor(minimum=0, maximum=1, decimals=2)
+        self.roughness.changed.connect(lambda: self._material_changed("roughness"))
+        self.specular.changed.connect(lambda: self._material_changed("specular"))
+        form.addRow("粗糙度", self.roughness)
+        form.addRow("高光", self.specular)
+        form.addRow(note("保留模型自身颜色，只随机粗糙度与高光；每个场景取一组值。\n只影响目标物体，遮挡物保持原样。"))
+
         form = section("中心目标的遮挡约束", layout)
         self.occlusion_center = QLabel()
         self.occlusion_center.setObjectName("anchorBadge")
@@ -399,6 +408,11 @@ class SamplingPanel(QWidget):
                        "elevation_deg": self.light_elevation, "temperature_k": self.temperature}
             self.state.update(light=replace(self.state.config.light, **{field: editors[field].value()}))
 
+    def _material_changed(self, field):
+        if not self._updating:
+            editors = {"roughness": self.roughness, "specular": self.specular}
+            self.state.update(material=replace(self.state.config.material, **{field: editors[field].value()}))
+
     def _occlusion_changed(self, field):
         if not self._updating:
             ratio = self.occlusion_ratio.value()
@@ -498,6 +512,8 @@ class SamplingPanel(QWidget):
         self.light_radius.set_value(config.light.radius_m)
         self.light_elevation.set_value(config.light.elevation_deg)
         self.temperature.set_value(config.light.temperature_k)
+        self.roughness.set_value(config.material.roughness)
+        self.specular.set_value(config.material.specular)
         anchor = next((t for t in config.targets if t.asset.key == config.anchor_key), None)
         self.occlusion_center.setText("◎ 约束对象：" + (anchor.name if anchor else "未设置中心"))
         self.none_fraction.setValue(config.occlusion.none_fraction * 100)

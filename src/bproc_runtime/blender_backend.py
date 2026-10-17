@@ -13,6 +13,10 @@ from .contracts import RenderError, VisibilityEvidence, RenderedFrame
 from .render_quality import (apply_object_shading, assert_gpu_only, configure_gpu,
                              configure_rgb_quality, label_pass_without_denoising)
 
+# Mid grey, the same value Blender's default world uses, so a project without an HDRI
+# still shows silhouettes and shading instead of a black frame.
+NEUTRAL_WORLD = (0.05, 0.05, 0.05)
+
 
 class BlenderBackend:
     def __init__(self, api=None):
@@ -142,13 +146,27 @@ class BlenderBackend:
         self.light.set_location(candidate.light.position_m)
         self.light.set_energy(candidate.light.energy_w)
         self.light.set_color(candidate.light.color_rgb)
+        self._apply_world(candidate)
+
+    def _apply_world(self, candidate) -> None:
+        """Follow the candidate's environment map, or a neutral studio grey without one."""
         # Look nodes up afresh: segmentation's UndoAfterExecution invalidates raw
         # bpy references while BlenderProc wrappers recover objects by name.
         world = self.bpy.context.scene.world
         nodes = world.node_tree.nodes
-        next(n for n in nodes if n.type == "TEX_ENVIRONMENT").image = self.bpy.data.images.load(
-            str(candidate.hdri_path), check_existing=True)
-        next(n for n in nodes if n.type == "BACKGROUND").inputs["Strength"].default_value = candidate.hdri_strength
+        env = next(n for n in nodes if n.type == "TEX_ENVIRONMENT")
+        background = next(n for n in nodes if n.type == "BACKGROUND")
+        color = background.inputs["Color"]
+        if candidate.hdri_path is None:
+            # A project without an HDRI still has to preview: black would hide the model.
+            for link in list(color.links):
+                world.node_tree.links.remove(link)
+            color.default_value = (*NEUTRAL_WORLD, 1.0)
+        else:
+            if not color.links:
+                world.node_tree.links.new(env.outputs["Color"], color)
+            env.image = self.bpy.data.images.load(str(candidate.hdri_path), check_existing=True)
+        background.inputs["Strength"].default_value = candidate.hdri_strength
         next(n for n in nodes if n.type == "MAPPING").inputs["Rotation"].default_value = (
             0.0, 0.0, math.radians(candidate.hdri_rotation_deg))
 

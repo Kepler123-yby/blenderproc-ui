@@ -61,6 +61,19 @@ def test_build_failure_reaches_the_panel(panel, state, qtbot, monkeypatch):
     assert "没有 EGL" in panel.blender_state.text()
 
 
+def test_missing_hdri_is_mentioned_once_the_scene_opens(panel, state, qtbot, monkeypatch, tmp_path):
+    from dataclasses import replace
+    from bproc_core.config import HdriSpec
+
+    state.set_candidate(object())
+    state.config = replace(state.config, hdri=HdriSpec(files=()))
+    monkeypatch.setattr(bridge, "prepare_scene", lambda *args, **kwargs: tmp_path / "scene.blend")
+    monkeypatch.setattr(bridge, "open_gui", lambda config, blend, script, workspace: _Session(blend))
+    with qtbot.waitSignal(panel.viewer.opened, timeout=5000):
+        panel.viewer.open()
+    assert "中性灰" in panel.blender_state.text()
+
+
 def test_workspace_sits_next_to_the_project(state, tmp_path):
     state.path = tmp_path / "project.yaml"
     viewer = BlenderViewer(state)

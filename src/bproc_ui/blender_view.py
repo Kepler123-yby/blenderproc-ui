@@ -85,8 +85,13 @@ class BlenderViewer(QObject):
         except Exception as error:
             self._failed(str(error))
             return
-        self.status.emit(f"已在 Blender 中打开当前构图 · 日志 {self.session.log}")
+        self.status.emit(f"已在 Blender 中打开当前构图 · 日志 {self.session.log}" + self._hdri_hint())
         self.opened.emit(self.session)
+
+    def _hdri_hint(self) -> str:
+        if self.state.config.hdri.files:
+            return ""
+        return "（项目还没选环境图，预览用中性灰背景；导出前需要一张 .hdr / .exr）"
 
     @Slot(str)
     def _failed(self, message) -> None:

@@ -10,7 +10,7 @@
 
 | 检查 | 实际结果 |
 |---|---|
-| 单元与 Qt 测试 | **145 passed**，2.96 s |
+| 单元与 Qt 测试 | **202 passed**，3.21 s（含 2026-10-17 GPU 追加用例） |
 | RGB + mask + mask_visib | 同场景两个目标 ID 2 / 7，4 / 4 完成，语义检查通过 |
 | BOP | 4 / 4 完成；深度、K、位姿、模型毫米坐标、GT 索引和 gt_info 检查通过 |
 | 无 BOP toolkit 的轻格式 | toolkit_path=None，离线预检及 4 / 4 渲染通过 |
@@ -24,8 +24,26 @@
 | 独立任务 | 从 `/tmp`、移除 PYTHONPATH，使用 conda Python 3.8 启动预检及渲染通过 |
 | 命令与目录 | 中文、空格、单引号、字面 `$()` 路径；空目录、文件、软链接、断链保护测试通过 |
 | 编译与依赖 | compileall、3.8 启动器 py_compile、pip check、git diff --check 通过 |
+| GPU 设备选择 | 真实 OPTIX 渲染；日志 `以 GPU 渲染` 且 CPU 设备被关闭，未回退 CPU |
+| BOP EGL 硬件校验 | 两个 EGL 上下文均读到 NVIDIA GeForce RTX 3060 Ti，软件渲染器被拒绝 |
+| GPU BOP 端到端 | 独立导出的 BOP 任务 4 / 4 完成，退出码 0，掩码、深度、GT 有效 |
 
 测试演示由本地 Blender 生成 HDRI，并使用偏置 CAD 原点的 mm / cm 目标及 m 遮挡物；单元测试另覆盖三种单位。演示是合成网格，尚未使用用户自己的生产模型和 Haven 资源批量验证。
+
+## GPU 验收（2026-10-17）
+
+任务要求：渲染只用 GPU，并保证 BOP 那套独立的 EGL 后处理也不会落到软件光栅化上。两件事分开检查，因为 Cycles 设备和 pyrender 的 EGL 上下文没有共用状态。
+
+| 检查 | 实际结果 |
+|---|---|
+| Cycles 设备 | `GPU rendering: OPTIX — NVIDIA GeForce RTX 3060 Ti; CPU devices disabled`；初始化与每个渲染 pass 前复检 |
+| OptiX 降噪 | 本机支持并实际渲染；CUDA + OptiX 降噪在 Blender 4.2 会走 CPU，已被禁止 |
+| BOP EGL 探测 | 直接用原生 `_pyrender_init` 函数体建两个上下文：`NVIDIA Corporation / NVIDIA GeForce RTX 3060 Ti/PCIe/SSE2 / 4.1.0 NVIDIA 580.178.04`，深度像素 121 / 1122 |
+| GPU RGB 任务 | 独立导出的 rgb_masks 任务 4 / 4 完成，退出码 0 |
+| GPU BOP 任务 | 独立导出的 BOP 任务 4 / 4 完成，退出码 0；深度 0–6336（0.1 mm 单位）、mask 57–78 像素、mask_visib 24–60 像素、`visib_fract` 与 GT 一致 |
+| 软件渲染器拒绝 | 单元测试注入 llvmpipe / softpipe / swrast / lavapipe / SwiftShader / GDI Generic 与缺失身份，全部拒绝；本机 NVIDIA 驱动不接受 Mesa 软件覆盖，因此没有真实 llvmpipe 上下文的拒绝实测 |
+
+证据：`.artifacts/gpu-probe/`（EGL 探测、Cycles 设备、OptiX 降噪）、`.artifacts/gpu-e2e/`（两个独立任务与日志）、`.artifacts/gpu-quality*/`（表面处理对照）。`tests/blender/check_render_quality.py` 对同一场景比对平直 / 平滑 / 按角度平滑的渲染差异。
 
 ## 环境
 
@@ -39,7 +57,7 @@
 | conda bop Python | 3.8.20 |
 | BlenderProc / Blender | 2.8.0 / 4.2.1（内部 Python 3.11.7） |
 
-桌面依赖仅安装进仓库 `.venv`。没有向原 `bop`、Blender Python 或原 `dataset_rendering` 项目安装依赖。渲染使用已有的离线依赖和本地 BOP toolkit。实际 Cycles 验收使用 CPU；CUDA / OPTIX / HIP / ONEAPI / METAL 选项尚未做设备渲染验收。
+桌面依赖仅安装进仓库 `.venv`。没有向原 `bop`、Blender Python 或原 `dataset_rendering` 项目安装依赖。渲染使用已有的离线依赖和本地 BOP toolkit。CPU 路径已被产品逻辑禁用，实际渲染只走 GPU；AMD / Intel / Apple 后端有选项和启动检查，但没有对应硬件可测。
 
 ## 复验
 
@@ -51,7 +69,17 @@ env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 .venv/bin/python tools/create_demo.py .artifacts/demo-new
 .venv/bin/python tools/gui_smoke.py \
   --project .artifacts/demo-new/demo.yaml --output .artifacts/gui-new
+
+# GPU 端到端：导出独立任务并直接渲染（两个格式各跑一次）
+env -u PYTHONPATH .venv/bin/python tools/render_demo.py \
+  --project .artifacts/demo/demo.yaml --destination .artifacts/e2e/rgb \
+  --format rgb_masks --num-samples 4 --run
+env -u PYTHONPATH .venv/bin/python tools/render_demo.py \
+  --project .artifacts/demo/demo.yaml --destination .artifacts/e2e/bop \
+  --format bop --num-samples 4 --run
 ```
+
+`render_demo.py` 拒绝已存在的任务目录，输出 `任务目录` 与 `运行命令`；`--device` 可覆盖后端，不传时沿用项目设置（`CPU` 在载入时迁移为 OPTIX）。BOP 运行后看日志里两行 `BOP EGL renderer:` 确认没落到软件光栅器。
 
 本机 shell 的 ROS PYTHONPATH 会自动加载无关 pytest 插件，测试命令显式隔离它；没有为解决此问题安装 ROS 依赖。GUI smoke 必须在真实桌面运行，不能使用 Qt offscreen。
 

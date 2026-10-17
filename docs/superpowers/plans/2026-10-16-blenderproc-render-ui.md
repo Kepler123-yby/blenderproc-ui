@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **状态（2026-10-17）：** 计划内容已全部实施并通过验收，但逐步骤的「先红后绿」记录没有按本文件的复选框维护；实际结果见 [验证记录](../../validation.md)。
+
 **Goal:** 构建 Ubuntu 本地桌面配置工具，让用户用多目标随机布局、指定中心的球坐标机位、HDRI、光照和遮挡约束，导出可独立运行并生成 RGB 双掩码或 BOP 数据的任务。
 
 **Architecture:** Qt UI、无界面的共享核心、Blender 适配器分开，共用配置、坐标、候选布局和采样代码。导出时复制共享核心和渲染运行时，使用兼容 conda Python 3.8 的离线启动器调用实际 Blender Python 3.11。主观察视口与独立相机窗口共享场景数据，各有自己的观察状态。
@@ -57,7 +59,7 @@
 - UI 首次验证锁定：Python 3.10.12、PySide6 `6.8.3`、VisPy `0.15.2`、NumPy `1.26.4`、trimesh `4.12.2`、PyYAML `6.0.3`、Pillow `11.3.0`；pytest `8.4.2`、pytest-qt `4.5.0`。
 - 通用依赖声明允许 NumPy `>=1.24,<2`、trimesh `>=4.4,<5`、PyYAML `>=6,<7`、Pillow `>=9,<12`；UI 的首次组合写入约束文件。不能把 UI 的锁定版本强装进 Blender。
 - 当前机器未安装这套 UI 组合，也未实际验证 EGL。本计划只安排未来验证，不将调研当作验收通过。
-- 默认候选种子 `42`、场景图片数 `1000`、Cycles samples `50`、CPU 作为首次验证设备；一个点光源初始 `80–100 W`，HDRI 强度 `0.6–1.6`、Z 旋转 `0–360°`。它们是可编辑初始值。
+- 默认候选种子 `42`、场景图片数 `1000`、Cycles samples `50`；早期验证使用 CPU，用户后续要求改为 GPU 独占，当前默认 OPTIX、禁止 CPU 回退，新增表面处理见 [GPU 补充](../../gpu-rendering.md)。一个点光源初始 `80–100 W`，HDRI 强度 `0.6–1.6`、Z 旋转 `0–360°`。
 - 遮挡物数量初始 `1–3`，尺寸建议以中心目标包围盒尺度计算；实现用投影驱动的候选摆放，不要求用户写策略。首版按不透明网格处理，保留可用顶点颜色和基础颜色；透明表面必须给出明确的不支持提示。
 
 ## 文件结构与职责

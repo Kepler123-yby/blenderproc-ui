@@ -1,5 +1,5 @@
 {
-  "tested_at": "2026-10-16",
+  "tested_at": "2026-10-17",
   "platform": "Ubuntu 22.04.5 / x86_64",
   "python": "3.10.12",
   "blender": "4.2.1",
@@ -340,7 +340,75 @@
     "elapsed_seconds": 2.421
   },
   "automated_tests": {
-    "passed": 145,
-    "elapsed_seconds": 2.96
+    "passed": 202,
+    "elapsed_seconds": 3.21,
+    "command": "env -u PYTHONPATH .venv/bin/python -m pytest -q"
+  },
+  "gpu": {
+    "requirement": "GPU-only Cycles rendering and hardware EGL for BOP postprocessing",
+    "cycles": {
+      "device": "OPTIX",
+      "gpu": "NVIDIA GeForce RTX 3060 Ti",
+      "driver": "580.178.04",
+      "cpu_devices_disabled": true,
+      "log_line": "GPU rendering: OPTIX - NVIDIA GeForce RTX 3060 Ti; CPU devices disabled"
+    },
+    "bop_egl": {
+      "renderer": {
+        "vendor": "NVIDIA Corporation",
+        "renderer": "NVIDIA GeForce RTX 3060 Ti/PCIe/SSE2",
+        "version": "4.1.0 NVIDIA 580.178.04",
+        "depth_nonzero_pixels": 121,
+        "shape": [
+          32,
+          32
+        ]
+      },
+      "renderer_large": {
+        "vendor": "NVIDIA Corporation",
+        "renderer": "NVIDIA GeForce RTX 3060 Ti/PCIe/SSE2",
+        "version": "4.1.0 NVIDIA 580.178.04",
+        "depth_nonzero_pixels": 1122,
+        "shape": [
+          96,
+          96
+        ]
+      },
+      "native_initializer": "BopWriterUtility._pyrender_init body, decorators stripped",
+      "software_rejection": "unit tests with injected llvmpipe/softpipe/swrast/lavapipe/SwiftShader/GDI Generic identities"
+    },
+    "renders": {
+      "rgb_masks": {
+        "exit_code": 0,
+        "status": "completed",
+        "requested": 4,
+        "saved": 4,
+        "skipped": 0,
+        "started_at": "2026-10-16T14:07:42.989106+00:00",
+        "finished_at": "2026-10-16T14:07:47.735057+00:00"
+      },
+      "bop": {
+        "exit_code": 0,
+        "status": "completed",
+        "requested": 4,
+        "saved": 4,
+        "skipped": 0,
+        "started_at": "2026-10-17T09:56:40.310673+00:00",
+        "finished_at": "2026-10-17T09:56:44.849203+00:00",
+        "depth_max_raw": 6336,
+        "depth_unit_mm": 0.1,
+        "mask_pixels_range": [
+          24,
+          78
+        ]
+      }
+    },
+    "automated_tests": {
+      "total_passed": 202,
+      "gpu_modules": [
+        "tests/unit/test_gpu_gl.py",
+        "tests/unit/test_render_quality.py"
+      ]
+    }
   }
 }

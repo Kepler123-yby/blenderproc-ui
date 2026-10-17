@@ -16,6 +16,7 @@ python3 -m venv .venv
 - 多目标同场景随机布局，编辑选择与渲染中心独立。
 - 多个球坐标区域，支持固定角度、跨 ±180° 和完整一周。
 - Haven `.hdr` / `.exr` 环境；明确 m / cm / mm 单位并保留模型原点。
+- 默认 OptiX GPU 渲染，禁止 CPU 回退；支持平滑着色、按角度平滑、加权法线和 GPU 降噪。
 - 输出 **RGB + mask + mask_visib** 或 **BOP**，YOLO 标签由外部工具转换。
 - 新任务与输出目录拒绝覆盖；有限重试，部分完成如实记录并返回非零退出码。
 
@@ -27,4 +28,4 @@ conda run --no-capture-output -n bop python /任务目录/run_job.py --num-sampl
 conda run --no-capture-output -n bop python /任务目录/run_job.py
 ```
 
-详细操作见 [使用说明](docs/usage.md)，实际测试与限制见 [验证记录](docs/validation.md)。设计和完整计划位于 `docs/superpowers/`。
+详细操作见 [使用说明](docs/usage.md)、[GPU 与表面处理](docs/gpu-rendering.md)，实际测试与限制见 [验证记录](docs/validation.md)。设计和完整计划位于 `docs/superpowers/`。

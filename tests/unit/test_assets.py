@@ -76,4 +76,4 @@ def test_size_suggestions_stay_close_for_millimetre_models(tmp_path):
     target = TargetSpec(AssetSpec("tiny", tmp_path / "tiny.ply"), "tiny", 1)
     _, radius = suggest_ranges({"tiny": tiny}, [target], CameraSpec())
     assert radius.minimum < .01
-    assert radius.maximum / radius.minimum == pytest.approx(1.5)
+    assert radius.maximum / radius.minimum == pytest.approx(1.4)

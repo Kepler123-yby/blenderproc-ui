@@ -61,13 +61,16 @@ def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False
 
 
 def floor_grid(scale):
-    """Blender-style floor geometry: faded cell lines, section lines every ten, coloured axes.
+    """Blender-style floor geometry that reads as infinite from any camera angle.
 
-    ``scale`` is the sight radius in metres, so a centimetre model gets a centimetre grid.
+    The plane reaches far past the framed geometry and its alpha fades to zero, so no border
+    is ever visible; ``scale`` is the sight radius in metres, keeping the cell size meaningful
+    for millimetre and metre models alike.
     """
-    extent = max(float(scale), 1e-4) * 1.6
-    cells = 20
-    step = 2 * extent / cells
+    scale = max(float(scale), 1e-4)
+    extent = scale * 7.
+    step = scale / 6.
+    cells = max(2, int(round(2 * extent / step)))
     minor, section = [], []
     for i in range(-cells // 2, cells // 2 + 1):
         (section if i % 10 == 0 else minor).append(i * step)
@@ -79,11 +82,12 @@ def floor_grid(scale):
         return np.array(pairs, dtype=float).reshape(-1, 3)
 
     return {"extent": extent,
+            "step": step,
             "minor": segments(minor),
             "section": segments(section),
             "axes": (np.array([[-extent, 0, 0], [extent, 0, 0]], dtype=float),
                      np.array([[0, -extent, 0], [0, extent, 0]], dtype=float),
-                     np.array([[0, 0, 0], [0, 0, extent * .3]], dtype=float))}
+                     np.array([[0, 0, 0], [0, 0, extent * .12]], dtype=float))}
 
 
 class SceneView(QWidget):
@@ -126,14 +130,15 @@ class SceneView(QWidget):
 
         def add(positions, color, width, fade=True):
             rgba = np.tile(np.array(color, dtype=float), (len(positions), 1))
-            if fade:  # Blender fades the floor out with distance instead of cutting it off.
-                radial = np.linalg.norm(positions[:, :2], axis=1) / (extent * 1.42)
-                rgba[:, 3] = np.clip(1.15 - radial * .8, 0., 1.)
+            if fade:  # Blender fades the floor out with distance instead of cutting it off;
+                # reaching zero inside the plane means the border is never visible.
+                radial = np.linalg.norm(positions[:, :2], axis=1) / extent
+                rgba[:, 3] = np.clip(1.5 - 1.7 * radial ** 1.3, 0., 1.)
             self._hud.append(scene.visuals.Line(positions, connect="segments", color=rgba,
                                                 width=width, parent=self.view.scene))
 
-        add(grid["minor"], (.35, .35, .35, 1), 1)
-        add(grid["section"], (.47, .47, .47, 1), 1)
+        add(grid["minor"], (.40, .40, .40, .9), 1)
+        add(grid["section"], (.55, .55, .55, 1), 1)
         add(grid["axes"][0], (.62, .32, .32, .95), 2)
         add(grid["axes"][1], (.42, .58, .34, .95), 2)
         add(grid["axes"][2], (.34, .47, .66, .95), 2, fade=False)
@@ -167,7 +172,7 @@ class SceneView(QWidget):
         if radius <= 0:
             radius = 1.
         self.view.camera.center = (0, 0, 0)
-        self.view.camera.scale_factor = max(radius * 2.5, .02)
+        self.view.camera.scale_factor = max(radius * 2.1, .02)
         self._helper_radius = radius
         self._grid(radius)
 

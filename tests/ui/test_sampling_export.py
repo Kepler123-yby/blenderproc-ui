@@ -285,3 +285,18 @@ def test_reopening_a_project_fits_distances_to_the_loaded_mesh(state, qtbot):
     panel.radius.maximum.setValue(fitted * .6)
     panel.sync()
     assert state.config.regions[0].radius_m.maximum == pytest.approx(fitted * .6, rel=1e-6)
+
+
+def test_panel_states_distances_in_multiples_of_the_object_footprint(state, qtbot):
+    import numpy as np
+    from types import SimpleNamespace
+    from bproc_ui.panels.sampling import SamplingPanel
+
+    state.meshes = {state.config.anchor_key: SimpleNamespace(
+        bounds_m=np.array([[-.0475, -.0474, -.075], [.0475, .0474, .075]]))}
+    panel = SamplingPanel(state)
+    qtbot.addWidget(panel)
+    text = panel.fixed_radius_note.text() + panel.radius_note.text()
+    assert "物体 XY 半径" in text
+    assert "0.0671 m" in text
+    panel.deleteLater()

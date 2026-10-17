@@ -3,6 +3,8 @@
 from dataclasses import replace
 from uuid import uuid4
 
+import numpy as np
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QComboBox, QLineEdit, QPushButton,
                                QCheckBox, QLabel, QRadioButton)
@@ -53,7 +55,9 @@ class SamplingPanel(QWidget):
                               ("elevation_deg", self.fixed_elevation)):
             editor.valueChanged.connect(lambda _value, name=field: self._fixed_edited(name))
         form.addRow("名称", self.fixed_name)
+        self.fixed_radius_note = note("")
         form.addRow("距离 r", self.fixed_radius)
+        form.addRow(self.fixed_radius_note)
         form.addRow("方位 φ", self.fixed_azimuth)
         form.addRow("仰角 α", self.fixed_elevation)
         add_fixed, capture = QPushButton("＋ 机位"), QPushButton("用当前视角添加")
@@ -95,6 +99,8 @@ class SamplingPanel(QWidget):
         self.elevation = RangeEditor(minimum=-90, maximum=90, decimals=1, suffix="°")
         self.elevation.changed.connect(lambda: self._region_edited("elevation_deg"))
         form.addRow("距离 r", self.radius)
+        self.radius_note = note("")
+        form.addRow(self.radius_note)
         form.addRow("方位 φ", row(self.azimuth_start, QLabel("→"), self.azimuth_end))
         form.addRow(self.full_circle)
         form.addRow("仰角 α", self.elevation)
@@ -182,6 +188,21 @@ class SamplingPanel(QWidget):
             self.current_region_key = self.fixed.itemData(index)
             self.sync()
             self.region_changed.emit(self.current_region_key)
+
+    def _distance_note(self, distance):
+        """Say the distance in multiples of the object's XY radius: 0.31 m means nothing, 4.6× does."""
+        mesh = self.state.meshes.get(self.state.config.anchor_key)
+        if mesh is None:
+            return ""
+        size = np.asarray(mesh.bounds_m[1], dtype=float) - np.asarray(mesh.bounds_m[0], dtype=float)
+        footprint = float(np.hypot(size[0], size[1])) / 2
+        if footprint <= 0:
+            return ""
+        low, high = (distance.minimum, distance.maximum) if hasattr(distance, "minimum") else (distance, distance)
+        if high <= low:
+            return f"r = {low / footprint:.1f} × 物体 XY 半径（{footprint:.4f} m）"
+        return (f"r = {low / footprint:.1f}–{high / footprint:.1f} × 物体 XY 半径"
+                f"（{footprint:.4f} m）")
 
     def _fit_radius(self):
         """Comfortable distance for the current render center, or None when it is not loaded."""
@@ -427,6 +448,7 @@ class SamplingPanel(QWidget):
         fixed = self._selected_fixed()
         for widget in (self.fixed_name, self.fixed_radius, self.fixed_azimuth, self.fixed_elevation):
             widget.setEnabled(fixed is not None)
+        self.fixed_radius_note.setText(self._distance_note(fixed.radius_m) if fixed else "")
         if fixed:
             self.fixed_name.setText(fixed.name)
             self.fixed_radius.setValue(fixed.radius_m)
@@ -446,6 +468,9 @@ class SamplingPanel(QWidget):
             self.azimuth_start.setEnabled(not region.azimuth.full_circle)
             self.azimuth_end.setEnabled(not region.azimuth.full_circle)
             self.elevation.set_value(region.elevation_deg)
+            self.radius_note.setText(self._distance_note(region.radius_m))
+        else:
+            self.radius_note.setText("")
         self.scene_count.setValue(config.scene_count)
         self.views.setValue(config.views)
         self.seed.setValue(config.seed)

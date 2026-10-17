@@ -6,16 +6,22 @@ from bproc_ui.views.scene_view import floor_grid
 
 def test_grid_scales_with_the_model_instead_of_a_fixed_size():
     small, large = floor_grid(.1), floor_grid(1.0)
-    assert small["extent"] == pytest.approx(.16)
-    assert large["extent"] == pytest.approx(1.6)
-    # Both grids keep the same density: twenty cells, so the cell size follows the model.
-    assert len(small["minor"]) + len(small["section"]) == len(large["minor"]) + len(large["section"])
+    assert small["extent"] == pytest.approx(.7)
+    assert large["extent"] == pytest.approx(7.)
+    assert small["step"] == pytest.approx(.1 / 6)
 
 
-def test_grid_has_section_lines_every_ten_cells_and_full_length_axes():
+def test_grid_reaches_far_past_the_framed_area_so_no_border_is_visible():
     grid = floor_grid(.1)
-    assert len(grid["minor"]) == 18 * 4     # twenty cells minus the three section lines × two directions
-    assert len(grid["section"]) == 3 * 4
+    # The camera frames roughly 2.5 radii; the floor must extend well beyond that.
+    assert grid["extent"] > 5 * .1
+    assert np.allclose(np.abs(grid["minor"]).max(), grid["extent"])
+
+
+def test_grid_keeps_section_lines_and_full_length_axes():
+    grid = floor_grid(.1)
+    assert len(grid["section"]) == 9 * 4
+    assert len(grid["minor"]) == 76 * 4
     for axis in grid["axes"][:2]:
         assert np.allclose(np.abs(axis).max(), grid["extent"])
     assert grid["axes"][2][0, 2] == 0 and grid["axes"][2][1, 2] > 0

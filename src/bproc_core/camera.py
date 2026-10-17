@@ -79,8 +79,8 @@ def resize_camera(camera: CameraSpec, width: int, height: int) -> CameraSpec:
     return replace(camera, width=width, height=height)
 
 
-def fit_radius_m(bounds_m, camera: CameraSpec, fill: float = .7) -> float:
-    """Distance at which a bbox covers ``fill`` of the frame height.
+def fit_radius_m(bounds_m, camera: CameraSpec, fill: float = .8) -> float:
+    """Distance at which the bbox covers ``fill`` of the frame height.
 
     Model sizes in this tool span millimetres to metres, so every default distance
     has to come from the asset itself instead of a fixed number.
@@ -90,5 +90,7 @@ def fit_radius_m(bounds_m, camera: CameraSpec, fill: float = .7) -> float:
     bounds = np.asarray(bounds_m, dtype=float)
     if bounds.shape != (2, 3) or (bounds[1] <= bounds[0]).any():
         raise ValueError("Bounds must be a (2, 3) minimum/maximum pair")
+    # Bounding-sphere radius: the silhouette radius is pose dependent, so any smaller
+    # surrogate clips the box corners when the orbit tilts.
     radius = float(np.linalg.norm(bounds[1] - bounds[0])) / 2
     return radius / (fill * (camera.height / 2) / camera.fy)

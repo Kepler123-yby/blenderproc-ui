@@ -10,6 +10,7 @@ import math
 import numpy as np
 import trimesh
 
+from .camera import fit_radius_m
 from .config import AssetSpec, Box, CameraSpec, Range, TargetSpec
 from .ply import PlyError, read_ply
 
@@ -201,15 +202,19 @@ def suggest_ranges(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]
         return Box(), Range(0.5, 0.8)
     largest = np.max(extents, axis=0)
     # Scale with the asset: a 2 cm floor would frame a millimetre part from across the room.
-    spread = float(max(largest.max() * max(1.5, math.sqrt(len(extents))), 1e-5))
+    # The offsets only need variety, not room: a wide spread used to push the camera 17× the
+    # object's own footprint away, which made the orbit unusable for debugging.
+    spread = float(max(largest.max() * .15 * max(1., math.sqrt(len(extents))), 1e-5))
     box = Box(Range(-spread, spread), Range(-spread, spread), Range(-0.35 * spread, 0.35 * spread))
-    all_radius = np.linalg.norm([spread + largest[0] / 2, spread + largest[1] / 2, 0.35 * spread + largest[2] / 2])
     # Principal-point offsets reduce the narrower half-frustum. Half-pixel image boundaries.
     tangent = min((camera.cx + 0.5) / camera.fx, (camera.width - 0.5 - camera.cx) / camera.fx,
                   (camera.cy + 0.5) / camera.fy, (camera.height - 0.5 - camera.cy) / camera.fy)
     if tangent <= 0 or not math.isfinite(tangent):
         return box, Range(0.5, 0.8)
+    # Framing distance comes from the model itself; the placement offsets are added on top.
     # A fixed 5 cm floor would push every millimetre-scale model out of frame.
-    floor = max(float(np.linalg.norm(largest)) / 2, 1e-5)
-    minimum = max(floor, float(all_radius) * math.sqrt(1 + tangent * tangent) / tangent * 1.1)
-    return box, Range(minimum, minimum * 1.5)
+    half = np.asarray(largest, dtype=float) / 2
+    framed = fit_radius_m(np.stack((-half, half)), camera)
+    offset = float(np.linalg.norm([spread, spread, .35 * spread]))
+    minimum = max(offset + framed, 1e-5)
+    return box, Range(minimum, minimum * 1.4)

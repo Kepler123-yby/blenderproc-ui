@@ -11,6 +11,7 @@ import numpy as np
 import trimesh
 
 from .config import AssetSpec, Box, CameraSpec, Range, TargetSpec
+from .ply import PlyError, read_ply
 
 
 class AssetError(ValueError):
@@ -50,6 +51,45 @@ def _reject_transparency(mesh: trimesh.Trimesh, path: Path) -> None:
                 raise AssetError(f"首版不支持包含透明像素的材质：{path}")
 
 
+def _ply_arrays(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    try:
+        mesh = read_ply(path)
+    except PlyError as exc:
+        raise AssetError(f"无法读取 PLY 模型 {path}：{exc}") from exc
+    if mesh.colors is not None and np.any(mesh.colors[:, 3] != 255):
+        raise AssetError(f"首版不支持透明表面，请将模型设为不透明：{path}")
+    return mesh.vertices, mesh.faces, mesh.colors
+
+
+def _trimesh_arrays(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    loaded = trimesh.load(path, process=False)
+    if isinstance(loaded, trimesh.Scene):
+        if not loaded.geometry:
+            raise AssetError(f"模型为空：{path}")
+        # Applies only transforms recorded by the file; never re-centers CAD data.
+        loaded = loaded.dump(concatenate=True)
+    if not isinstance(loaded, trimesh.Trimesh) or len(loaded.faces) == 0:
+        raise AssetError(f"模型没有可渲染的面；仅含点的模型不受支持：{path}")
+    _reject_transparency(loaded, path)
+    colors = None
+    if getattr(loaded.visual, "kind", None) in ("vertex", "face") and getattr(loaded.visual, "defined", False):
+        candidate = np.asarray(loaded.visual.vertex_colors, dtype=np.uint8)
+        if candidate.shape == (len(loaded.vertices), 4):
+            colors = candidate.copy()
+    else:
+        material = getattr(loaded.visual, "material", None)
+        color = getattr(material, "baseColorFactor", None)
+        if color is None:
+            color = getattr(material, "diffuse", None)
+        if color is not None and len(color) >= 3:
+            color = np.asarray(color)
+            if color.dtype.kind == "f" and color.max() <= 1:
+                color = np.rint(color * 255)
+            rgba = np.array([*color[:3], 255], dtype=np.uint8)
+            colors = np.tile(rgba, (len(loaded.vertices), 1))
+    return np.asarray(loaded.vertices, dtype=np.float64), np.asarray(loaded.faces, dtype=np.int64), colors
+
+
 def load_mesh(asset: AssetSpec) -> MeshData:
     factors = {"m": 1.0, "cm": 0.01, "mm": 0.001}
     if asset.unit not in factors:
@@ -60,17 +100,12 @@ def load_mesh(asset: AssetSpec) -> MeshData:
     if not path.is_file():
         raise AssetError(f"找不到模型文件：{path}")
     try:
-        loaded = trimesh.load(path, process=False)
-        if isinstance(loaded, trimesh.Scene):
-            if not loaded.geometry:
-                raise AssetError(f"模型为空：{path}")
-            # Applies only transforms recorded by the file; never re-centers CAD data.
-            loaded = loaded.dump(concatenate=True)
-        if not isinstance(loaded, trimesh.Trimesh) or len(loaded.faces) == 0:
-            raise AssetError(f"模型没有可渲染的面；仅含点的 PLY 不受支持：{path}")
-        _reject_transparency(loaded, path)
-        vertices = np.asarray(loaded.vertices, dtype=np.float64).copy() * factors[asset.unit]
-        faces = np.asarray(loaded.faces, dtype=np.int64).copy()
+        vertices, faces, colors = (_ply_arrays(path) if path.suffix.lower() == ".ply"
+                                   else _trimesh_arrays(path))
+        if len(faces) == 0:
+            raise AssetError(f"模型没有可渲染的面；仅含点的模型不受支持：{path}")
+        vertices = np.asarray(vertices, dtype=np.float64).copy() * factors[asset.unit]
+        faces = np.asarray(faces, dtype=np.int64).copy()
         if vertices.ndim != 2 or vertices.shape[1] != 3 or len(vertices) == 0 or not np.isfinite(vertices).all():
             raise AssetError(f"模型顶点为空或包含非有限数值：{path}")
         if faces.ndim != 2 or faces.shape[1] != 3 or faces.min() < 0 or faces.max() >= len(vertices):
@@ -78,22 +113,6 @@ def load_mesh(asset: AssetSpec) -> MeshData:
         triangle_edges = vertices[faces[:, 1:]] - vertices[faces[:, :1]]
         if not np.any(np.linalg.norm(np.cross(triangle_edges[:, 0], triangle_edges[:, 1]), axis=1) > 0):
             raise AssetError(f"模型所有面均已退化：{path}")
-        colors = None
-        if getattr(loaded.visual, "kind", None) in ("vertex", "face") and getattr(loaded.visual, "defined", False):
-            candidate = np.asarray(loaded.visual.vertex_colors, dtype=np.uint8)
-            if candidate.shape == (len(vertices), 4):
-                colors = candidate.copy()
-        else:
-            material = getattr(loaded.visual, "material", None)
-            color = getattr(material, "baseColorFactor", None)
-            if color is None:
-                color = getattr(material, "diffuse", None)
-            if color is not None and len(color) >= 3:
-                color = np.asarray(color)
-                if color.dtype.kind == "f" and color.max() <= 1:
-                    color = np.rint(color * 255)
-                rgba = np.array([*color[:3], 255], dtype=np.uint8)
-                colors = np.tile(rgba, (len(vertices), 1))
         bounds = np.array([vertices.min(axis=0), vertices.max(axis=0)])
         return MeshData(asset.key, vertices, faces, colors, bounds)
     except AssetError:

@@ -30,3 +30,8 @@ bproc_export = ["templates/*.py"]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
 markers = ["blender: requires the actual Blender runtime", "ui: requires Qt"]
+# ROS ships pytest plugins as setuptools entry points; they fail to import in this venv and
+# break collection before a single project test runs. Only the Qt plugin is wanted here.
+addopts = ["-p", "no:launch_ros", "-p", "no:launch_testing", "-p", "no:ament_lint",
+           "-p", "no:ament_flake8", "-p", "no:ament_pep257", "-p", "no:ament_copyright",
+           "-p", "no:ament_xmllint"]

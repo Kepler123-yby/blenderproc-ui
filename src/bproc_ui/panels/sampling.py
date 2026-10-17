@@ -8,13 +8,18 @@ import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QColorDialog
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QComboBox, QLineEdit, QPushButton,
-                               QCheckBox, QLabel, QRadioButton)
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QFormLayout, QStackedWidget, QComboBox, QLineEdit,
+                               QPushButton, QCheckBox, QLabel, QRadioButton)
 
 from bproc_core.config import Azimuth, FixedCameraSpec, Range, RegionSpec
 from bproc_core.camera import fit_radius_m, resize_camera
 from bproc_core.sampling import allocate_regions
 from bproc_ui.widgets import RangeEditor, SeedEditor, integer, number, section, note, row
+
+RANDOM_MATERIAL_HINT = ("每个场景在范围内取一组值，让同一批数据的表面参数有变化。\n"
+                        "只影响目标物体，遮挡物保持原样。")
+FIXED_MATERIAL_HINT = ("所有场景都用这一组值，适合检查某一档材质的成像效果。\n"
+                       "只影响目标物体，遮挡物保持原样。")
 
 
 class SamplingPanel(QWidget):
@@ -142,17 +147,43 @@ class SamplingPanel(QWidget):
         self.material_mode.currentIndexChanged.connect(self._material_mode_changed)
         self.base_color = QPushButton()
         self.base_color.clicked.connect(self._pick_base_color)
-        form.addRow("基色", row(self.material_mode, self.base_color))
+        form.addRow("颜色", row(self.material_mode, self.base_color))
+        self.material_source = QComboBox()
+        self.material_source.addItems(["范围内随机", "指定值"])
+        self.material_source.currentIndexChanged.connect(self._material_source_changed)
+        form.addRow("参数", self.material_source)
+
         self.roughness = RangeEditor(minimum=0, maximum=1, decimals=2)
         self.specular = RangeEditor(minimum=0, maximum=1, decimals=2)
         self.metallic = RangeEditor(minimum=0, maximum=1, decimals=2)
-        self.roughness.changed.connect(lambda: self._material_changed("roughness"))
-        self.specular.changed.connect(lambda: self._material_changed("specular"))
-        self.metallic.changed.connect(lambda: self._material_changed("metallic"))
-        form.addRow("粗糙度", self.roughness)
-        form.addRow("金属度", self.metallic)
-        form.addRow("高光", self.specular)
-        form.addRow(note("保留模型自身颜色，只随机粗糙度、金属度与高光；每个场景取一组值。\n只影响目标物体，遮挡物保持原样。"))
+        for field in ("roughness", "specular", "metallic"):
+            getattr(self, field).changed.connect(lambda f=field: self._material_changed(f))
+        random_page = QWidget()
+        random_form = QFormLayout(random_page)
+        random_form.setContentsMargins(0, 0, 0, 0)
+        random_form.addRow("粗糙度", self.roughness)
+        random_form.addRow("金属度", self.metallic)
+        random_form.addRow("高光", self.specular)
+
+        self.fixed_roughness = number(.4, 0, 1, 3)
+        self.fixed_specular = number(.6, 0, 1, 3)
+        self.fixed_metallic = number(0., 0, 1, 3)
+        for field in ("roughness", "specular", "metallic"):
+            getattr(self, f"fixed_{field}").valueChanged.connect(
+                lambda _value, f=field: self._material_fixed_changed(f))
+        fixed_page = QWidget()
+        fixed_form = QFormLayout(fixed_page)
+        fixed_form.setContentsMargins(0, 0, 0, 0)
+        fixed_form.addRow("粗糙度", self.fixed_roughness)
+        fixed_form.addRow("金属度", self.fixed_metallic)
+        fixed_form.addRow("高光", self.fixed_specular)
+
+        self.material_pages = QStackedWidget()
+        self.material_pages.addWidget(random_page)
+        self.material_pages.addWidget(fixed_page)
+        form.addRow(self.material_pages)
+        self.material_hint = note(RANDOM_MATERIAL_HINT)
+        form.addRow(self.material_hint)
 
         form = section("中心目标的遮挡约束", layout)
         self.occlusion_center = QLabel()
@@ -422,15 +453,30 @@ class SamplingPanel(QWidget):
     def _material_mode_changed(self, index):
         if not self._updating:
             self.state.update(material=replace(self.state.config.material,
-                                               mode="solid" if index else "original"))
+                                               color="solid" if index else "original"))
             self._paint_color_button()
+
+    def _material_source_changed(self, index):
+        """Switching between sampled ranges and the specified surface parameters."""
+        self.material_pages.setCurrentIndex(index)
+        self.material_hint.setText(FIXED_MATERIAL_HINT if index else RANDOM_MATERIAL_HINT)
+        if not self._updating:
+            self.state.update(material=replace(self.state.config.material,
+                                               source="fixed" if index else "random"))
+
+    def _material_fixed_changed(self, field):
+        if not self._updating:
+            editors = {"roughness": self.fixed_roughness, "specular": self.fixed_specular,
+                       "metallic": self.fixed_metallic}
+            fixed = replace(self.state.config.material.fixed, **{field: editors[field].value()})
+            self.state.update(material=replace(self.state.config.material, fixed=fixed))
 
     def _pick_base_color(self):
         current = QColor(self.state.config.material.base_color)
         chosen = QColorDialog.getColor(current, self, "目标基色")
         if chosen.isValid():
             self.state.update(material=replace(self.state.config.material,
-                                               mode="solid", base_color=chosen.name()))
+                                               color="solid", base_color=chosen.name()))
             self._paint_color_button()
 
     def _paint_color_button(self):
@@ -544,11 +590,18 @@ class SamplingPanel(QWidget):
         self.light_radius.set_value(config.light.radius_m)
         self.light_elevation.set_value(config.light.elevation_deg)
         self.temperature.set_value(config.light.temperature_k)
-        self.material_mode.setCurrentIndex(1 if config.material.mode == "solid" else 0)
+        self.material_mode.setCurrentIndex(1 if config.material.color == "solid" else 0)
         self._paint_color_button()
+        self.material_source.setCurrentIndex(1 if config.material.source == "fixed" else 0)
+        self.material_pages.setCurrentIndex(self.material_source.currentIndex())
+        self.material_hint.setText(FIXED_MATERIAL_HINT if config.material.source == "fixed"
+                                   else RANDOM_MATERIAL_HINT)
         self.roughness.set_value(config.material.roughness)
         self.specular.set_value(config.material.specular)
         self.metallic.set_value(config.material.metallic)
+        self.fixed_roughness.setValue(config.material.fixed.roughness)
+        self.fixed_specular.setValue(config.material.fixed.specular)
+        self.fixed_metallic.setValue(config.material.fixed.metallic)
         anchor = next((t for t in config.targets if t.asset.key == config.anchor_key), None)
         self.occlusion_center.setText("◎ 约束对象：" + (anchor.name if anchor else "未设置中心"))
         self.none_fraction.setValue(config.occlusion.none_fraction * 100)

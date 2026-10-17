@@ -300,3 +300,28 @@ def test_panel_states_distances_in_multiples_of_the_object_footprint(state, qtbo
     assert "物体 XY 半径" in text
     assert "0.0671 m" in text
     panel.deleteLater()
+
+
+def test_material_source_switches_pages_and_project(state, qtbot):
+    panel = SamplingPanel(state)
+    qtbot.addWidget(panel)
+    assert panel.material_pages.currentIndex() == 0
+    panel.material_source.setCurrentIndex(1)
+    assert panel.material_pages.currentIndex() == 1
+    assert state.config.material.source == 'fixed'
+    panel.material_source.setCurrentIndex(0)
+    assert panel.material_pages.currentIndex() == 0
+    assert state.config.material.source == 'random'
+
+
+def test_fixed_material_editors_commit_the_specified_values(state, qtbot):
+    panel = SamplingPanel(state)
+    qtbot.addWidget(panel)
+    panel.material_source.setCurrentIndex(1)
+    panel.fixed_roughness.setValue(0.27)
+    panel.fixed_metallic.setValue(0.83)
+    assert state.config.material.fixed.roughness == pytest.approx(0.27)
+    assert state.config.material.fixed.metallic == pytest.approx(0.83)
+    # Switching back to random keeps the specified values for later.
+    panel.material_source.setCurrentIndex(0)
+    assert state.config.material.fixed.roughness == pytest.approx(0.27)

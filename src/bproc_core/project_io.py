@@ -110,6 +110,16 @@ def _migrate_counts(data: dict) -> dict:
     return upgraded
 
 
+def _migrate_material(data: dict) -> dict:
+    """Upgrade the old ``material.mode`` key (colour source) to ``material.color``."""
+    material = data.get("material")
+    if not isinstance(material, dict) or "mode" not in material:
+        return data
+    upgraded = {key: value for key, value in material.items() if key != "mode"}
+    upgraded.setdefault("color", material["mode"])
+    return {**data, "material": upgraded}
+
+
 def project_from_dict(data: dict, *, base_dir: Path | None = None) -> ProjectConfig:
     if not isinstance(data, dict) or "schema_version" not in data:
         raise ConfigError("项目必须声明 schema_version: 1")
@@ -118,6 +128,7 @@ def project_from_dict(data: dict, *, base_dir: Path | None = None) -> ProjectCon
     if isinstance(data.get("render"), dict) and data["render"].get("device") == "CPU":
         data = {**data, "render": {**data["render"], "device": "OPTIX"}}
     data = _migrate_counts(data)
+    data = _migrate_material(data)
     config = _decode(data, ProjectConfig, "project", Path(base_dir or Path.cwd()).resolve())
     if isinstance(config.schema_version, bool) or config.schema_version != 1:
         raise ConfigError("仅支持 schema_version: 1；请先迁移配置")

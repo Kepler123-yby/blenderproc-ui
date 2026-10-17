@@ -9,7 +9,7 @@ import numpy as np
 
 from .assets import MeshData
 from .camera import CameraPose, project_points, sample_camera
-from .config import ProjectConfig
+from .config import MaterialState, ProjectConfig
 from .sampling import camera_for_view, scene_rng, unoccluded_scenes, view_rng
 
 
@@ -27,14 +27,6 @@ class LightState:
     position_m: np.ndarray
     energy_w: float
     color_rgb: tuple[float, float, float]
-
-
-@dataclass(frozen=True)
-class MaterialState:
-    """Target surface sampled for one scene, sampled once so views stay comparable."""
-    roughness: float
-    specular: float
-    metallic: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -126,25 +118,6 @@ def propose_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_i
         matrix[:3, 3] = center - rotation @ mesh.bounds_m.mean(axis=0)
         placements.append(Placement(target.asset.key, target.asset.key, target.obj_id, matrix, 'target'))
     wants_none = scene_index in unoccluded_scenes(config.scene_count, config.occlusion.none_fraction, config.seed)
-    if not wants_none and config.occluders:
-        center_size = float(np.max(np.ptp(meshes[anchor.asset.key].bounds_m, axis=0)))
-        nominal = nominal_radius(config)
-        for _ in range(int(rng.integers(config.occlusion.count[0], config.occlusion.count[1] + 1))):
-            asset = config.occluders[int(rng.integers(len(config.occluders)))]
-            mesh = meshes[asset.key]
-            max_side = float(np.max(np.ptp(mesh.bounds_m, axis=0)))
-            if max_side <= 0:
-                return Rejection('invalid_mesh', asset.key)
-            # World space, not image space: every view of the scene sees the same occluder.
-            scale = center_size * rng.uniform(config.occlusion.scale.minimum, config.occlusion.scale.maximum) / max_side
-            phi = rng.uniform(-np.pi, np.pi)
-            alpha = np.arcsin(rng.uniform(np.sin(np.deg2rad(-20.)), np.sin(np.deg2rad(50.))))
-            direction = np.array([np.cos(alpha) * np.cos(phi), np.cos(alpha) * np.sin(phi), np.sin(alpha)])
-            center = direction * nominal * rng.uniform(.3, .8)
-            matrix = np.eye(4)
-            matrix[:3, :3] *= scale
-            matrix[:3, 3] = center - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
-            placements.append(Placement(asset.key, None, None, matrix, 'occluder'))
     bounds = [placement_bounds(p, meshes) for p in placements]
     for i, bound in enumerate(bounds):
         for j in range(i):
@@ -160,13 +133,57 @@ def propose_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_i
     light = LightState(np.array([np.cos(alpha) * np.cos(phi), np.cos(alpha) * np.sin(phi), np.sin(alpha)]) * radius,
                        float(rng.uniform(config.light.energy_w.minimum, config.light.energy_w.maximum)),
                        _temperature_color(rng.uniform(config.light.temperature_k.minimum, config.light.temperature_k.maximum)))
-    material = MaterialState(float(rng.uniform(config.material.roughness.minimum, config.material.roughness.maximum)),
-                             float(rng.uniform(config.material.specular.minimum, config.material.specular.maximum)),
-                             float(rng.uniform(config.material.metallic.minimum, config.material.metallic.maximum)))
+    material = (config.material.fixed if config.material.source == "fixed" else
+                MaterialState(float(rng.uniform(config.material.roughness.minimum, config.material.roughness.maximum)),
+                              float(rng.uniform(config.material.specular.minimum, config.material.specular.maximum)),
+                              float(rng.uniform(config.material.metallic.minimum, config.material.metallic.maximum))))
     return SceneState(scene_index, tuple(placements), hdri,
                       float(rng.uniform(config.hdri.strength.minimum, config.hdri.strength.maximum)),
                       float(rng.uniform(config.hdri.rotation_deg.minimum, config.hdri.rotation_deg.maximum)),
                       light, wants_none, material)
+
+
+def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], pose: CameraPose,
+                        anchor_key: str, rng) -> list[Placement] | Rejection:
+    """Occluders for one camera: on its line of sight, offset sideways so the cover is partial.
+
+    A world-space occluder sampled anywhere on the sphere almost never crosses the target's line
+    of sight (the camera band is a few percent of it), which left ``occlusion_ratio`` at 0 on
+    almost every frame. Placing them along this camera's ray, a fraction of the way to the target
+    and pushed sideways by a fraction of the target size, keeps the ratio inside the configured
+    window and lets a retry adjust it.
+    """
+    anchor = meshes[anchor_key]
+    center_size = float(np.max(np.ptp(anchor.bounds_m, axis=0)))
+    nominal = nominal_radius(config)
+    ray = np.asarray(pose.position_m, dtype=float)
+    length = float(np.linalg.norm(ray))
+    if length <= 0:
+        return Rejection('invalid_pivot', anchor_key)
+    direction = ray / length
+    side = np.cross(direction, np.array([0., 0., 1.]))
+    if np.linalg.norm(side) < 1e-6:
+        side = np.array([1., 0., 0.])
+    side /= np.linalg.norm(side)
+    up = np.cross(side, direction)
+    placements = []
+    for _ in range(int(rng.integers(config.occlusion.count[0], config.occlusion.count[1] + 1))):
+        asset = config.occluders[int(rng.integers(len(config.occluders)))]
+        mesh = meshes[asset.key]
+        max_side = float(np.max(np.ptp(mesh.bounds_m, axis=0)))
+        if max_side <= 0:
+            return Rejection('invalid_mesh', asset.key)
+        size = center_size * rng.uniform(config.occlusion.scale.minimum, config.occlusion.scale.maximum)
+        angle = rng.uniform(0., 2 * np.pi)
+        offset = size * rng.uniform(.1, .9)
+        center = (direction * nominal * rng.uniform(.3, .55)
+                  + (np.cos(angle) * side + np.sin(angle) * up) * offset)
+        scale = size / max_side
+        matrix = np.eye(4)
+        matrix[:3, :3] *= scale
+        matrix[:3, 3] = center - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
+        placements.append(Placement(asset.key, None, None, matrix, 'occluder'))
+    return placements
 
 
 def propose_candidate(config: ProjectConfig, meshes: Mapping[str, MeshData], scene: SceneState,
@@ -191,8 +208,14 @@ def propose_candidate(config: ProjectConfig, meshes: Mapping[str, MeshData], sce
         if (not valid.all() or np.any(uv[:, 0] < -.5) or np.any(uv[:, 0] > config.camera.width - .5)
                 or np.any(uv[:, 1] < -.5) or np.any(uv[:, 1] > config.camera.height - .5)):
             return Rejection('out_of_frame', placement.asset_key)
+    placements = list(scene.placements)
+    if not scene.wants_unoccluded and config.occluders:
+        occluders = occluder_placements(config, meshes, pose, config.anchor_key, rng)
+        if isinstance(occluders, Rejection):
+            return occluders
+        placements.extend(occluders)
     return SceneCandidate(scene.scene_index, view_index, attempt_index, region_key, config.anchor_key, pose,
-                          scene.placements, scene.hdri_path, scene.hdri_strength, scene.hdri_rotation_deg,
+                          tuple(placements), scene.hdri_path, scene.hdri_strength, scene.hdri_rotation_deg,
                           scene.light, scene.wants_unoccluded, kind, material=scene.material)
 
 

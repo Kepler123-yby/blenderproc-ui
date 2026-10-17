@@ -15,6 +15,9 @@ from .render_quality import (apply_object_shading, assert_gpu_only, configure_gp
                              configure_rgb_quality, label_pass_without_denoising)
 
 
+VERTEX_NODE = "bproc_vertex_colour"  # stable name so a purged material can be rebuilt
+
+
 class BlenderBackend:
     def __init__(self, api=None):
         self.api = api
@@ -23,8 +26,9 @@ class BlenderBackend:
         self.objects = []
         self._pools = {}
         self._target_materials = {}
-        self._bpy_materials = {}
-        self._vertex_links = {}
+        self._material_names = {}
+        self._vertex_nodes = {}
+        self._vertex_layers = {}
         self._temporary = None
         self.config = None
         self.candidate = None
@@ -97,12 +101,15 @@ class BlenderBackend:
             attribute = data.color_attributes.new(name="Color", type="FLOAT_COLOR", domain="POINT")
             attribute.data.foreach_set("color", colors.reshape(-1))
             vertex_node = material.node_tree.nodes.new("ShaderNodeVertexColor")
+            vertex_node.name = VERTEX_NODE
             vertex_node.layer_name = "Color"
             material.node_tree.links.new(vertex_node.outputs["Color"], shader.inputs["Base Color"])
-            self._vertex_links[name] = vertex_node.outputs["Color"]
+            self._vertex_nodes[name] = VERTEX_NODE
+            self._vertex_layers[name] = True
+        material.use_fake_user = True  # a segmap pass purges orphans; keep the surface alive
         data.materials.append(material)
         if target:  # only the targets answer to the material section
-            self._bpy_materials[name] = material
+            self._material_names[name] = material.name
         apply_object_shading(obj, self.config.render)
         self.objects.append(obj)
         return obj
@@ -153,13 +160,43 @@ class BlenderBackend:
         self.light.set_color(candidate.light.color_rgb)
         self._apply_world(candidate)
 
+    def _live_material(self, object_name, material_name):
+        """Resolve a material by name, recreating it if BlenderProc dropped the datablock.
+
+        Caching ``bpy`` Material structs is unsafe: a segmap pass duplicates the scene and purges
+        the orphans, after which ``material.node_tree`` raises ``ReferenceError: StructRNA of type
+        Material has been removed``. Names survive that purge; structs do not.
+        """
+        material = self.bpy.data.materials.get(material_name)
+        if material is not None and material.node_tree is not None:
+            return material
+        obj = self.bpy.data.objects.get(object_name)
+        if obj is None or getattr(obj, "type", "") != "MESH":
+            return None
+        material = self.bpy.data.materials.new(material_name)
+        material.use_nodes = True
+        material.use_fake_user = True
+        tree = material.node_tree
+        node = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        if node is not None and self._vertex_layers.get(object_name):
+            vertex = tree.nodes.new("ShaderNodeVertexColor")
+            vertex.name = VERTEX_NODE
+            vertex.layer_name = "Color"
+            tree.links.new(vertex.outputs["Color"], node.inputs["Base Color"])
+        obj.data.materials.clear()
+        obj.data.materials.append(material)
+        return material
+
     def _apply_material(self, candidate) -> None:
         """Paint the target surface: solid repaints the base colour, original keeps the model's."""
         spec = self.config.material
-        solid = spec.mode == "solid"
+        solid = spec.color == "solid"
         rgba = (*[srgb_to_linear(c) for c in hex_to_rgb(spec.base_color)], 1.0)
         values = getattr(candidate, "material", None)
-        for name, material in self._bpy_materials.items():
+        for name, material_name in list(self._material_names.items()):
+            material = self._live_material(name, material_name)
+            if material is None:
+                continue
             tree = material.node_tree
             node = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
             if node is None:
@@ -170,8 +207,9 @@ class BlenderBackend:
                     tree.links.remove(link)
                 base.default_value = rgba
             else:
-                if not base.links and self._vertex_links.get(name) is not None:
-                    tree.links.new(self._vertex_links[name], base)
+                vertex = tree.nodes.get(self._vertex_nodes.get(name, ""))
+                if not base.links and vertex is not None:
+                    tree.links.new(vertex.outputs["Color"], base)
                 if not base.links:
                     base.default_value = rgba
             if values is None:

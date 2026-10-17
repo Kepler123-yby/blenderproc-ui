@@ -104,3 +104,46 @@ def test_different_scenes_sample_different_arrangements():
     assert len(offsets) > 1
     for state in states:
         assert propose_candidate(config, meshes, state, 0, 0).placements == state.placements
+
+
+def occluded_fixture():
+    config, meshes = fixture_scene()
+    box = np.array([[-.05, -.05, -.05], [.05, .05, .05]])
+    meshes['o'] = MeshData('o', bounds_corners(box), np.array([[0, 1, 2]]), None, box)
+    config = replace(config, occluders=(AssetSpec('o', Path('o.ply')),),
+                     occlusion=OcclusionSpec(none_fraction=0., ratio=Range(.1, .5), max_attempts=30,
+                                             count=(2, 2), scale=Range(.4, .6)), scene_count=1)
+    return config, meshes
+
+
+def test_occluders_sit_on_the_camera_ray_so_the_target_can_actually_be_covered():
+    config, meshes = occluded_fixture()
+    shot = candidate(config, meshes)
+    assert isinstance(shot, SceneCandidate), shot
+    ray = shot.camera.position_m / np.linalg.norm(shot.camera.position_m)
+    nominal = float(np.linalg.norm(shot.camera.position_m))
+    occluders = [p for p in shot.placements if p.role == 'occluder']
+    assert len(occluders) == 2
+    for placement in occluders:
+        center = transform_points(meshes['o'].bounds_m.mean(axis=0)[None], placement.world_from_model)[0]
+        along = float(center @ ray)
+        assert .25 * nominal <= along <= .6 * nominal   # in front of the target, behind the camera
+        assert float(np.linalg.norm(center - along * ray)) <= .06
+
+
+def test_the_scene_itself_holds_no_occluders_because_they_follow_each_camera():
+    config, meshes = occluded_fixture()
+    state = propose_scene(config, meshes, 0)
+    assert isinstance(state, SceneState)
+    assert [p.role for p in state.placements] == ['target', 'target']
+
+
+def test_a_retry_moves_the_occluder_to_search_for_the_ratio_window():
+    config, meshes = occluded_fixture()
+    state = propose_scene(config, meshes, 0)
+    centers = []
+    for attempt in range(6):
+        shot = propose_candidate(config, meshes, state, 0, attempt)
+        assert isinstance(shot, SceneCandidate), shot
+        centers.append(np.round(shot.placements[-1].world_from_model[:3, 3], 6).tolist())
+    assert len({tuple(center) for center in centers}) >= 5

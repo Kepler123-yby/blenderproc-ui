@@ -12,7 +12,7 @@
 
 | 检查 | 实际结果 |
 |---|---|
-| 单元与 Qt 测试 | **261 passed**，3.9 s（含 GPU、PLY、无 HDRI、Blender 查看、固定机位、场景/视角、目标材质与视口材质预览用例） |
+| 单元与 Qt 测试 | **273 passed**，4.01 s（含 GPU、PLY、无 HDRI、Blender 查看、固定机位、场景/视角、目标材质、视口材质预览与遮挡物摆位用例） |
 | RGB + mask + mask_visib | 同场景两个目标 ID 2 / 7，4 / 4 完成，语义检查通过 |
 | BOP | 4 / 4 完成；深度、K、位姿、模型毫米坐标、GT 索引和 gt_info 检查通过 |
 | 无 BOP toolkit 的轻格式 | toolkit_path=None，离线预检及 4 / 4 渲染通过 |
@@ -41,6 +41,7 @@
 | 固定机位模式 | `camera_mode: fixed` + 2 个机位 + 2 场景 = 4 张：每场景两个视角，视角 0 恒为机位 A、视角 1 恒为机位 B，r/φ/α 与设定完全一致 |
 | 场景内摆放固定、机位随机 | `scene_count: 2`、`views_per_scene: 3`、1 个区域：6 张全部 saved，同场景三帧的 `placements` 与 `light` 完全一致，`azimuth_deg` 分别为 −22.0° / 137.4° / 154.7°，退出码 0 |
 | 无遮挡物时的遮挡要求 | 修掉空遮挡物清单下“ratio 永远到不了下限”的死循环：5 / 5 帧写出，`rejections.jsonl` 为空 |
+| 遮挡物覆盖目标 | `.artifacts/demo/workspace.yaml` 渲染 2 帧：遮挡率 0.198 / 0.426（窗口 0.1–0.5），2/2 写出；修复前同一项目 30/30 次因 `occlusion` 被拒、0 帧 |
 | 机位距离随模型缩放 | `fit_radius_m` 与归一化包围盒成正比；`suggest_ranges` 不再把 1 mm 模型放到 5 cm 之外 |
 
 测试演示由本地 Blender 生成 HDRI，并使用偏置 CAD 原点的 mm / cm 目标及 m 遮挡物；单元测试另覆盖三种单位。演示是合成网格，尚未使用用户自己的生产模型和 Haven 资源批量验证。

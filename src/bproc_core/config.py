@@ -123,14 +123,26 @@ def srgb_to_linear(value: float) -> float:
 
 
 @dataclass(frozen=True)
-class MaterialSpec:
-    """Surface parameters randomised per scene for the target objects only.
+class MaterialState:
+    """Concrete surface parameters: sampled per scene, or specified once by the user."""
+    roughness: float = 0.65
+    specular: float = 0.5
+    metallic: float = 0.0
 
-    The model's own colour is kept: only ``Roughness`` and ``Specular IOR Level`` move, which is
-    how the reference dataset (bproc_project/dataset_rendering/samplers/target.py) diversifies.
+
+@dataclass(frozen=True)
+class MaterialSpec:
+    """Surface parameters for the target objects only.
+
+    ``source: random`` samples a set inside the three ranges once per scene; ``source: fixed``
+    renders every scene with ``fixed`` verbatim, which is what a material inspection needs.
+    The model's own colour is kept unless ``color: solid``, matching the reference dataset
+    (bproc_project/dataset_rendering/samplers/target.py).
     """
-    mode: Literal["original", "solid"] = "original"
+    color: Literal["original", "solid"] = "original"
     base_color: str = "#b3b7ba"
+    source: Literal["random", "fixed"] = "random"
+    fixed: MaterialState = MaterialState(0.4, 0.6, 0.0)
     roughness: Range = Range(0.05, 0.8)
     specular: Range = Range(0.0, 1.0)
     metallic: Range = Range(0.0, 0.0)
@@ -361,10 +373,16 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
     interval("material.roughness", config.material.roughness, low=0, high=1)
     interval("material.specular", config.material.specular, low=0, high=1)
     interval("material.metallic", config.material.metallic, low=0, high=1)
-    if config.material.mode not in ("original", "solid"):
-        issue("material.mode", "材质模式只能为 original 或 solid")
+    if config.material.color not in ("original", "solid"):
+        issue("material.color", "颜色来源只能为 original 或 solid")
+    if config.material.source not in ("random", "fixed"):
+        issue("material.source", "参数来源只能为 random 或 fixed")
     if not _HEX.match(config.material.base_color):
         issue("material.base_color", "基色必须是 #RRGGBB")
+    for name in ("roughness", "specular", "metallic"):
+        value = getattr(config.material.fixed, name)
+        if not 0.0 <= value <= 1.0:
+            issue(f"material.fixed.{name}", "固定材质参数必须在 0 到 1 之间")
     occ = config.occlusion
     if finite("occlusion.none_fraction", occ.none_fraction) and not 0 <= occ.none_fraction <= 1:
         issue("occlusion.none_fraction", "无遮挡样本比例必须位于 0 到 1")

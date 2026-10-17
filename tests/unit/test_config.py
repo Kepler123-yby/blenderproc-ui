@@ -158,3 +158,29 @@ def test_random_mode_counts_views_per_scene(tmp_path):
     assert config.views == 3 and config.total_shots == 21
     assert config.with_total_shots(3).scene_count == 1
     assert config.with_total_shots(0).scene_count == 0
+
+
+def test_fixed_material_roundtrip_and_legacy_mode_migration(tmp_path):
+    from bproc_core.config import MaterialState
+    project = make_project(tmp_path)
+    project = replace(project, material=replace(project.material, source='fixed',
+                                                fixed=MaterialState(.35, .6, .8)))
+    path = tmp_path / 'material.yaml'
+    save_project(project, path)
+    assert load_project(path).material.fixed == MaterialState(.35, .6, .8)
+    assert load_project(path).material.source == 'fixed'
+
+    legacy = path.read_text().replace('color: original', 'mode: solid')
+    path.write_text(legacy)
+    loaded = load_project(path)
+    assert loaded.material.color == 'solid' and loaded.material.source == 'fixed'
+    assert path.read_text() == legacy  # Loading never rewrites a user's project.
+
+
+@pytest.mark.parametrize('changes,field', [
+    ({'source': 'sometimes'}, 'material.source'),
+    ({'color': 'paint'}, 'material.color'),
+])
+def test_material_source_validation(tmp_path, changes, field):
+    project = make_project(tmp_path)
+    assert field in error_fields(replace(project, material=replace(project.material, **changes)))

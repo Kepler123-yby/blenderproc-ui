@@ -181,7 +181,7 @@ class SceneView(QWidget):
         from bproc_core.config import hex_to_rgb
         config = getattr(self, "_config", None)
         material = getattr(config, "material", None)
-        if material is None or getattr(material, "mode", "original") != "solid":
+        if material is None or getattr(material, "color", "original") != "solid":
             return None
         return (*hex_to_rgb(material.base_color), 1.)
 

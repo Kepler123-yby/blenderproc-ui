@@ -61,6 +61,7 @@ def test_worker_overrides_hardcoded_near_and_far(monkeypatch):
     fake=SimpleNamespace(IntrinsicsCamera=Camera)
     monkeypatch.setitem(sys.modules,"pyrender",fake)
     monkeypatch.setattr(postprocess,"_utility",lambda:SimpleNamespace(_pyrender_init=lambda *args:None))
+    monkeypatch.setattr(postprocess,"require_bop_hardware",lambda utility:None)
     postprocess.initialize_bop_worker(2,1,{},.00025,3.)
     camera=fake.IntrinsicsCamera(1,1,0,0,znear=.1,zfar=100000)
     assert camera.parameters["znear"]==.00025 and camera.parameters["zfar"]==3.

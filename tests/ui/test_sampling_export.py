@@ -141,3 +141,59 @@ def test_output_format_and_device_changes_preserve_unrelated_numeric_precision(s
     assert state.config.output.depth_scale_mm == scale
     panel.device.setCurrentText("CUDA")
     assert state.config.render.samples == 123456
+
+
+def test_gpu_backends_and_surface_controls_update_only_selected_fields(state, qtbot):
+    angle, threshold = 31.1234567890123, .01234567890123
+    state.update(render=replace(state.config.render, smooth_angle_deg=angle,
+                                noise_threshold=threshold))
+    panel = ExportPanel(state)
+    qtbot.addWidget(panel)
+    assert [panel.device.itemText(i) for i in range(panel.device.count())] == [
+        "OPTIX", "CUDA", "HIP", "ONEAPI", "METAL"]
+    assert panel.device.currentText() == "OPTIX"
+    assert panel.smooth_angle.isEnabled()
+    panel.device.setCurrentText("CUDA")
+    assert state.config.render.smooth_angle_deg == angle
+    assert state.config.render.noise_threshold == threshold
+    panel.shading_mode.setCurrentIndex(panel.shading_mode.findData("smooth"))
+    assert state.config.render.shading_mode == "smooth"
+    assert not panel.smooth_angle.isEnabled()
+    assert state.config.render.smooth_angle_deg == angle
+    panel.weighted_normals.setChecked(True)
+    assert state.config.render.weighted_normals is True
+    assert state.config.render.noise_threshold == threshold
+    panel.denoiser.setCurrentIndex(panel.denoiser.findData("none"))
+    assert state.config.render.denoiser == "none"
+    panel.shading_mode.setCurrentIndex(panel.shading_mode.findData("auto"))
+    assert panel.smooth_angle.isEnabled()
+    panel.smooth_angle.setValue(45)
+    assert state.config.render.smooth_angle_deg == 45
+    assert state.config.render.noise_threshold == threshold
+    panel.noise_threshold.setValue(0)
+    assert state.config.render.noise_threshold == 0
+    assert state.config.render.device == "CUDA"
+
+
+@pytest.mark.parametrize("mode", ["rgb_masks", "bop"])
+@pytest.mark.parametrize("backend,denoiser", [("OPTIX", "OPTIX"), ("CUDA", "auto")])
+def test_gpu_surface_settings_save_and_export_same_snapshot(state, qtbot, tmp_path, monkeypatch, mode, backend, denoiser):
+    monkeypatch.setattr("bproc_export.bundle.locate_runtime", lambda config: {"schema_version": 1, "ready": True})
+    panel = ExportPanel(state)
+    qtbot.addWidget(panel)
+    panel.choose_format(mode)
+    panel.device.setCurrentText(backend)
+    panel.shading_mode.setCurrentIndex(panel.shading_mode.findData("smooth"))
+    panel.weighted_normals.setChecked(True)
+    panel.denoiser.setCurrentIndex(panel.denoiser.findData(denoiser))
+    panel.noise_threshold.setValue(.005)
+    saved_path = tmp_path / "gpu-project.yaml"
+    state.save(saved_path)
+    receipt = panel.export_to(tmp_path / f"gpu-{mode}")
+    exported = load_project(receipt.directory / "scene.yaml")
+    assert load_project(saved_path).render == exported.render == state.config.render
+    assert exported.render.device == backend
+    assert exported.render.shading_mode == "smooth"
+    assert exported.render.weighted_normals is True
+    assert exported.render.denoiser == denoiser
+    assert exported.render.noise_threshold == .005

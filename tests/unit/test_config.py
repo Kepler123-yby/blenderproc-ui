@@ -20,6 +20,7 @@ def test_defaults_and_complete_roundtrip(tmp_path):
     assert project.output.format == "rgb_masks" and project.occlusion.max_attempts == 30
     assert not error_fields(project, check_files=True)
     assert not (tmp_path / "should-not-exist").exists()
+    assert project.render.device == "OPTIX" and project.render.shading_mode == "auto"
 
 
 def test_incomplete_draft_can_be_saved_and_reloaded(tmp_path):
@@ -94,3 +95,34 @@ def test_atomic_save_rejects_nonfinite_without_changing_previous_document(tmp_pa
     with pytest.raises(ConfigError):
         save_project(replace(project, light=replace(project.light, energy_w=Range(1, float("inf")))), path)
     assert path.read_bytes() == original
+
+
+def test_gpu_quality_roundtrip_and_legacy_cpu_migration(tmp_path):
+    config = make_project(tmp_path)
+    config = replace(config, render=replace(config.render, device="OPTIX", shading_mode="smooth",
+                     smooth_angle_deg=47.25, weighted_normals=True, denoiser="OPTIX", noise_threshold=.025))
+    path = tmp_path / 'quality.yaml'
+    save_project(config, path)
+    assert load_project(path) == config
+    legacy = path.read_text().replace('device: OPTIX', 'device: CPU')
+    path.write_text(legacy)
+    loaded = load_project(path)
+    assert loaded.render.device == 'OPTIX' and loaded.render.weighted_normals is True
+    assert path.read_text() == legacy  # Loading never rewrites a user's project.
+
+
+@pytest.mark.parametrize('changes,field', [
+    ({'device':'CPU'},'render.device'),
+    ({'shading_mode':'bevel'},'render.shading_mode'),
+    ({'smooth_angle_deg':181.},'render.smooth_angle_deg'),
+    ({'smooth_angle_deg':float('nan')},'render.smooth_angle_deg'),
+    ({'weighted_normals':1},'render.weighted_normals'),
+    ({'denoiser':'INTEL'},'render.denoiser'),
+    ({'device':'HIP','denoiser':'OPTIX'},'render.denoiser'),
+    ({'device':'CUDA','denoiser':'OPTIX'},'render.denoiser'),
+    ({'noise_threshold':-.01},'render.noise_threshold'),
+    ({'noise_threshold':True},'render.noise_threshold'),
+])
+def test_gpu_quality_validation(tmp_path, changes, field):
+    project = make_project(tmp_path)
+    assert field in error_fields(replace(project,render=replace(project.render,**changes)))

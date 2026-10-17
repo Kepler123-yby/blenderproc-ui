@@ -93,6 +93,10 @@ def _decode(value: Any, kind: Any, field_name: str, base_dir: Path):
 def project_from_dict(data: dict, *, base_dir: Path | None = None) -> ProjectConfig:
     if not isinstance(data, dict) or "schema_version" not in data:
         raise ConfigError("项目必须声明 schema_version: 1")
+    # Legacy projects used CPU as the default. Upgrade in memory without
+    # modifying the source document; all newly exported jobs require a GPU.
+    if isinstance(data.get("render"), dict) and data["render"].get("device") == "CPU":
+        data = {**data, "render": {**data["render"], "device": "OPTIX"}}
     config = _decode(data, ProjectConfig, "project", Path(base_dir or Path.cwd()).resolve())
     if isinstance(config.schema_version, bool) or config.schema_version != 1:
         raise ConfigError("仅支持 schema_version: 1；请先迁移配置")

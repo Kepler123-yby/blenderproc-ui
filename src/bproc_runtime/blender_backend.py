@@ -10,6 +10,8 @@ import numpy as np
 
 from bproc_core.masks import decode_instances
 from .contracts import RenderError, VisibilityEvidence, RenderedFrame
+from .render_quality import (apply_object_shading, assert_gpu_only, configure_gpu,
+                             configure_rgb_quality, label_pass_without_denoising)
 
 
 class BlenderBackend:
@@ -25,6 +27,7 @@ class BlenderBackend:
         self._anchor_id = None
         self._renderer_module = None
         self._original_render = None
+        self.gpu_devices = None
 
     def prepare(self, config, meshes) -> None:
         if self.api is None:
@@ -49,8 +52,8 @@ class BlenderBackend:
         (Path(self._temporary.name) / "rgb").mkdir()
         self.api.init()
         self.api.renderer.set_max_amount_of_samples(config.render.samples)
-        self.api.renderer.set_render_devices(use_only_cpu=config.render.device == "CPU",
-            desired_gpu_device_type=None if config.render.device == "CPU" else config.render.device)
+        self.gpu_devices = configure_gpu(self.api, self.bpy, config.render.device)
+        configure_rgb_quality(self.api, self.bpy, config.render)
         self.api.renderer.set_output_format("PNG", 8)
         if config.output.format == "bop":
             self.api.renderer.enable_depth_output(activate_antialiasing=False)
@@ -92,6 +95,7 @@ class BlenderBackend:
             vertex_node.layer_name = "Color"
             material.node_tree.links.new(vertex_node.outputs["Color"], shader.inputs["Base Color"])
         data.materials.append(material)
+        apply_object_shading(obj, self.config.render)
         self.objects.append(obj)
         return obj
 
@@ -152,9 +156,12 @@ class BlenderBackend:
         self._single_frame()
         with tempfile.TemporaryDirectory(dir=self._temporary.name, prefix="seg-") as directory:
             try:
-                data = self.api.renderer.render_segmap(output_dir=str(Path(self._temporary.name) / "seg"), temp_dir=directory,
-                    map_by=["instance", "cp_ui_target_id"], default_values={"cp_ui_target_id": 0},
-                    use_alpha_channel=False)
+                if self.gpu_devices is not None:
+                    assert_gpu_only(self.bpy, self.config.render.device)
+                with label_pass_without_denoising(self.bpy):
+                    data = self.api.renderer.render_segmap(output_dir=str(Path(self._temporary.name) / "seg"), temp_dir=directory,
+                        map_by=["instance", "cp_ui_target_id"], default_values={"cp_ui_target_id": 0},
+                        use_alpha_channel=False)
                 segmaps = data["instance_segmaps"]
                 attributes = data["instance_attribute_maps"]
                 if len(segmaps) != 1 or len(attributes) != 1:
@@ -194,6 +201,8 @@ class BlenderBackend:
         self._single_frame()
         with tempfile.TemporaryDirectory(dir=self._temporary.name, prefix="rgb-pass-") as directory:
             try:
+                assert_gpu_only(self.bpy, self.config.render.device)
+                configure_rgb_quality(self.api, self.bpy, self.config.render)
                 # Utility.register_output rejects reusing a key with a different
                 # path. Reuse our private RGB path across candidates, and avoid
                 # loading the registered segmentation files from prior passes.

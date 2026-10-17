@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QComboBox, QPushButton,
-                               QLabel, QPlainTextEdit, QFileDialog, QApplication)
+                               QLabel, QPlainTextEdit, QFileDialog, QApplication, QCheckBox)
 
 from bproc_core.config import validate_project
 from bproc_export.bundle import export_job
@@ -56,10 +56,37 @@ class ExportPanel(QWidget):
         self.samples = integer(50, 1, 100000)
         self.samples.valueChanged.connect(lambda: self._render_changed("samples"))
         self.device = QComboBox()
-        self.device.addItems(["CPU", "CUDA", "OPTIX", "HIP", "ONEAPI", "METAL"])
+        self.device.addItems(["OPTIX", "CUDA", "HIP", "ONEAPI", "METAL"])
+        self.device.setToolTip("NVIDIA：OptiX / CUDA；AMD：HIP；Intel：oneAPI；Apple：Metal。")
         self.device.currentTextChanged.connect(lambda: self._render_changed("device"))
         form.addRow("采样数", self.samples)
-        form.addRow("渲染设备", self.device)
+        form.addRow("GPU 后端", self.device)
+        self.denoiser = QComboBox()
+        for title, value in (("自动 GPU", "auto"), ("关闭", "none"), ("OptiX", "OPTIX")):
+            self.denoiser.addItem(title, value)
+        self.denoiser.setToolTip("自动：当前 GPU 后端支持时使用 OptiX，否则关闭降噪。\n"
+                                 "指定 OptiX 时须有受支持的 GPU；不使用 CPU 降噪。")
+        self.denoiser.currentIndexChanged.connect(lambda: self._render_changed("denoiser"))
+        form.addRow("降噪", self.denoiser)
+        self.noise_threshold = number(.01, minimum=0, maximum=1, decimals=5)
+        self.noise_threshold.setToolTip("自适应采样的噪声阈值；0 关闭自适应采样。")
+        self.noise_threshold.valueChanged.connect(lambda: self._render_changed("noise_threshold"))
+        form.addRow("噪声阈值 / 0 关闭", self.noise_threshold)
+        form.addRow(note("终端仅使用 GPU 渲染；启动检查会核验所选 GPU 后端。"))
+        form = section("表面处理", layout)
+        self.shading_mode = QComboBox()
+        for title, value in (("平直", "flat"), ("平滑", "smooth"), ("按角度平滑", "auto")):
+            self.shading_mode.addItem(title, value)
+        self.shading_mode.currentIndexChanged.connect(lambda: self._render_changed("shading_mode"))
+        form.addRow("表面着色", self.shading_mode)
+        self.smooth_angle = number(30, minimum=0, maximum=180, decimals=2, suffix="°")
+        self.smooth_angle.valueChanged.connect(lambda: self._render_changed("smooth_angle_deg"))
+        form.addRow("平滑角度", self.smooth_angle)
+        self.weighted_normals = QCheckBox("加权法线")
+        self.weighted_normals.setToolTip("按面面积和角度调整法线，改善平面与倒角的高光过渡。")
+        self.weighted_normals.toggled.connect(lambda: self._render_changed("weighted_normals"))
+        form.addRow("法线处理", self.weighted_normals)
+        form.addRow(note("应用到目标和遮挡模型。几何预览仅用于构图，最终表面效果以 Blender 渲染为准。"))
         form = section("本机运行环境", layout)
         self.conda_env = QLineEdit()
         self.blender_dir = QLineEdit()
@@ -138,8 +165,13 @@ class ExportPanel(QWidget):
 
     def _render_changed(self, field):
         if not self._updating:
-            value = self.samples.value() if field == "samples" else self.device.currentText()
-            self.state.update(render=replace(self.state.config.render, **{field: value}))
+            values = {"samples": self.samples.value(), "device": self.device.currentText(),
+                      "shading_mode": self.shading_mode.currentData(),
+                      "smooth_angle_deg": self.smooth_angle.value(),
+                      "weighted_normals": self.weighted_normals.isChecked(),
+                      "denoiser": self.denoiser.currentData(),
+                      "noise_threshold": self.noise_threshold.value()}
+            self.state.update(render=replace(self.state.config.render, **{field: values[field]}))
 
     def _runtime_changed(self, field):
         if not self._updating:
@@ -222,6 +254,12 @@ class ExportPanel(QWidget):
             self.output_description.setText("BOP：RGB、深度、相机与位姿、模型、双掩码和可见性。\nmask/000000_000000.png\n掩码后缀为 GT 列表索引，模型和位姿平移采用毫米。")
         self.samples.setValue(config.render.samples)
         self.device.setCurrentText(config.render.device)
+        self.shading_mode.setCurrentIndex(self.shading_mode.findData(config.render.shading_mode))
+        self.smooth_angle.setValue(config.render.smooth_angle_deg)
+        self.smooth_angle.setEnabled(config.render.shading_mode == "auto")
+        self.weighted_normals.setChecked(config.render.weighted_normals)
+        self.denoiser.setCurrentIndex(self.denoiser.findData(config.render.denoiser))
+        self.noise_threshold.setValue(config.render.noise_threshold)
         self.conda_env.setText(config.runtime.conda_env)
         self.blender_dir.setText(str(config.runtime.blender_dir))
         self.blenderproc.setText(str(config.runtime.blenderproc_executable))

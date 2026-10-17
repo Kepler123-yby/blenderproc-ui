@@ -99,7 +99,12 @@ class OcclusionSpec:
 @dataclass(frozen=True)
 class RenderSpec:
     samples: int = 50
-    device: Literal["CPU", "CUDA", "OPTIX", "HIP", "ONEAPI", "METAL"] = "CPU"
+    device: Literal["CUDA", "OPTIX", "HIP", "ONEAPI", "METAL"] = "OPTIX"
+    shading_mode: Literal["flat", "smooth", "auto"] = "auto"
+    smooth_angle_deg: float = 30.0
+    weighted_normals: bool = False
+    denoiser: Literal["auto", "none", "OPTIX"] = "auto"
+    noise_threshold: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -279,8 +284,20 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
     if not config.occluders and occ.none_fraction < 1 and occ.ratio.minimum > 0:
         issue("occluders", "未选择专门遮挡物；只能依靠其他目标满足遮挡率", "warning")
     integer("render.samples", config.render.samples, 1)
-    if config.render.device not in ("CPU", "CUDA", "OPTIX", "HIP", "ONEAPI", "METAL"):
-        issue("render.device", "不支持的 Cycles 设备类型")
+    if config.render.device not in ("CUDA", "OPTIX", "HIP", "ONEAPI", "METAL"):
+        issue("render.device", "仅支持 GPU 后端：OPTIX、CUDA、HIP、ONEAPI、METAL；禁止 CPU 渲染")
+    if config.render.shading_mode not in ("flat", "smooth", "auto"):
+        issue("render.shading_mode", "着色方式必须是 flat、smooth 或 auto")
+    if finite("render.smooth_angle_deg", config.render.smooth_angle_deg) and not 0 <= config.render.smooth_angle_deg <= 180:
+        issue("render.smooth_angle_deg", "平滑角度必须位于 0 到 180°")
+    if not isinstance(config.render.weighted_normals, bool):
+        issue("render.weighted_normals", "加权法线选项必须是布尔值")
+    if config.render.denoiser not in ("auto", "none", "OPTIX"):
+        issue("render.denoiser", "降噪仅支持 auto、none 或 GPU OPTIX")
+    if config.render.denoiser == "OPTIX" and config.render.device != "OPTIX":
+        issue("render.denoiser", "OptiX GPU 降噪需要 OPTIX 渲染后端；CUDA 等后端请使用自动或关闭")
+    if finite("render.noise_threshold", config.render.noise_threshold) and not 0 <= config.render.noise_threshold <= 1:
+        issue("render.noise_threshold", "自适应采样阈值必须位于 0 到 1，0 表示关闭")
     output = config.output
     if output.format not in ("rgb_masks", "bop"):
         issue("output.format", "输出格式只能是 rgb_masks 或 bop")

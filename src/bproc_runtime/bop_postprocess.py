@@ -10,6 +10,8 @@ import signal
 import sys
 import numpy as np
 
+from .gpu_gl import require_bop_hardware
+
 
 def _utility():
     from blenderproc.python.writer.BopWriterUtility import _BopWriterUtility
@@ -24,6 +26,7 @@ def initialize_bop_worker(width, height, trimesh_objects, near_m, far_m) -> None
     os.environ["PYOPENGL_PLATFORM"] = "egl"
     utility = _utility()
     utility._pyrender_init(width, height, trimesh_objects)
+    require_bop_hardware(utility)
     import pyrender
     original = pyrender.IntrinsicsCamera
 

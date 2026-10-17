@@ -10,7 +10,7 @@ import math
 import numpy as np
 import trimesh
 
-from .camera import fit_radius_m
+from .camera import fit_distance
 from .config import AssetSpec, Box, CameraSpec, Range, TargetSpec
 from .ply import PlyError, read_ply
 
@@ -197,24 +197,42 @@ def write_bop_models(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpe
 
 def suggest_ranges(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec], camera: CameraSpec) -> tuple[Box, Range]:
     """Conservative editable placement and distance suggestions for all targets."""
-    extents = [meshes[t.asset.key].bounds_m[1] - meshes[t.asset.key].bounds_m[0] for t in targets if t.enabled and t.asset.key in meshes]
-    if not extents:
+    active = [t for t in targets if t.enabled and t.asset.key in meshes]
+    if not active:
         return Box(), Range(0.5, 0.8)
+    extents = [np.ptp(meshes[t.asset.key].bounds_m, axis=0) for t in active]
     largest = np.max(extents, axis=0)
     # Scale with the asset: a 2 cm floor would frame a millimetre part from across the room.
     # The offsets only need variety, not room: a wide spread used to push the camera 17× the
     # object's own footprint away, which made the orbit unusable for debugging.
     spread = float(max(largest.max() * .15 * max(1., math.sqrt(len(extents))), 1e-5))
     box = Box(Range(-spread, spread), Range(-spread, spread), Range(-0.35 * spread, 0.35 * spread))
-    # Principal-point offsets reduce the narrower half-frustum. Half-pixel image boundaries.
-    tangent = min((camera.cx + 0.5) / camera.fx, (camera.width - 0.5 - camera.cx) / camera.fx,
-                  (camera.cy + 0.5) / camera.fy, (camera.height - 0.5 - camera.cy) / camera.fy)
-    if tangent <= 0 or not math.isfinite(tangent):
+    # Frame the box this suggestion is about to create: the offsets above plus the largest target.
+    half = np.asarray(largest, dtype=float) / 2 + spread
+    if not (half > 0).any():
         return box, Range(0.5, 0.8)
-    # Framing distance comes from the model itself; the placement offsets are added on top.
-    # A fixed 5 cm floor would push every millimetre-scale model out of frame.
-    half = np.asarray(largest, dtype=float) / 2
-    framed = fit_radius_m(np.stack((-half, half)), camera)
-    offset = float(np.linalg.norm([spread, spread, .35 * spread]))
-    minimum = max(offset + framed, 1e-5)
-    return box, Range(minimum, minimum * 1.4)
+    # Corner projection, not the bounding-sphere shortcut: the sphere put the camera so close
+    # that two targets side by side left the frame on 90% of the cameras drawn from the region.
+    minimum = fit_distance(np.stack((-half, half)), camera, azimuths_deg=(-20., 0., 20.), fill=.85)
+    return box, Range(minimum, minimum * 1.35)
+
+
+def content_bounds(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]) -> np.ndarray | None:
+    """World box every enabled target can occupy, i.e. what the camera has to keep in frame.
+
+    Each target is placed at the far corner of its own offset range, so the union covers any
+    sample the sampler can draw. ``None`` when no enabled target has a loaded mesh.
+    """
+    low, high = np.full(3, np.inf), np.full(3, -np.inf)
+    for target in targets:
+        mesh = meshes.get(target.asset.key)
+        if not target.enabled or mesh is None:
+            continue
+        reach = np.array([max(abs(target.offset.x.minimum), abs(target.offset.x.maximum)),
+                          max(abs(target.offset.y.minimum), abs(target.offset.y.maximum)),
+                          max(abs(target.offset.z.minimum), abs(target.offset.z.maximum))])
+        half = np.ptp(mesh.bounds_m, axis=0) / 2
+        low, high = np.minimum(low, -reach - half), np.maximum(high, reach + half)
+    if not np.isfinite(low).all() or not (high > low).all():
+        return None
+    return np.stack((low, high))

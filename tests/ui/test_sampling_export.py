@@ -248,24 +248,21 @@ def test_fixed_cameras_are_counted_and_edited_independently(state, qtbot):
 
 def test_fit_distance_follows_the_loaded_mesh_size(state, qtbot):
     import numpy as np
-    from bproc_core.camera import fit_radius_m
     panel = SamplingPanel(state)
     qtbot.addWidget(panel)
     panel.add_fixed_camera()
     assert state.config.fixed_cameras[0].radius_m == pytest.approx(.7)
     bounds = np.array([[-.05, -.05, -.05], [.05, .05, .05]])
     state.set_meshes({state.config.anchor_key: SimpleNamespace(bounds_m=bounds)})
-    raw = fit_radius_m(bounds, state.config.camera)
-    fitted = round(raw, 4)
-    assert panel.fit_fixed_distance()[0].radius_m == pytest.approx(fitted)
+    band = panel._fit_band()
+    assert panel.fit_fixed_distance()[0].radius_m == pytest.approx(band.minimum)
     assert panel.fit_region_distance()
     region = state.config.regions[0]
-    assert region.radius_m.minimum == pytest.approx(round(raw * .9, 4))
-    assert region.radius_m.maximum == pytest.approx(round(raw * 1.4, 4))
+    assert region.radius_m.minimum == pytest.approx(band.minimum)
+    assert region.radius_m.maximum == pytest.approx(band.maximum)
 
 
 def test_reopening_a_project_fits_distances_to_the_loaded_mesh(state, qtbot):
-    from bproc_core.camera import fit_radius_m
     from tests.factories import make_mesh
 
     # Camera distances tuned for a metre-scale asset, then a 5 cm mesh is loaded.
@@ -274,17 +271,18 @@ def test_reopening_a_project_fits_distances_to_the_loaded_mesh(state, qtbot):
     qtbot.addWidget(panel)
     assert state.config.regions[0].radius_m.maximum == pytest.approx(2.5)
 
-    mesh = make_mesh(state.config.anchor_key, size=0.05)
-    state.set_meshes({state.config.anchor_key: mesh})
+    meshes = {t.asset.key: make_mesh(t.asset.key, size=0.05) for t in state.config.targets if t.enabled}
+    assert len(meshes) > 1, "the fixture needs several targets to exercise partial loading"
+    state.set_meshes(meshes)
     panel.sync()
-    fitted = fit_radius_m(mesh.bounds_m, state.config.camera)
-    assert state.config.regions[0].radius_m.maximum == pytest.approx(round(fitted * 1.4, 4))
+    band = panel._fit_band()
+    assert state.config.regions[0].radius_m.maximum == pytest.approx(band.maximum)
 
     # A deliberate edit afterwards is not snapped back on the next sync.
-    panel.radius.minimum.setValue(fitted * .5)
-    panel.radius.maximum.setValue(fitted * .6)
+    panel.radius.minimum.setValue(band.minimum * .9)
+    panel.radius.maximum.setValue(band.maximum * 1.2)
     panel.sync()
-    assert state.config.regions[0].radius_m.maximum == pytest.approx(fitted * .6, rel=1e-6)
+    assert state.config.regions[0].radius_m.maximum == pytest.approx(band.maximum * 1.2, rel=1e-4)
 
 
 def test_panel_states_distances_in_multiples_of_the_object_footprint(state, qtbot):

@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QFormLayout, QStackedWidget
                                QPushButton, QCheckBox, QLabel, QRadioButton)
 
 from bproc_core.config import Azimuth, FixedCameraSpec, Range, RegionSpec
-from bproc_core.camera import fit_radius_m, resize_camera
+from bproc_core.camera import fit_distance, resize_camera
+from bproc_core.assets import content_bounds
 from bproc_core.sampling import allocate_regions
 from bproc_ui.widgets import RangeEditor, SeedEditor, integer, number, section, note, row
 
@@ -50,6 +51,7 @@ class SamplingPanel(QWidget):
         form.addRow(self.mode_random)
 
         form = section("固定机位", layout)
+        self.fixed_box = form.parentWidget()
         self.fixed = QComboBox()
         self.fixed.currentIndexChanged.connect(self._fixed_selected)
         form.addRow("当前机位", self.fixed)
@@ -82,6 +84,7 @@ class SamplingPanel(QWidget):
                               add_fixed, capture, duplicate_fixed, remove_fixed, fit_fixed]
 
         form = section("随机区域", layout)
+        self.random_box = form.parentWidget()
         self.region = QComboBox()
         self.region.currentIndexChanged.connect(self._region_selected)
         form.addRow("当前区域", self.region)
@@ -256,14 +259,39 @@ class SamplingPanel(QWidget):
                 f"（{footprint:.4f} m）")
 
     def _fit_radius(self):
-        """Comfortable distance for the current render center, or None when it is not loaded."""
-        mesh = self.state.meshes.get(self.state.config.anchor_key)
-        if mesh is None:
+        """Framing distance for every enabled target, from the rule that seeds a new project.
+
+        Fitting the render centre alone put the whole region inside the content, because other
+        targets sit at random offsets around it, and every candidate then failed ``out_of_frame``.
+        ``suggest_ranges`` already accounts for the offsets and the target sizes, so reuse it
+        instead of inventing a second distance rule that disagrees with the import wizard.
+        """
+        bounds = content_bounds(self.state.meshes, self.state.config.targets)
+        if bounds is None:
             return None
+        config = self.state.config
+        region = config.regions[0] if config.regions else None
+        azimuths, elevation = (0.,), 20.
+        if region is not None:
+            if region.azimuth.full_circle:
+                azimuths = (-60., 0., 60.)
+            else:
+                span = abs(region.azimuth.end_deg - region.azimuth.start_deg) / 2
+                centre = (region.azimuth.start_deg + region.azimuth.end_deg) / 2
+                azimuths = (centre - span, centre, centre + span)
+            elevation = (region.elevation_deg.minimum + region.elevation_deg.maximum) / 2
         try:
-            return fit_radius_m(mesh.bounds_m, self.state.config.camera)
+            return fit_distance(bounds, config.camera, azimuths_deg=azimuths,
+                                elevation_deg=elevation, fill=.85)
         except ValueError:
             return None
+
+    def _fit_band(self):
+        """Region band for the loaded content: comfortable distance and 35% of headroom."""
+        fitted = self._fit_radius()
+        if fitted is None:
+            return None
+        return Range(round(fitted, 4), round(fitted * 1.35, 4))
 
     def add_fixed_camera(self, camera=None):
         cameras = self.state.config.fixed_cameras
@@ -318,13 +346,27 @@ class SamplingPanel(QWidget):
                                               for c in self.state.config.fixed_cameras))
 
     def _mode_changed(self, mode):
+        self._show_mode(mode)
         if not self._updating and self.state.config.camera_mode != mode:
             self.state.update(camera_mode=mode)
 
+    def _show_mode(self, mode):
+        """Only the editors of the active mode: both groups at once read as two settings."""
+        self.fixed_box.setVisible(mode == "fixed")
+        self.random_box.setVisible(mode == "random")
+
     def _auto_fit_scene(self):
-        """Fit once per loaded model, so a reopened project matches the mesh it now points at."""
-        signature = (self.state.config.anchor_key, tuple(sorted(self.state.meshes)))
-        if signature == self._auto_fit_signature or self._fit_radius() is None:
+        """Fit once per loaded model, and only after every enabled target has loaded.
+
+        Meshes arrive one at a time, so fitting on the first arrival sized the region for half the
+        scene and the next arrival shrank it again; each pass was persisted on save.
+        """
+        config = self.state.config
+        needed = [t.asset.key for t in config.targets if t.enabled]
+        if not needed or any(key not in self.state.meshes for key in needed):
+            return
+        signature = (config.anchor_key, tuple(sorted(needed)))
+        if signature == self._auto_fit_signature:
             return
         self._auto_fit_signature = signature
         self.auto_fit_distances()
@@ -333,23 +375,26 @@ class SamplingPanel(QWidget):
         """Pull camera distances to the model scale when a project was tuned for another size.
 
         Without this, opening a project whose radius was sized for a metre-scale asset shows a
-        region sphere several times larger than the imported mesh.
+        region sphere several times larger than the imported mesh. The replacement band comes
+        from ``suggest_ranges``, so reopening a project converges instead of shrinking again.
         """
-        fitted = self._fit_radius()
-        if fitted is None:
+        targets = [t for t in self.state.config.targets if t.enabled and t.asset.key in self.state.meshes]
+        if not targets:
+            return False
+        band = self._fit_band()
+        if band is None:
             return False
         config, changed = self.state.config, False
         regions, cameras = [], []
         for region in config.regions:
-            far = max(region.radius_m.minimum, region.radius_m.maximum) / fitted
+            far = max(region.radius_m.minimum, region.radius_m.maximum) / band.maximum
             if far > 1.6 or far < 1 / 1.6:
-                region, changed = replace(region, radius_m=Range(round(fitted * .9, 4),
-                                                                 round(fitted * 1.4, 4))), True
+                region, changed = replace(region, radius_m=Range(band.minimum, band.maximum)), True
             regions.append(region)
         for camera in config.fixed_cameras:
-            far = camera.radius_m / fitted
+            far = camera.radius_m / band.minimum
             if far > 1.6 or far < 1 / 1.6:
-                camera, changed = replace(camera, radius_m=round(fitted, 4)), True
+                camera, changed = replace(camera, radius_m=round(band.minimum, 4)), True
             cameras.append(camera)
         if changed:
             self.state.update(regions=tuple(regions), fixed_cameras=tuple(cameras))
@@ -368,12 +413,11 @@ class SamplingPanel(QWidget):
 
     def fit_region_distance(self):
         """Refit random regions to the loaded model size; the selection narrows it to one region."""
-        fitted = self._fit_radius()
-        if fitted is None or not self.state.config.regions:
+        band = self._fit_band()
+        if band is None or not self.state.config.regions:
             return None
-        minimum, maximum = round(fitted * .9, 4), round(fitted * 1.4, 4)
         selected = self._selected_region()
-        updated = tuple(replace(r, radius_m=Range(minimum, maximum))
+        updated = tuple(replace(r, radius_m=Range(band.minimum, band.maximum))
                         if selected is None or r.key == selected.key else r
                         for r in self.state.config.regions)
         self.state.update(regions=updated)
@@ -570,6 +614,7 @@ class SamplingPanel(QWidget):
         self.mode_fixed.setChecked(fixed_mode)
         self.mode_random.setChecked(not fixed_mode)
         self.views.setEnabled(not fixed_mode)
+        self._show_mode(config.camera_mode)
         for widget in self._fixed_widgets:
             widget.setEnabled(fixed_mode)
         for widget in self._region_widgets:

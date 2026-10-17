@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import numpy as np
 
-from .config import CameraSpec, RegionSpec
+from .config import Azimuth, CameraSpec, Range, RegionSpec
 
 
 @dataclass(frozen=True)
@@ -94,3 +94,44 @@ def fit_radius_m(bounds_m, camera: CameraSpec, fill: float = .8) -> float:
     # surrogate clips the box corners when the orbit tilts.
     radius = float(np.linalg.norm(bounds[1] - bounds[0])) / 2
     return radius / (fill * (camera.height / 2) / camera.fy)
+
+
+def fit_distance(bounds_m, camera: CameraSpec, azimuths_deg=(0.,), elevation_deg: float = 20.,
+                 fill: float = .8) -> float:
+    """Smallest orbit distance that keeps the whole box inside ``fill`` of the frame.
+
+    ``fit_radius_m`` circumscribes the bounding sphere, which over-estimates the distance for a
+    spread of small targets and under-estimates it for a flat one: both ends produced regions
+    whose cameras missed the frame. Projecting the eight corners is exact.
+    """
+    bounds = np.asarray(bounds_m, dtype=float)
+    if bounds.shape != (2, 3) or (bounds[1] <= bounds[0]).any():
+        raise ValueError("Bounds must be a (2, 3) minimum/maximum pair")
+    if not 0 < fill <= 1:
+        raise ValueError("Fill must be in (0, 1]")
+    corners = np.array([[x, y, z] for x in bounds[:, 0] for y in bounds[:, 1] for z in bounds[:, 2]])
+    limit_x, limit_y = fill * camera.width / 2, fill * camera.height / 2
+
+    def fits(distance: float) -> bool:
+        for azimuth in azimuths_deg:
+            region = RegionSpec("fit", radius_m=Range(distance, distance),
+                                azimuth=Azimuth(float(azimuth), float(azimuth), False),
+                                elevation_deg=Range(elevation_deg, elevation_deg))
+            pose = sample_camera(region, np.zeros(3), np.eye(3), camera, np.random.default_rng(0))
+            pixels, valid = project_points(corners, pose, camera)
+            if not valid.all():
+                return False
+            if np.any(np.abs(pixels[:, 0] - camera.width / 2) > limit_x):
+                return False
+            if np.any(np.abs(pixels[:, 1] - camera.height / 2) > limit_y):
+                return False
+        return True
+
+    span = float(np.linalg.norm(bounds[1] - bounds[0])) or 1.
+    low, high = 1e-5, max(1., span * 50)
+    if not fits(high):
+        return high
+    for _ in range(45):
+        middle = (low + high) / 2
+        low, high = (low, middle) if fits(middle) else (middle, high)
+    return high

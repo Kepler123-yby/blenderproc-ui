@@ -12,11 +12,12 @@
 
 | 检查 | 实际结果 |
 |---|---|
-| 单元与 Qt 测试 | **255 passed**，3.63 s（含 GPU、PLY、无 HDRI、Blender 查看、固定机位、场景/视角与目标材质用例） |
+| 单元与 Qt 测试 | **261 passed**，3.9 s（含 GPU、PLY、无 HDRI、Blender 查看、固定机位、场景/视角、目标材质与视口材质预览用例） |
 | RGB + mask + mask_visib | 同场景两个目标 ID 2 / 7，4 / 4 完成，语义检查通过 |
 | BOP | 4 / 4 完成；深度、K、位姿、模型毫米坐标、GT 索引和 gt_info 检查通过 |
 | 无 BOP toolkit 的轻格式 | toolkit_path=None，离线预检及 4 / 4 渲染通过 |
 | 目标材质 | 粗糙度 0.03 / 0.95 各渲染 1 帧：中心像素 40 → 58，`candidate.material` 写入 manifest；遮挡物未变 |
+| 视口材质预览 | 同一机位、四种表面参数在插件视口内可区分（见下）：高光宽度与整体亮度各自不同 |
 | 近距离 BOP | 相机半径 35 mm，深度最大 36.3 mm；后处理未被固定 0.1 m 近裁剪面截空 |
 | 无法满足的布局 | 恰好 30 次碰撞拒绝；saved=0、skipped=1、partial、退出码 2 |
 | 已有输出目录 | 拒绝再次运行，退出码 1；结果树 SHA256 保持一致 |
@@ -62,7 +63,6 @@
 证据：`.artifacts/gpu-probe/`（EGL 探测、Cycles 设备、OptiX 降噪）、`.artifacts/gpu-e2e/`（两个独立任务与日志）、`.artifacts/gpu-quality*/`（表面处理对照）。`tests/blender/check_render_quality.py` 对同一场景比对平直 / 平滑 / 按角度平滑的渲染差异。上方截图均为 GPU 版界面，在真实桌面 OpenGL 会话中捕获。
 
 ## Blender 查看（2026-10-17）
-
 目标：导入的文档模型在视口里不显示时，不必等终端试渲染才能判断建模与光照。做法是后台用 Blender 自身的 Python 重建场景并保存 `.blend`，再另起一个 Blender 打开它；打开文件也会跳过启动画面，否则画面被 splash 挡住。
 
 | 检查 | 实际结果 |
@@ -76,6 +76,21 @@
 ![Blender 中的当前构图](images/blender-view.png)
 
 图中的场景来自演示项目 `.artifacts/demo/demo.yaml`：相机、灯光、三个遮挡物与两个目标都在对象树里，机位是 UI 当前选中的候选。命令行的等价入口是 `tools/open_blender.py`。
+
+## 视口材质预览（2026-10-17）
+
+目标：调材质时不用渲染、也不用开 Blender 就能判断粗糙度与金属度。视口把采样到的 `MaterialState` 映射到 vispy 的 Phong 着色：粗糙度决定高光指数（0.05 → 220，0.9 → 2），金属度压暗漫反射与环境项并让高光带上基色，基色进入每一项。
+
+| 检查 | 实际结果 |
+|---|---|
+| 四种状态可区分 | `r=0.05/m=0`、`r=0.9/m=0`、`r=0.05/m=1`、`r=0.9/m=1` 同一机位渲染，高光宽度与整体亮度各异（下图） |
+| 参数映射 | `phong_params` / `specular_strength` / `shininess` 单测覆盖单调性、边界夹取与基色传递 |
+| 只作用于目标 | 遮挡物走原有平灰着色，不接受材质采样 |
+| 真机证据 | `tools/gui_smoke.py` 截图：视口内目标按 `#c8ccd0` 基色 + 采样粗糙度着色 |
+
+![视口内的四种材质状态](images/material-preview.png)
+
+从左到右、从上到下：光亮电介质、粗糙电介质、抛光金属、粗糙金属。视口没有环境反射，金属会比 Blender 里更暗，最终以渲染为准。
 
 ## 环境
 

@@ -89,7 +89,8 @@ class CameraPreview(QDialog):
 
     def set_scene(self, candidate, meshes):
         _clear(self._objects)
-        self._objects = draw_placements(self.view.scene, candidate, meshes)
+        self._objects = draw_placements(self.view.scene, candidate, meshes,
+                                        material=getattr(candidate, "material", None))
         if candidate is None:
             self.caption.setText("  等待有效候选机位")
         else:

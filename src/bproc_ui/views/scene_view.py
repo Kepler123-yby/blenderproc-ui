@@ -11,6 +11,8 @@ from vispy.visuals.transforms import MatrixTransform
 from bproc_core.camera import sample_camera
 from bproc_core.scene import bounds_corners, transform_points
 
+from ..material_preview import attach_preview
+
 
 def create_canvas(**kwargs):
     app.use_app("pyside6")
@@ -34,7 +36,8 @@ def _box_lines(bounds):
     return np.asarray(segments)
 
 
-def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False, target_rgba=None):
+def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False, target_rgba=None,
+                    material=None):
     nodes = []
     if candidate is None:
         return nodes
@@ -50,8 +53,13 @@ def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False
         color = (.53, .56, .59, 1) if placement.role == "target" else (.34, .39, .43, 1)
         if placement.role == "target" and target_rgba is not None:
             rgba, color = None, target_rgba
+        custom = placement.role == "target" and material is not None
         visual = scene.visuals.Mesh(vertices=mesh.vertices_m, faces=mesh.faces,
-                                    vertex_colors=rgba, color=color, shading="smooth", parent=parent)
+                                    vertex_colors=rgba, color=color,
+                                    shading=None if custom else "smooth", parent=parent)
+        if placement.role == "target" and material is not None:
+            base = target_rgba[:3] if target_rgba is not None else _mean_rgba(rgba, color)
+            attach_preview(visual, material.roughness, material.metallic, base)
         visual.transform = MatrixTransform(placement.world_from_model.T)
         nodes.append(visual)
         if outlines and placement.target_key == selected_key:
@@ -60,6 +68,13 @@ def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False
             outline.transform = MatrixTransform(placement.world_from_model.T)
             nodes.append(outline)
     return nodes
+
+
+def _mean_rgba(rgba, fallback):
+    """Average vertex colour, so a textured model still previews at its own brightness."""
+    if rgba is None or not len(rgba):
+        return tuple(fallback[:3])
+    return tuple(np.clip(rgba[:, :3].mean(axis=0), 0., 1.))
 
 
 def nice_step(value):
@@ -178,7 +193,7 @@ class SceneView(QWidget):
         self._candidate, self._meshes = candidate, meshes
         _clear(self._objects)
         self._objects = draw_placements(self.view.scene, candidate, meshes, self._selected_key, True,
-                                        self._target_rgba())
+                                        self._target_rgba(), getattr(candidate, "material", None))
         keys = tuple((p.asset_key, p.role) for p in candidate.placements) if candidate is not None else ()
         radius = self._content_radius()
         # Meshes can arrive after the first candidate, so rescale when the geometry appears too.

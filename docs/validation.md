@@ -2,9 +2,11 @@
 
 2026-10-16 在本机 Ubuntu 22.04.5 x86_64 完成。机器可读证据见 [validation-evidence.json](validation-evidence.json)，桌面截图见下方；完整运行记录保留在本机 `.artifacts/`，不纳入 Git。
 
-![Blender 风格的原生桌面工作区](images/workspace.png)
+![Blender 风格的原生桌面工作区：脚本页展示 GPU 后端、降噪与表面处理](images/workspace.png)
 
 ![独立相机窗口](images/camera-preview.png)
+
+![导出页：BOP 任务目录与可复制的终端命令](images/export-bop.png)
 
 ## 已验证结果
 
@@ -20,12 +22,12 @@
 | SIGINT / SIGTERM | 两者均保存 1 张、跳过 999 张，状态 interrupted，进程退出码分别 130 / 143 |
 | 核心与 Blender 投影 | 非对称 fx/fy、偏置 cx/cy；与 bpy.calc_matrix_camera 最大误差 0.0000022 px |
 | 实际 GPU 相机视口 | 与 Blender 相机投影误差 0.0301 px，与实际 Blender 标记图误差 0.25 px，均小于 1 px |
-| 原生桌面 GUI | 真实 OpenGL，1320×880 和 1024×768 截图；相机重开复用 canvas；切换中心、保存、两种导出通过 |
+| 原生桌面 GUI | 真实 OpenGL，1320×920 和 1024×768 截图；相机重开复用 canvas；切换中心、保存、两种导出通过 |
 | 独立任务 | 从 `/tmp`、移除 PYTHONPATH，使用 conda Python 3.8 启动预检及渲染通过 |
 | 命令与目录 | 中文、空格、单引号、字面 `$()` 路径；空目录、文件、软链接、断链保护测试通过 |
 | 编译与依赖 | compileall、3.8 启动器 py_compile、pip check、git diff --check 通过 |
 | GPU 设备选择 | 真实 OPTIX 渲染；日志 `以 GPU 渲染` 且 CPU 设备被关闭，未回退 CPU |
-| BOP EGL 硬件校验 | 两个 EGL 上下文均读到 NVIDIA GeForce RTX 3060 Ti，软件渲染器被拒绝 |
+| BOP EGL 硬件校验 | 两个 EGL 上下文均读到 NVIDIA GeForce RTX 3060 Ti；软件渲染器拒绝由注入身份的用例覆盖 |
 | GPU BOP 端到端 | 独立导出的 BOP 任务 4 / 4 完成，退出码 0，掩码、深度、GT 有效 |
 
 测试演示由本地 Blender 生成 HDRI，并使用偏置 CAD 原点的 mm / cm 目标及 m 遮挡物；单元测试另覆盖三种单位。演示是合成网格，尚未使用用户自己的生产模型和 Haven 资源批量验证。
@@ -33,6 +35,8 @@
 ## GPU 验收（2026-10-17）
 
 任务要求：渲染只用 GPU，并保证 BOP 那套独立的 EGL 后处理也不会落到软件光栅化上。两件事分开检查，因为 Cycles 设备和 pyrender 的 EGL 上下文没有共用状态。
+
+规则与参数说明见 [GPU 与表面处理](gpu-rendering.md)。
 
 | 检查 | 实际结果 |
 |---|---|
@@ -43,7 +47,7 @@
 | GPU BOP 任务 | 独立导出的 BOP 任务 4 / 4 完成，退出码 0；深度 0–6336（0.1 mm 单位）、mask 57–78 像素、mask_visib 24–60 像素、`visib_fract` 与 GT 一致 |
 | 软件渲染器拒绝 | 单元测试注入 llvmpipe / softpipe / swrast / lavapipe / SwiftShader / GDI Generic 与缺失身份，全部拒绝；本机 NVIDIA 驱动不接受 Mesa 软件覆盖，因此没有真实 llvmpipe 上下文的拒绝实测 |
 
-证据：`.artifacts/gpu-probe/`（EGL 探测、Cycles 设备、OptiX 降噪）、`.artifacts/gpu-e2e/`（两个独立任务与日志）、`.artifacts/gpu-quality*/`（表面处理对照）。`tests/blender/check_render_quality.py` 对同一场景比对平直 / 平滑 / 按角度平滑的渲染差异。
+证据：`.artifacts/gpu-probe/`（EGL 探测、Cycles 设备、OptiX 降噪）、`.artifacts/gpu-e2e/`（两个独立任务与日志）、`.artifacts/gpu-quality*/`（表面处理对照）。`tests/blender/check_render_quality.py` 对同一场景比对平直 / 平滑 / 按角度平滑的渲染差异。上方截图均为 GPU 版界面，在真实桌面 OpenGL 会话中捕获。
 
 ## 环境
 

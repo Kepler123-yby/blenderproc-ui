@@ -1,4 +1,4 @@
-"""Export an inspectable terminal job; this editor never starts a renderer."""
+"""Export an inspectable terminal job, and open the current scene in Blender for a look; this editor never renders a dataset."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QComboBox, QPush
 
 from bproc_core.config import validate_project
 from bproc_export.bundle import export_job
+from bproc_ui.blender_view import BlenderViewer
 from bproc_ui.widgets import number, integer, section, note, row
 
 
@@ -139,8 +140,21 @@ class ExportPanel(QWidget):
         copy_preview.clicked.connect(lambda: self._copy(self.preview_command.toPlainText()))
         form.addRow(copy_preview)
         form.addRow(note("复制命令后在终端执行。已有任务或数据集目录会拒绝覆盖；资源文件保留在原位置。"))
+        viewer = section("在 Blender 中查看", layout)
+        self.viewer = BlenderViewer(state, self)
+        self.viewer.status.connect(self._blender_status)
+        self.viewer.failed.connect(self._blender_failed)
+        self.blender_open = QPushButton("在 Blender 中打开当前构图")
+        self.blender_open.setObjectName("primaryButton")
+        self.blender_open.clicked.connect(lambda: self.viewer.open())
+        self.blender_state = QLabel("用当前候选构图重建场景后打开 Blender，可在里面自由转视角、试渲染参数。")
+        self.blender_state.setWordWrap(True)
+        self.blender_state.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        viewer.addRow(self.blender_open)
+        viewer.addRow(self.blender_state)
         layout.addStretch()
         state.project_changed.connect(self.sync)
+        state.candidate_changed.connect(self._sync_blender)
         self.sync()
 
     def choose_format(self, value):
@@ -196,6 +210,16 @@ class ExportPanel(QWidget):
                                              options=QFileDialog.DontConfirmOverwrite)
         if path:
             self.job_path.setText(path)
+
+    def _sync_blender(self, candidate=None):
+        self.blender_open.setEnabled(self.state.candidate is not None)
+
+    def _blender_status(self, message):
+        self.blender_state.setText(message)
+
+    def _blender_failed(self, message):
+        self.blender_state.setText(message)
+        self.message.emit(message)
 
     def validate(self):
         issues = validate_project(self.state.config)
@@ -268,3 +292,4 @@ class ExportPanel(QWidget):
         if self.last_result:
             self.validation.setText("项目设置已更改；请导出到新的任务目录以更新快照。")
         self._updating = False
+        self.blender_open.setEnabled(self.state.candidate is not None)

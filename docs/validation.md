@@ -12,7 +12,7 @@
 
 | 检查 | 实际结果 |
 |---|---|
-| 单元与 Qt 测试 | **202 passed**，3.21 s（含 2026-10-17 GPU 追加用例） |
+| 单元与 Qt 测试 | **219 passed**，3.34 s（含 2026-10-17 GPU 与 Blender 查看用例） |
 | RGB + mask + mask_visib | 同场景两个目标 ID 2 / 7，4 / 4 完成，语义检查通过 |
 | BOP | 4 / 4 完成；深度、K、位姿、模型毫米坐标、GT 索引和 gt_info 检查通过 |
 | 无 BOP toolkit 的轻格式 | toolkit_path=None，离线预检及 4 / 4 渲染通过 |
@@ -29,6 +29,8 @@
 | GPU 设备选择 | 真实 OPTIX 渲染；日志 `以 GPU 渲染` 且 CPU 设备被关闭，未回退 CPU |
 | BOP EGL 硬件校验 | 两个 EGL 上下文均读到 NVIDIA GeForce RTX 3060 Ti；软件渲染器拒绝由注入身份的用例覆盖 |
 | GPU BOP 端到端 | 独立导出的 BOP 任务 4 / 4 完成，退出码 0，掩码、深度、GT 有效 |
+| Blender 查看当前构图 | 后台 Blender 重建并写 `scene.blend`，另起 GUI 进程打开；相机点位与候选一致，视图为渲染着色 |
+| n 边形与带边 PLY | `~/文档/cores.ply` 读到 1035 顶点、1837 面，不再读成空网格 |
 
 测试演示由本地 Blender 生成 HDRI，并使用偏置 CAD 原点的 mm / cm 目标及 m 遮挡物；单元测试另覆盖三种单位。演示是合成网格，尚未使用用户自己的生产模型和 Haven 资源批量验证。
 
@@ -48,6 +50,21 @@
 | 软件渲染器拒绝 | 单元测试注入 llvmpipe / softpipe / swrast / lavapipe / SwiftShader / GDI Generic 与缺失身份，全部拒绝；本机 NVIDIA 驱动不接受 Mesa 软件覆盖，因此没有真实 llvmpipe 上下文的拒绝实测 |
 
 证据：`.artifacts/gpu-probe/`（EGL 探测、Cycles 设备、OptiX 降噪）、`.artifacts/gpu-e2e/`（两个独立任务与日志）、`.artifacts/gpu-quality*/`（表面处理对照）。`tests/blender/check_render_quality.py` 对同一场景比对平直 / 平滑 / 按角度平滑的渲染差异。上方截图均为 GPU 版界面，在真实桌面 OpenGL 会话中捕获。
+
+## Blender 查看（2026-10-17）
+
+目标：导入的文档模型在视口里不显示时，不必等终端试渲染才能判断建模与光照。做法是后台用 Blender 自身的 Python 重建场景并保存 `.blend`，再另起一个 Blender 打开它；打开文件也会跳过启动画面，否则画面被 splash 挡住。
+
+| 检查 | 实际结果 |
+|---|---|
+| 后台重建 | `--background` 进程跑通，日志为 OptiX 设备选择结果，`scene.blend` 写入成功 |
+| 视图设置 | `viewport: rendered camera view in 1 area(s)`；相机视角 + 渲染着色，无启动画面 |
+| UI 链路 | 导出工作区按钮走线程池重建后再开窗，成功/失败都更新面板文字 |
+| 失败路径 | 构建失败抛 `Blender 构建场景失败（退出码 N）` 并带日志尾部；脚本异常不再关掉 GUI 窗口 |
+
+![Blender 中的当前构图](images/blender-view.png)
+
+图中的场景来自演示项目 `.artifacts/demo/demo.yaml`：相机、灯光、三个遮挡物与两个目标都在对象树里，机位是 UI 当前选中的候选。命令行的等价入口是 `tools/open_blender.py`。
 
 ## 环境
 

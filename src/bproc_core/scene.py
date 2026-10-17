@@ -157,3 +157,26 @@ def candidate_to_dict(candidate: SceneCandidate) -> dict:
             return value.item()
         return value
     return convert(candidate)
+
+
+def candidate_from_dict(payload: Mapping) -> SceneCandidate:
+    """Rebuild a candidate serialised by :func:`candidate_to_dict`."""
+    camera = payload["camera"]
+    light = payload["light"]
+    placements = tuple(
+        Placement(item["asset_key"], item["target_key"], item["obj_id"],
+                  np.asarray(item["world_from_model"], dtype=float), item["role"])
+        for item in payload["placements"])
+    hdri = payload["hdri_path"]
+    return SceneCandidate(
+        int(payload["request_index"]), int(payload["attempt_index"]), payload["region_key"],
+        payload["anchor_key"],
+        CameraPose(np.asarray(camera["world_from_camera"], dtype=float),
+                   np.asarray(camera["position_m"], dtype=float), float(camera["radius_m"]),
+                   float(camera["azimuth_deg"]), float(camera["elevation_deg"]),
+                   float(camera["clip_near_m"]), float(camera["clip_far_m"])),
+        placements, Path(hdri) if hdri else None, float(payload["hdri_strength"]),
+        float(payload["hdri_rotation_deg"]),
+        LightState(np.asarray(light["position_m"], dtype=float), float(light["energy_w"]),
+                   tuple(float(c) for c in light["color_rgb"])),
+        bool(payload["wants_unoccluded"]))

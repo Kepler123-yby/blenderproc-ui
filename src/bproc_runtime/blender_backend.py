@@ -8,7 +8,7 @@ import math
 import tempfile
 import numpy as np
 
-from bproc_core.config import DEFAULT_WORLD_COLOR
+from bproc_core.config import DEFAULT_WORLD_COLOR, hex_to_rgb, srgb_to_linear
 from bproc_core.masks import decode_instances
 from .contracts import RenderError, VisibilityEvidence, RenderedFrame
 from .render_quality import (apply_object_shading, assert_gpu_only, configure_gpu,
@@ -23,6 +23,8 @@ class BlenderBackend:
         self.objects = []
         self._pools = {}
         self._target_materials = {}
+        self._bpy_materials = {}
+        self._vertex_links = {}
         self._temporary = None
         self.config = None
         self.candidate = None
@@ -61,7 +63,7 @@ class BlenderBackend:
             self.api.renderer.enable_depth_output(activate_antialiasing=False)
         for target in config.targets:
             if target.enabled:
-                obj = self._make_object(meshes[target.asset.key], f"target_{target.obj_id:06d}")
+                obj = self._make_object(meshes[target.asset.key], f"target_{target.obj_id:06d}", target=True)
                 self._target_materials[target.obj_id] = obj.get_materials()[0]
                 obj.set_cp("category_id", target.obj_id)
                 obj.set_cp("ui_target_id", target.obj_id)
@@ -78,7 +80,7 @@ class BlenderBackend:
         self.light.set_type("POINT")
         self._create_world()
 
-    def _make_object(self, mesh, name):
+    def _make_object(self, mesh, name, target=False):
         data = self.bpy.data.meshes.new(name)
         data.from_pydata(mesh.vertices_m.tolist(), [], mesh.faces.tolist())
         data.update()
@@ -97,7 +99,10 @@ class BlenderBackend:
             vertex_node = material.node_tree.nodes.new("ShaderNodeVertexColor")
             vertex_node.layer_name = "Color"
             material.node_tree.links.new(vertex_node.outputs["Color"], shader.inputs["Base Color"])
+            self._vertex_links[name] = vertex_node.outputs["Color"]
         data.materials.append(material)
+        if target:  # only the targets answer to the material section
+            self._bpy_materials[name] = material
         apply_object_shading(obj, self.config.render)
         self.objects.append(obj)
         return obj
@@ -149,16 +154,33 @@ class BlenderBackend:
         self._apply_world(candidate)
 
     def _apply_material(self, candidate) -> None:
-        """Keep the model's colour and vary only roughness/specular, as the reference renderer does."""
-        material = getattr(candidate, "material", None)
-        if material is None:
-            return
-        for target in self._target_materials.values():
-            target.set_principled_shader_value("Roughness", float(material.roughness))
-            try:
-                target.set_principled_shader_value("Specular IOR Level", float(material.specular))
-            except (KeyError, IndexError, ValueError):  # Blender 3.x calls the input "Specular"
-                target.set_principled_shader_value("Specular", float(material.specular))
+        """Paint the target surface: solid repaints the base colour, original keeps the model's."""
+        spec = self.config.material
+        solid = spec.mode == "solid"
+        rgba = (*[srgb_to_linear(c) for c in hex_to_rgb(spec.base_color)], 1.0)
+        values = getattr(candidate, "material", None)
+        for name, material in self._bpy_materials.items():
+            tree = material.node_tree
+            node = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+            if node is None:
+                continue
+            base = node.inputs["Base Color"]
+            if solid:
+                for link in list(base.links):
+                    tree.links.remove(link)
+                base.default_value = rgba
+            else:
+                if not base.links and self._vertex_links.get(name) is not None:
+                    tree.links.new(self._vertex_links[name], base)
+                if not base.links:
+                    base.default_value = rgba
+            if values is None:
+                continue
+            for key, value in (("Roughness", values.roughness), ("Metallic", getattr(values, "metallic", 0.)),
+                               ("Specular IOR Level", values.specular)):
+                socket = node.inputs.get(key) or node.inputs.get("Specular")
+                if socket is not None:
+                    socket.default_value = float(value)
 
     def _apply_world(self, candidate) -> None:
         """Follow the candidate's environment map, or a neutral studio grey without one."""

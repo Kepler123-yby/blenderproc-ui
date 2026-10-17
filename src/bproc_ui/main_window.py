@@ -140,6 +140,7 @@ class MainWindow(QMainWindow):
         state.candidate_changed.connect(self._candidate_changed)
         # Meshes arrive after the project opens; panels must resync so sizes and camera
         # distances follow the geometry instead of the placeholder values.
+        state.meshes_changed.connect(self._refresh_scene)
         state.meshes_changed.connect(self.sampling.sync)
         state.meshes_changed.connect(self.sync)
         state.dirty_changed.connect(self._update_title)
@@ -303,6 +304,10 @@ class MainWindow(QMainWindow):
 
     def _refresh_clicked(self):
         self.preview_seed.setValue(self.preview_seed.value() + 1)
+
+    def _refresh_scene(self):
+        """Meshes can arrive after the first candidate; the viewport must resize and repaint."""
+        self.scene_view.set_scene(self.state.candidate, self.state.meshes)
 
     def _candidate_changed(self, candidate):
         self.scene_view.set_scene(candidate, self.state.meshes)

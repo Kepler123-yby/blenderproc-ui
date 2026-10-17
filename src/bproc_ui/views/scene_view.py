@@ -34,7 +34,7 @@ def _box_lines(bounds):
     return np.asarray(segments)
 
 
-def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False):
+def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False, target_rgba=None):
     nodes = []
     if candidate is None:
         return nodes
@@ -48,6 +48,8 @@ def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False
             if rgba.max(initial=0) > 1:
                 rgba = rgba / 255.
         color = (.53, .56, .59, 1) if placement.role == "target" else (.34, .39, .43, 1)
+        if placement.role == "target" and target_rgba is not None:
+            rgba, color = None, target_rgba
         visual = scene.visuals.Mesh(vertices=mesh.vertices_m, faces=mesh.faces,
                                     vertex_colors=rgba, color=color, shading="smooth", parent=parent)
         visual.transform = MatrixTransform(placement.world_from_model.T)
@@ -60,20 +62,27 @@ def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False
     return nodes
 
 
-def floor_grid(scale):
-    """Blender-style floor geometry that reads as infinite from any camera angle.
+def nice_step(value):
+    """Round a cell size to 1/2/5 × 10^n so the grid reads in human units."""
+    if not np.isfinite(value) or value <= 0:
+        return 1e-3
+    exponent = int(np.floor(np.log10(value)))
+    base = value / 10 ** exponent
+    return (1. if base < 1.5 else 2. if base < 3.5 else 5.) * 10 ** exponent
 
-    The plane reaches far past the framed geometry and its alpha fades to zero, so no border
-    is ever visible; ``scale`` is the sight radius in metres, keeping the cell size meaningful
-    for millimetre and metre models alike.
+
+def floor_grid(scale, cells=30):
+    """Blender-style floor patch: a 30×30 grid of human-sized cells that fades to zero.
+
+    The patch is bounded but its alpha reaches zero inside the last cell, so from any camera
+    the floor dissolves instead of ending — the grid still reads as borderless.
     """
     scale = max(float(scale), 1e-4)
-    extent = scale * 7.
-    step = scale / 6.
-    cells = max(2, int(round(2 * extent / step)))
+    step = nice_step(scale / 4.)
+    extent = cells / 2. * step
     minor, section = [], []
     for i in range(-cells // 2, cells // 2 + 1):
-        (section if i % 10 == 0 else minor).append(i * step)
+        (section if i % 5 == 0 else minor).append(i * step)
 
     def segments(values):
         pairs = []
@@ -87,7 +96,7 @@ def floor_grid(scale):
             "section": segments(section),
             "axes": (np.array([[-extent, 0, 0], [extent, 0, 0]], dtype=float),
                      np.array([[0, -extent, 0], [0, extent, 0]], dtype=float),
-                     np.array([[0, 0, 0], [0, 0, extent * .12]], dtype=float))}
+                     np.array([[0, 0, 0], [0, 0, extent * .5]], dtype=float))}
 
 
 class SceneView(QWidget):
@@ -95,7 +104,7 @@ class SceneView(QWidget):
         super().__init__(parent)
         self.canvas = (canvas_factory or create_canvas)()
         self.view = self.canvas.central_widget.add_view()
-        self.view.camera = scene.cameras.TurntableCamera(fov=45, elevation=24, azimuth=42,
+        self.view.camera = scene.cameras.TurntableCamera(fov=45, elevation=32, azimuth=42,
                                                        up="+z", scale_factor=1.8)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -129,22 +138,37 @@ class SceneView(QWidget):
         extent = grid["extent"]
 
         def add(positions, color, width, fade=True):
-            rgba = np.tile(np.array(color, dtype=float), (len(positions), 1))
-            if fade:  # Blender fades the floor out with distance instead of cutting it off;
-                # reaching zero inside the plane means the border is never visible.
-                radial = np.linalg.norm(positions[:, :2], axis=1) / extent
-                rgba[:, 3] = np.clip(1.5 - 1.7 * radial ** 1.3, 0., 1.)
-            self._hud.append(scene.visuals.Line(positions, connect="segments", color=rgba,
-                                                width=width, parent=self.view.scene))
+            """Distance bands rather than per-vertex alpha: some GL drivers drop vertex alpha."""
+            pairs = positions.reshape(-1, 2, 3)
+            if fade:
+                radial = np.linalg.norm(pairs.mean(axis=1)[:, :2], axis=1) / extent
+                bands = ((0., .55, 1.), (.55, .8, .35), (.8, 1.01, 0.))
+            else:
+                radial = np.zeros(len(pairs))
+                bands = ((0., 1.01, 1.),)
+            for low, high, alpha in bands:
+                chosen = pairs[(radial >= low) & (radial < high)]
+                if len(chosen):
+                    self._hud.append(scene.visuals.Line(chosen.reshape(-1, 3), connect="segments",
+                                                        color=(*color[:3], alpha * color[3]),
+                                                        width=width, parent=self.view.scene))
 
-        add(grid["minor"], (.40, .40, .40, .9), 1)
-        add(grid["section"], (.55, .55, .55, 1), 1)
-        add(grid["axes"][0], (.62, .32, .32, .95), 2)
-        add(grid["axes"][1], (.42, .58, .34, .95), 2)
-        add(grid["axes"][2], (.34, .47, .66, .95), 2, fade=False)
+        add(grid["minor"], (.44, .44, .44, 1.), 1)
+        add(grid["section"], (.60, .60, .60, 1.), 1)
+        add(grid["axes"][0], (.78, .36, .36, 1.), 2)
+        add(grid["axes"][1], (.46, .72, .38, 1.), 2)
+        add(grid["axes"][2], (.36, .52, .78, 1.), 2, fade=False)
         origin = scene.visuals.Markers(parent=self.view.scene)
         origin.set_data(np.zeros((1, 3)), face_color=(.95, .72, .38, .9), edge_color="#2b2b2b", size=6)
         self._hud.append(origin)
+
+    def _target_rgba(self):
+        from bproc_core.config import hex_to_rgb
+        config = getattr(self, "_config", None)
+        material = getattr(config, "material", None)
+        if material is None or getattr(material, "mode", "original") != "solid":
+            return None
+        return (*hex_to_rgb(material.base_color), 1.)
 
     def set_selection(self, key):
         self._selected_key = key
@@ -153,7 +177,8 @@ class SceneView(QWidget):
     def set_scene(self, candidate, meshes):
         self._candidate, self._meshes = candidate, meshes
         _clear(self._objects)
-        self._objects = draw_placements(self.view.scene, candidate, meshes, self._selected_key, True)
+        self._objects = draw_placements(self.view.scene, candidate, meshes, self._selected_key, True,
+                                        self._target_rgba())
         keys = tuple((p.asset_key, p.role) for p in candidate.placements) if candidate is not None else ()
         radius = self._content_radius()
         # Meshes can arrive after the first candidate, so rescale when the geometry appears too.
@@ -172,7 +197,7 @@ class SceneView(QWidget):
         if radius <= 0:
             radius = 1.
         self.view.camera.center = (0, 0, 0)
-        self.view.camera.scale_factor = max(radius * 2.1, .02)
+        self.view.camera.scale_factor = max(radius * 2.5, .02)
         self._helper_radius = radius
         self._grid(radius)
 
@@ -191,6 +216,7 @@ class SceneView(QWidget):
         return radius
 
     def set_regions(self, config, selected_key=None):
+        previous = self._config
         self._config = config
         _clear(self._regions)
         for region in config.regions:
@@ -221,6 +247,9 @@ class SceneView(QWidget):
             marker.set_data(np.atleast_2d(position), face_color=color, edge_color="#302a24", size=9)
             self._regions.append(marker)
         self.canvas.update()
+        if (self._candidate is not None and
+                (previous is None or getattr(previous, "material", None) != getattr(config, "material", None))):
+            self.set_scene(self._candidate, self._meshes)
 
     def set_candidates(self, candidates):
         _clear(self._points)

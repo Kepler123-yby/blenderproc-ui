@@ -34,6 +34,7 @@ class MaterialState:
     """Target surface sampled for one scene, sampled once so views stay comparable."""
     roughness: float
     specular: float
+    metallic: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -160,7 +161,8 @@ def propose_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_i
                        float(rng.uniform(config.light.energy_w.minimum, config.light.energy_w.maximum)),
                        _temperature_color(rng.uniform(config.light.temperature_k.minimum, config.light.temperature_k.maximum)))
     material = MaterialState(float(rng.uniform(config.material.roughness.minimum, config.material.roughness.maximum)),
-                             float(rng.uniform(config.material.specular.minimum, config.material.specular.maximum)))
+                             float(rng.uniform(config.material.specular.minimum, config.material.specular.maximum)),
+                             float(rng.uniform(config.material.metallic.minimum, config.material.metallic.maximum)))
     return SceneState(scene_index, tuple(placements), hdri,
                       float(rng.uniform(config.hdri.strength.minimum, config.hdri.strength.maximum)),
                       float(rng.uniform(config.hdri.rotation_deg.minimum, config.hdri.rotation_deg.maximum)),
@@ -233,4 +235,5 @@ def candidate_from_dict(payload: Mapping) -> SceneCandidate:
                    tuple(float(c) for c in light["color_rgb"])),
         bool(payload["wants_unoccluded"]), str(payload.get("camera_kind", "random")),
         MaterialState(float((payload.get("material") or {}).get("roughness", .65)),
-                      float((payload.get("material") or {}).get("specular", .5))))
+                      float((payload.get("material") or {}).get("specular", .5)),
+                      float((payload.get("material") or {}).get("metallic", 0.))))

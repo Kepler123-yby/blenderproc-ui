@@ -6,6 +6,8 @@ from uuid import uuid4
 import numpy as np
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QColorDialog
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QComboBox, QLineEdit, QPushButton,
                                QCheckBox, QLabel, QRadioButton)
 
@@ -135,13 +137,22 @@ class SamplingPanel(QWidget):
         form.addRow("色温", self.temperature)
 
         form = section("目标材质", layout)
+        self.material_mode = QComboBox()
+        self.material_mode.addItems(["跟随模型原色", "统一基色"])
+        self.material_mode.currentIndexChanged.connect(self._material_mode_changed)
+        self.base_color = QPushButton()
+        self.base_color.clicked.connect(self._pick_base_color)
+        form.addRow("基色", row(self.material_mode, self.base_color))
         self.roughness = RangeEditor(minimum=0, maximum=1, decimals=2)
         self.specular = RangeEditor(minimum=0, maximum=1, decimals=2)
+        self.metallic = RangeEditor(minimum=0, maximum=1, decimals=2)
         self.roughness.changed.connect(lambda: self._material_changed("roughness"))
         self.specular.changed.connect(lambda: self._material_changed("specular"))
+        self.metallic.changed.connect(lambda: self._material_changed("metallic"))
         form.addRow("粗糙度", self.roughness)
+        form.addRow("金属度", self.metallic)
         form.addRow("高光", self.specular)
-        form.addRow(note("保留模型自身颜色，只随机粗糙度与高光；每个场景取一组值。\n只影响目标物体，遮挡物保持原样。"))
+        form.addRow(note("保留模型自身颜色，只随机粗糙度、金属度与高光；每个场景取一组值。\n只影响目标物体，遮挡物保持原样。"))
 
         form = section("中心目标的遮挡约束", layout)
         self.occlusion_center = QLabel()
@@ -408,9 +419,30 @@ class SamplingPanel(QWidget):
                        "elevation_deg": self.light_elevation, "temperature_k": self.temperature}
             self.state.update(light=replace(self.state.config.light, **{field: editors[field].value()}))
 
+    def _material_mode_changed(self, index):
+        if not self._updating:
+            self.state.update(material=replace(self.state.config.material,
+                                               mode="solid" if index else "original"))
+            self._paint_color_button()
+
+    def _pick_base_color(self):
+        current = QColor(self.state.config.material.base_color)
+        chosen = QColorDialog.getColor(current, self, "目标基色")
+        if chosen.isValid():
+            self.state.update(material=replace(self.state.config.material,
+                                               mode="solid", base_color=chosen.name()))
+            self._paint_color_button()
+
+    def _paint_color_button(self):
+        value = self.state.config.material.base_color
+        self.base_color.setText(value.upper())
+        self.base_color.setStyleSheet(
+            f"background: {value}; color: {'#1b1b1b' if QColor(value).lightness() > 140 else '#f2f2f2'};"
+            "border: 1px solid #4a4a4a; border-radius: 3px; padding: 2px 10px;")
+
     def _material_changed(self, field):
         if not self._updating:
-            editors = {"roughness": self.roughness, "specular": self.specular}
+            editors = {"roughness": self.roughness, "specular": self.specular, "metallic": self.metallic}
             self.state.update(material=replace(self.state.config.material, **{field: editors[field].value()}))
 
     def _occlusion_changed(self, field):
@@ -512,8 +544,11 @@ class SamplingPanel(QWidget):
         self.light_radius.set_value(config.light.radius_m)
         self.light_elevation.set_value(config.light.elevation_deg)
         self.temperature.set_value(config.light.temperature_k)
+        self.material_mode.setCurrentIndex(1 if config.material.mode == "solid" else 0)
+        self._paint_color_button()
         self.roughness.set_value(config.material.roughness)
         self.specular.set_value(config.material.specular)
+        self.metallic.set_value(config.material.metallic)
         anchor = next((t for t in config.targets if t.asset.key == config.anchor_key), None)
         self.occlusion_center.setText("◎ 约束对象：" + (anchor.name if anchor else "未设置中心"))
         self.none_fraction.setValue(config.occlusion.none_fraction * 100)

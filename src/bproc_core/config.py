@@ -5,6 +5,7 @@ Constructors intentionally allow incomplete editing drafts. Call
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
@@ -109,6 +110,18 @@ class LightSpec:
     temperature_k: Range = Range(4500.0, 6500.0)
 
 
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def hex_to_rgb(value: str) -> tuple[float, float, float]:
+    """sRGB hex to 0..1 floats; Blender wants linear, so callers convert once more."""
+    return tuple(int(value[index:index + 2], 16) / 255.0 for index in (1, 3, 5))
+
+
+def srgb_to_linear(value: float) -> float:
+    return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+
+
 @dataclass(frozen=True)
 class MaterialSpec:
     """Surface parameters randomised per scene for the target objects only.
@@ -116,8 +129,11 @@ class MaterialSpec:
     The model's own colour is kept: only ``Roughness`` and ``Specular IOR Level`` move, which is
     how the reference dataset (bproc_project/dataset_rendering/samplers/target.py) diversifies.
     """
+    mode: Literal["original", "solid"] = "original"
+    base_color: str = "#b3b7ba"
     roughness: Range = Range(0.05, 0.8)
     specular: Range = Range(0.0, 1.0)
+    metallic: Range = Range(0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -344,6 +360,11 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
     interval("light.temperature_k", config.light.temperature_k, low=1000, high=40000)
     interval("material.roughness", config.material.roughness, low=0, high=1)
     interval("material.specular", config.material.specular, low=0, high=1)
+    interval("material.metallic", config.material.metallic, low=0, high=1)
+    if config.material.mode not in ("original", "solid"):
+        issue("material.mode", "材质模式只能为 original 或 solid")
+    if not _HEX.match(config.material.base_color):
+        issue("material.base_color", "基色必须是 #RRGGBB")
     occ = config.occlusion
     if finite("occlusion.none_fraction", occ.none_fraction) and not 0 <= occ.none_fraction <= 1:
         issue("occlusion.none_fraction", "无遮挡样本比例必须位于 0 到 1")

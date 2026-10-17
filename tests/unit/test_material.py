@@ -44,28 +44,60 @@ def test_material_rides_the_candidate_metadata_and_old_payloads_still_load():
     shot = propose_candidate(config, meshes, state, 0, 0)
     payload = candidate_to_dict(shot)
     assert payload['material'] == {'roughness': shot.material.roughness,
-                                   'specular': shot.material.specular}
+                                   'specular': shot.material.specular,
+                                   'metallic': shot.material.metallic}
     assert candidate_from_dict(payload).material == shot.material
     payload.pop('material')
-    assert candidate_from_dict(payload).material == MaterialState(.65, .5)
+    assert candidate_from_dict(payload).material == MaterialState(.65, .5, 0.)
 
 
-def test_occluders_are_untouched_and_only_targets_receive_values():
+class Socket:
+    def __init__(self, value=None):
+        self.default_value = value
+        self.links = []
+
+
+class Links:
+    def __init__(self):
+        self.created = []
+
+    def remove(self, link):
+        self.created.remove(link)
+
+    def new(self, source, target):
+        self.created.append((source, target))
+
+
+class Node:
+    def __init__(self):
+        self.type = "BSDF_PRINCIPLED"
+        self.inputs = {"Base Color": Socket((.1, .1, .1, 1.)), "Roughness": Socket(.65),
+                       "Metallic": Socket(0.), "Specular IOR Level": Socket(.5)}
+
+
+class Material:
+    def __init__(self):
+        self.node_tree = SimpleNamespace(nodes=[Node()], links=Links())
+
+
+def test_solid_mode_repaints_targets_and_random_mode_restores_vertex_colour():
     backend = BlenderBackend()
-    calls = []
-
-    class Target:
-        def __init__(self, name):
-            self.name = name
-
-        def set_principled_shader_value(self, key, value):
-            calls.append((self.name, key, value))
-
-    backend._target_materials = {2: Target('target'), 9: Target('other')}
-    backend._apply_material(SimpleNamespace(material=MaterialState(.12, .87)))
-    assert ('target', 'Roughness', .12) in calls
-    assert all(name in {'target', 'other'} for name, _, _ in calls)
-    assert len([1 for name, key, _ in calls if name == 'target']) == 2
+    backend.config = replace(fixture_scene()[0], material=MaterialSpec(mode="solid", base_color="#ff0000"))
+    target, occluder = Material(), Material()
+    backend._bpy_materials = {"target": target, "occluder": occluder}
+    vertex = SimpleNamespace()
+    backend._vertex_links = {"target": vertex, "occluder": vertex}
+    backend._apply_material(SimpleNamespace(material=MaterialState(.12, .87, .6)))
+    shader = target.node_tree.nodes[0]
+    assert shader.inputs["Base Color"].default_value[:3] == pytest.approx((1., 0., 0.))
+    assert shader.inputs["Roughness"].default_value == .12
+    assert shader.inputs["Metallic"].default_value == .6
+    assert shader.inputs["Specular IOR Level"].default_value == .87
+    # A solid paint drops the vertex-colour link; original mode puts it back.
+    assert target.node_tree.links.created == []
+    backend.config = replace(backend.config, material=MaterialSpec(mode="original"))
+    backend._apply_material(SimpleNamespace(material=MaterialState(.3, .4, 0.)))
+    assert (vertex, shader.inputs["Base Color"]) in target.node_tree.links.created
 
 
 def test_validation_rejects_out_of_range_material():

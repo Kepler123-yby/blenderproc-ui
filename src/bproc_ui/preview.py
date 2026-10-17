@@ -14,7 +14,8 @@ class PreviewController(QObject):
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
-        self.region_key = state.config.regions[0].key if state.config.regions else None
+        self.region_key = (state.config.fixed_cameras[0].key if state.config.fixed_cameras else
+                           state.config.regions[0].key if state.config.regions else None)
         self.sample_index = 0
         self.preview_seed = state.config.seed
         self._timer = QTimer(self)
@@ -35,16 +36,23 @@ class PreviewController(QObject):
         if preview_seed is not None:
             self.preview_seed = preview_seed
         config = self.state.config
-        region = next((r for r in config.regions if r.key == self.region_key), None)
-        if region is None:
-            region = config.regions[0] if config.regions else None
-            self.region_key = region.key if region else None
-        if region is None or not config.targets:
+        fixed = next((c for c in config.fixed_cameras if c.key == self.region_key), None)
+        region = None if fixed else next((r for r in config.regions if r.key == self.region_key), None)
+        if fixed is None and region is None:
+            fixed = config.fixed_cameras[0] if config.fixed_cameras else None
+            region = None if fixed else (config.regions[0] if config.regions else None)
+            self.region_key = fixed.key if fixed else region.key if region else None
+        if fixed is None and region is None or not config.targets:
             self.state.set_candidate(None)
             self.status_changed.emit("导入目标并设置渲染中心，即可预览候选构图")
             return None
-        request = min(max(0, self.sample_index), max(0, config.num_samples - 1))
-        preview_config = replace(config, regions=(region,), seed=self.preview_seed)
+        request = 0 if fixed is not None else min(max(0, self.sample_index), max(0, config.num_samples - 1))
+        if fixed is not None:
+            preview_config = replace(config, regions=(), fixed_cameras=(fixed,), fixed_shots=1,
+                                     num_samples=0, seed=self.preview_seed)
+        else:
+            preview_config = replace(config, regions=(region,), fixed_cameras=(), fixed_shots=0,
+                                     seed=self.preview_seed)
         rejection = None
         try:
             for attempt in range(min(config.occlusion.max_attempts, 30)):

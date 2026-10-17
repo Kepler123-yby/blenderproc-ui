@@ -222,3 +222,41 @@ def test_gpu_surface_settings_save_and_export_same_snapshot(state, qtbot, tmp_pa
     assert exported.render.weighted_normals is True
     assert exported.render.denoiser == denoiser
     assert exported.render.noise_threshold == .005
+
+
+def test_fixed_cameras_are_counted_and_edited_independently(state, qtbot):
+    panel = SamplingPanel(state)
+    qtbot.addWidget(panel)
+    panel.add_fixed_camera()
+    assert len(state.config.fixed_cameras) == 1 and state.config.fixed_shots == 1
+    assert state.config.num_samples == 1000
+    panel.fixed_shots.setValue(5)
+    assert state.config.fixed_shots == 5 and state.config.num_samples == 1000
+    panel.fixed_radius.setValue(.42)
+    assert state.config.fixed_cameras[0].radius_m == pytest.approx(.42)
+    assert state.config.total_shots == 1005
+    state.set_candidate(SimpleNamespace(camera=SimpleNamespace(radius_m=.42, azimuth_deg=10., elevation_deg=20.)))
+    panel.capture_fixed_camera()
+    assert len(state.config.fixed_cameras) == 2 and state.config.fixed_shots == 5
+    assert state.config.fixed_cameras[1].radius_m == pytest.approx(.42)
+    panel.remove_fixed_camera()
+    assert [c.key for c in state.config.fixed_cameras] == [state.config.fixed_cameras[0].key]
+    assert state.config.fixed_shots == 1
+
+
+def test_fit_distance_follows_the_loaded_mesh_size(state, qtbot):
+    import numpy as np
+    from bproc_core.camera import fit_radius_m
+    panel = SamplingPanel(state)
+    qtbot.addWidget(panel)
+    panel.add_fixed_camera()
+    assert state.config.fixed_cameras[0].radius_m == pytest.approx(.7)
+    bounds = np.array([[-.05, -.05, -.05], [.05, .05, .05]])
+    state.set_meshes({state.config.anchor_key: SimpleNamespace(bounds_m=bounds)})
+    raw = fit_radius_m(bounds, state.config.camera)
+    fitted = round(raw, 4)
+    assert panel.fit_fixed_distance()[0].radius_m == pytest.approx(fitted)
+    assert panel.fit_region_distance()
+    region = state.config.regions[0]
+    assert region.radius_m.minimum == pytest.approx(round(raw * .9, 4))
+    assert region.radius_m.maximum == pytest.approx(round(raw * 1.4, 4))

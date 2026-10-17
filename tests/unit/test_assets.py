@@ -69,3 +69,11 @@ def test_size_suggestions_account_for_all_targets_and_camera_fov(tmp_path):
     assert box.x.minimum < 0 < box.x.maximum
     assert radius.minimum > close_radius.minimum > 0
     assert radius.maximum > radius.minimum
+
+
+def test_size_suggestions_stay_close_for_millimetre_models(tmp_path):
+    tiny = make_mesh("tiny", size=.001)
+    target = TargetSpec(AssetSpec("tiny", tmp_path / "tiny.ply"), "tiny", 1)
+    _, radius = suggest_ranges({"tiny": tiny}, [target], CameraSpec())
+    assert radius.minimum < .01
+    assert radius.maximum / radius.minimum == pytest.approx(1.5)

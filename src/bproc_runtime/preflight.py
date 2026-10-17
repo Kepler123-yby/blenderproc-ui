@@ -28,7 +28,7 @@ def apply_overrides(config, args):
     if args.output is not None:
         config = replace(config, output=replace(config.output, root=Path(args.output).expanduser().resolve()))
     if args.num_samples is not None:
-        config = replace(config, num_samples=args.num_samples)
+        config = config.with_total_shots(args.num_samples)
     return config
 
 
@@ -114,7 +114,7 @@ def main(argv=None):
             print('离线预检未通过：\n' + '\n'.join('  • ' + error for error in errors), file=sys.stderr)
             print('请在 bop 环境中人工检查 blenderproc pip install；本任务不会安装或改写运行环境。', file=sys.stderr)
             return 1
-        print(f'离线预检通过：BlenderProc 2.8.0 / {config.output.format} / {config.num_samples} 张')
+        print(f'离线预检通过：BlenderProc 2.8.0 / {config.output.format} / {config.total_shots} 张')
         return 0
     except Exception as exc:
         print('离线预检失败：' + str(exc), file=sys.stderr)

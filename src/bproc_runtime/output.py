@@ -61,7 +61,7 @@ class JsonRunRecorder:
         self.root.mkdir(parents=True, exist_ok=True)
         self._started = datetime.now(timezone.utc).isoformat()
         atomic_json(self.root / "status.json", {"status": "running", "started_at": self._started,
-                    "requested": config.num_samples, "written_frames": 0, "saved": 0,
+                    "requested": config.total_shots, "written_frames": 0, "saved": 0,
                     "world": self._world})
         save_project(config, self.root / "project.yaml")
         atomic_json(self.root / "objects.json", [

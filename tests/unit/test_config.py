@@ -127,3 +127,26 @@ def test_gpu_quality_roundtrip_and_legacy_cpu_migration(tmp_path):
 def test_gpu_quality_validation(tmp_path, changes, field):
     project = make_project(tmp_path)
     assert field in error_fields(replace(project,render=replace(project.render,**changes)))
+
+
+def test_fixed_cameras_validate_roundtrip_and_rescale(tmp_path):
+    from bproc_core.config import FixedCameraSpec
+    project = make_project(tmp_path)
+    pinned = (FixedCameraSpec('cam-a', '正面', .7, -90, 25), FixedCameraSpec('cam-b', '侧面', .6, 0, 10))
+    config = replace(project, fixed_cameras=pinned, fixed_shots=2, num_samples=6)
+    assert config.total_shots == 8
+    path = tmp_path / 'cameras.yaml'
+    save_project(config, path)
+    assert load_project(path) == config
+    assert not {field for field in error_fields(config) if field.startswith('fixed')}
+
+    assert config.with_total_shots(4).fixed_shots == 1
+    assert config.with_total_shots(4).num_samples == 3
+    all_fixed = replace(config, num_samples=0, fixed_shots=3)
+    assert all_fixed.total_shots == 3 and not error_fields(all_fixed)
+    assert 'fixed_cameras[1].key' in error_fields(replace(config, fixed_cameras=(pinned[0], replace(pinned[1], key='cam-a'))))
+    assert 'fixed_cameras[0].elevation_deg' in error_fields(
+        replace(config, fixed_cameras=(replace(pinned[0], elevation_deg=91.), pinned[1])))
+    assert 'fixed_shots' in error_fields(replace(config, fixed_cameras=(), fixed_shots=2))
+    assert 'total_shots' not in error_fields(all_fixed)
+    assert 'num_samples' in error_fields(replace(config, fixed_cameras=(), regions=(), fixed_shots=0, num_samples=0))

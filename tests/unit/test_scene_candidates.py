@@ -43,3 +43,16 @@ def test_collision_frame_and_no_retry_category_changes():
     config = replace(config, num_samples=5, occlusion=replace(config.occlusion, none_fraction=.2))
     for request in range(5):
         assert propose_candidate(config, meshes, request, 0).wants_unoccluded == propose_candidate(config, meshes, request, 1).wants_unoccluded
+
+
+def test_pinned_cameras_hold_one_pose_and_report_their_kind():
+    config, meshes = fixture_scene()
+    config = replace(config, fixed_cameras=(FixedCameraSpec('pin', '钉子', .6, 10, 20),),
+                     fixed_shots=3, num_samples=2)
+    candidates = [propose_candidate(config, meshes, index, 0) for index in range(3)]
+    assert [c.camera_kind for c in candidates] == ['fixed'] * 3
+    assert all(c.region_key == 'pin' for c in candidates)
+    assert [candidate_to_dict(c)['camera']['world_from_camera'] for c in candidates] == [candidates[0].camera.world_from_camera.tolist()] * 3
+    random = propose_candidate(config, meshes, 3, 0)
+    assert random.camera_kind == 'random' and random.region_key == 'region-1'
+    assert candidate_from_dict(candidate_to_dict(random)).camera_kind == 'random'

@@ -200,7 +200,8 @@ def suggest_ranges(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]
     if not extents:
         return Box(), Range(0.5, 0.8)
     largest = np.max(extents, axis=0)
-    spread = float(max(largest.max() * max(1.5, math.sqrt(len(extents))), 0.02))
+    # Scale with the asset: a 2 cm floor would frame a millimetre part from across the room.
+    spread = float(max(largest.max() * max(1.5, math.sqrt(len(extents))), 1e-5))
     box = Box(Range(-spread, spread), Range(-spread, spread), Range(-0.35 * spread, 0.35 * spread))
     all_radius = np.linalg.norm([spread + largest[0] / 2, spread + largest[1] / 2, 0.35 * spread + largest[2] / 2])
     # Principal-point offsets reduce the narrower half-frustum. Half-pixel image boundaries.
@@ -208,5 +209,7 @@ def suggest_ranges(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]
                   (camera.cy + 0.5) / camera.fy, (camera.height - 0.5 - camera.cy) / camera.fy)
     if tangent <= 0 or not math.isfinite(tangent):
         return box, Range(0.5, 0.8)
-    minimum = max(0.05, float(all_radius) * math.sqrt(1 + tangent * tangent) / tangent * 1.1)
+    # A fixed 5 cm floor would push every millimetre-scale model out of frame.
+    floor = max(float(np.linalg.norm(largest)) / 2, 1e-5)
+    minimum = max(floor, float(all_radius) * math.sqrt(1 + tangent * tangent) / tangent * 1.1)
     return box, Range(minimum, minimum * 1.5)

@@ -10,7 +10,7 @@ import numpy as np
 from .assets import MeshData
 from .camera import CameraPose, project_points, sample_camera
 from .config import ProjectConfig
-from .sampling import region_for_request, request_rng, unoccluded_requests
+from .sampling import camera_for_request, request_rng, unoccluded_requests
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,7 @@ class SceneCandidate:
     hdri_rotation_deg: float
     light: LightState
     wants_unoccluded: bool
+    camera_kind: str = "random"
 
 
 @dataclass(frozen=True)
@@ -81,8 +82,13 @@ def propose_candidate(config: ProjectConfig, meshes: Mapping[str, MeshData], req
     missing = [a.key for a in [*(t.asset for t in targets), *config.occluders] if a.key not in meshes]
     if missing:
         return Rejection('missing_mesh', ', '.join(missing))
-    region_key = region_for_request(config.num_samples, [r.key for r in config.regions], request_index)
-    region = next(r for r in config.regions if r.key == region_key)
+    kind, region_key = camera_for_request(
+        config.fixed_shots, [c.key for c in config.fixed_cameras],
+        config.num_samples, [r.key for r in config.regions], request_index)
+    if kind == "fixed":
+        region = next(c for c in config.fixed_cameras if c.key == region_key).region()
+    else:
+        region = next(r for r in config.regions if r.key == region_key)
     rotation = np.eye(3)  # PLY local axes are retained; no random object rotation in v1.
     pose = sample_camera(region, np.zeros(3), rotation, config.camera, rng)
     placements = []
@@ -97,7 +103,7 @@ def propose_candidate(config: ProjectConfig, meshes: Mapping[str, MeshData], req
         matrix[:3, :3] = rotation
         matrix[:3, 3] = center - rotation @ mesh.bounds_m.mean(axis=0)
         placements.append(Placement(target.asset.key, target.asset.key, target.obj_id, matrix, 'target'))
-    wants_none = request_index in unoccluded_requests(config.num_samples, config.occlusion.none_fraction, config.seed)
+    wants_none = request_index in unoccluded_requests(config.total_shots, config.occlusion.none_fraction, config.seed)
     if not wants_none and config.occluders:
         center_size = float(np.max(np.ptp(meshes[anchor.asset.key].bounds_m, axis=0)))
         for _ in range(int(rng.integers(config.occlusion.count[0], config.occlusion.count[1] + 1))):
@@ -140,7 +146,8 @@ def propose_candidate(config: ProjectConfig, meshes: Mapping[str, MeshData], req
                        _temperature_color(rng.uniform(config.light.temperature_k.minimum, config.light.temperature_k.maximum)))
     return SceneCandidate(request_index, attempt_index, region_key, config.anchor_key, pose, tuple(placements),
                           hdri, float(rng.uniform(config.hdri.strength.minimum, config.hdri.strength.maximum)),
-                          float(rng.uniform(config.hdri.rotation_deg.minimum, config.hdri.rotation_deg.maximum)), light, wants_none)
+                          float(rng.uniform(config.hdri.rotation_deg.minimum, config.hdri.rotation_deg.maximum)), light,
+                          wants_none, kind)
 
 
 def candidate_to_dict(candidate: SceneCandidate) -> dict:
@@ -179,4 +186,4 @@ def candidate_from_dict(payload: Mapping) -> SceneCandidate:
         float(payload["hdri_rotation_deg"]),
         LightState(np.asarray(light["position_m"], dtype=float), float(light["energy_w"]),
                    tuple(float(c) for c in light["color_rgb"])),
-        bool(payload["wants_unoccluded"]))
+        bool(payload["wants_unoccluded"]), str(payload.get("camera_kind", "random")))

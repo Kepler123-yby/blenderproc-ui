@@ -30,6 +30,31 @@ def region_for_request(total: int, keys: Sequence[str], request_index: int) -> s
     raise AssertionError("Unreachable region allocation")
 
 
+def camera_for_request(fixed_shots: int, fixed_keys: Sequence[str], random_shots: int,
+                       region_keys: Sequence[str], request_index: int) -> tuple[str, str]:
+    """Map a request index to ``(kind, key)``; pinned cameras occupy the first frames."""
+    if isinstance(request_index, bool) or not isinstance(request_index, int) or request_index < 0:
+        raise ValueError("Request index must be a nonnegative integer")
+    if fixed_shots < 0 or random_shots < 0:
+        raise ValueError("Camera counts must be nonnegative")
+    if fixed_shots and not fixed_keys:
+        raise ValueError("Pinned camera frames need at least one camera")
+    if random_shots and not region_keys:
+        raise ValueError("Random frames need at least one region")
+    if request_index < fixed_shots:
+        for key, count in allocate_regions(fixed_shots, list(fixed_keys)).items():
+            if request_index < count:
+                return "fixed", key
+            request_index -= count
+    elif request_index < fixed_shots + random_shots:
+        request_index -= fixed_shots
+        for key, count in allocate_regions(random_shots, list(region_keys)).items():
+            if request_index < count:
+                return "random", key
+            request_index -= count
+    raise ValueError("Request index is outside the requested dataset")
+
+
 @lru_cache(maxsize=8)
 def unoccluded_requests(total: int, fraction: float, seed: int) -> frozenset[int]:
     if not 0 <= fraction <= 1:

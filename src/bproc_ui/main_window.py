@@ -308,12 +308,15 @@ class MainWindow(QMainWindow):
         if candidate:
             self.camera_preview.set_camera(self.state.config.camera, candidate.camera)
             anchor = next(t for t in self.state.config.targets if t.asset.key == candidate.anchor_key)
-            region = next(r for r in self.state.config.regions if r.key == candidate.region_key)
+            fixed = next((c for c in self.state.config.fixed_cameras if c.key == candidate.region_key), None)
+            region = None if fixed else next((r for r in self.state.config.regions if r.key == candidate.region_key), None)
+            label = f"固定机位 · {fixed.name}" if fixed else (region.name if region else candidate.region_key)
             if hasattr(self.camera_preview, "caption"):
-                self.camera_preview.caption.setText(f"  中心 {anchor.name}  |  {region.name}  |  机位 {candidate.request_index + 1}")
-                self.camera_preview.setWindowTitle(f"相机视角 · {anchor.name} · {region.name} · 候选机位构图预览")
+                self.camera_preview.caption.setText(f"  中心 {anchor.name}  |  {label}  |  机位 {candidate.request_index + 1}")
+                self.camera_preview.setWindowTitle(f"相机视角 · {anchor.name} · {label} · 候选机位构图预览")
             pose = candidate.camera
-            self.viewport_caption.setText(f"  候选机位 {candidate.request_index + 1}   r {pose.radius_m:.3f} m   φ {pose.azimuth_deg:.1f}°   α {pose.elevation_deg:.1f}°"
+            kind = "固定" if getattr(candidate, "camera_kind", "random") == "fixed" else "随机"
+            self.viewport_caption.setText(f"  候选机位 {candidate.request_index + 1} · {kind}   r {pose.radius_m:.3f} m   φ {pose.azimuth_deg:.1f}°   α {pose.elevation_deg:.1f}°"
                                           "    |    左键旋转 / Shift + 左键平移 / 滚轮缩放")
         else:
             self.viewport_caption.setText("  用户透视 · 辅助网格不参与输出")
@@ -361,13 +364,16 @@ class MainWindow(QMainWindow):
         anchor = next((t for t in config.targets if t.asset.key == config.anchor_key), None)
         self.anchor_badge.setText("◎ 中心：" + (anchor.name if anchor else "未设置"))
         self.preview_region.clear()
+        for camera in config.fixed_cameras:
+            self.preview_region.addItem("▣ " + camera.name, camera.key)
         for region in config.regions:
-            self.preview_region.addItem(region.name, region.key)
+            self.preview_region.addItem("◌ " + region.name, region.key)
         self.preview_region.setCurrentIndex(self.preview_region.findData(self.sampling.current_region_key))
-        self.sample_index.setMaximum(config.num_samples)
+        self.sample_index.setMaximum(config.total_shots)
         self.scene_view.set_regions(config, self.sampling.current_region_key)
-        self.statusBar().showMessage(f"{sum(t.enabled for t in config.targets)} 个启用目标    |    {len(config.regions)} 个采样区域"
-                                     f"    |    {config.num_samples:,} 张场景图    |    "
+        self.statusBar().showMessage(f"{sum(t.enabled for t in config.targets)} 个启用目标    |    "
+                                     f"{len(config.fixed_cameras)} 个固定机位 · {len(config.regions)} 个随机区域"
+                                     f"    |    {config.total_shots:,} 张场景图    |    "
                                      + ("RGB + mask + mask_visib" if config.output.format == "rgb_masks" else "BOP"))
         self._update_title()
         self._updating = False

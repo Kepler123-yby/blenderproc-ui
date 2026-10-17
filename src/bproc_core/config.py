@@ -5,7 +5,7 @@ Constructors intentionally allow incomplete editing drafts. Call
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 import math
@@ -58,6 +58,23 @@ class RegionSpec:
     radius_m: Range = Range(0.5, 0.8)
     azimuth: Azimuth = Azimuth()
     elevation_deg: Range = Range(10.0, 65.0)
+
+
+@dataclass(frozen=True)
+class FixedCameraSpec:
+    """One fully determined camera in the anchor's local frame (radius / azimuth / elevation)."""
+
+    key: str = "camera-1"
+    name: str = "机位 1"
+    radius_m: float = 0.7
+    azimuth_deg: float = -90.0
+    elevation_deg: float = 25.0
+
+    def region(self) -> RegionSpec:
+        """The degenerate sampling region that pins this camera."""
+        return RegionSpec(key=self.key, name=self.name, radius_m=Range(self.radius_m, self.radius_m),
+                          azimuth=Azimuth(self.azimuth_deg, self.azimuth_deg, False),
+                          elevation_deg=Range(self.elevation_deg, self.elevation_deg))
 
 
 @dataclass(frozen=True)
@@ -135,6 +152,8 @@ class ProjectConfig:
     targets: tuple[TargetSpec, ...] = ()
     anchor_key: str | None = None
     regions: tuple[RegionSpec, ...] = (RegionSpec(),)
+    fixed_cameras: tuple[FixedCameraSpec, ...] = ()
+    fixed_shots: int = 0
     camera: CameraSpec = CameraSpec()
     occluders: tuple[AssetSpec, ...] = ()
     hdri: HdriSpec = HdriSpec()
@@ -145,6 +164,19 @@ class ProjectConfig:
     render: RenderSpec = RenderSpec()
     output: OutputSpec = OutputSpec()
     runtime: RuntimeSpec = field(default_factory=RuntimeSpec)
+
+    @property
+    def total_shots(self) -> int:
+        """Frames produced by one run: pinned cameras plus randomly sampled regions."""
+        return self.fixed_shots + self.num_samples
+
+    def with_total_shots(self, total: int) -> ProjectConfig:
+        """Rescale both counts to a new total while keeping their ratio (quick preflight runs)."""
+        if total < 0:
+            raise ValueError("Image count must be nonnegative")
+        current = self.total_shots
+        fixed = 0 if not self.fixed_cameras or current == 0 else round(total * self.fixed_shots / current)
+        return replace(self, fixed_shots=min(fixed, total), num_samples=total - min(fixed, total))
 
 
 @dataclass(frozen=True)
@@ -204,7 +236,7 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
     integer("schema_version", config.schema_version, 1)
     if config.schema_version != 1:
         issue("schema_version", "仅支持 schema_version: 1")
-    integer("num_samples", config.num_samples, 1)
+    integer("num_samples", config.num_samples, 0)
     integer("seed", config.seed, 0)
     enabled = [t for t in config.targets if t.enabled]
     if not enabled:
@@ -235,8 +267,8 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
         if asset.key in keys:
             issue(name + ".key", "目标和遮挡物的资源 key 不能重复")
         keys.add(asset.key)
-    if not config.regions:
-        issue("regions", "至少保留一个相机采样区域")
+    if not config.regions and not config.fixed_cameras:
+        issue("regions", "至少保留一个相机采样区域或固定机位")
     region_keys: set[str] = set()
     for index, region in enumerate(config.regions):
         name = f"regions[{index}]"
@@ -251,6 +283,26 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
                 issue(name + ".azimuth." + endpoint, "方位角必须位于 −180° 到 180°")
         if not isinstance(region.azimuth.full_circle, bool):
             issue(name + ".azimuth.full_circle", "全方位必须是布尔值")
+    integer("fixed_shots", config.fixed_shots, 0)
+    camera_keys = set(region_keys)
+    for index, fixed in enumerate(config.fixed_cameras):
+        name = f"fixed_cameras[{index}]"
+        if not isinstance(fixed.key, str) or not fixed.key.strip() or fixed.key in camera_keys:
+            issue(name + ".key", "机位 key 必须非空且与区域不重名")
+        camera_keys.add(fixed.key)
+        if not isinstance(fixed.name, str) or not fixed.name.strip():
+            issue(name + ".name", "机位名称不能为空")
+        finite(name + ".radius_m", fixed.radius_m, positive=True)
+        if finite(name + ".azimuth_deg", fixed.azimuth_deg) and not -180 <= fixed.azimuth_deg <= 180:
+            issue(name + ".azimuth_deg", "方位角必须位于 −180° 到 180°")
+        if finite(name + ".elevation_deg", fixed.elevation_deg) and not -90 <= fixed.elevation_deg <= 90:
+            issue(name + ".elevation_deg", "仰角必须位于 −90° 到 90°")
+    if config.fixed_shots and not config.fixed_cameras:
+        issue("fixed_shots", "固定机位张数大于 0，但还没有添加机位")
+    if config.fixed_cameras and config.fixed_shots < len(config.fixed_cameras):
+        issue("fixed_shots", "固定机位张数少于机位数，部分机位不会生成样本", "warning")
+    if isinstance(config.total_shots, int) and config.total_shots < 1:
+        issue("num_samples", "总张数至少为 1")
     cam = config.camera
     integer("camera.width", cam.width, 1)
     integer("camera.height", cam.height, 1)

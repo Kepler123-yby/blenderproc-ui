@@ -112,8 +112,9 @@ class SceneView(QWidget):
         radius = 1.
         if self._candidate is not None:
             radius = self._candidate.camera.radius_m
-        elif self._config is not None and self._config.regions:
-            radius = max(r.radius_m.maximum for r in self._config.regions)
+        elif self._config is not None and (self._config.regions or self._config.fixed_cameras):
+            radius = max([r.radius_m.maximum for r in self._config.regions]
+                         + [c.radius_m for c in self._config.fixed_cameras])
         self.view.camera.center = (0, 0, 0)
         self.view.camera.scale_factor = max(radius * 2.5, .02)
         self._grid(radius)
@@ -138,6 +139,16 @@ class SceneView(QWidget):
                                                        np.cos(alphas) * np.sin(phi), np.sin(alphas)]))
             for curve in curves:
                 self._regions.append(scene.visuals.Line(curve, color=color, width=1, parent=self.view.scene))
+        for camera in config.fixed_cameras:
+            phi, alpha = np.deg2rad([camera.azimuth_deg, camera.elevation_deg])
+            position = camera.radius_m * np.array([np.cos(alpha) * np.cos(phi),
+                                                   np.cos(alpha) * np.sin(phi), np.sin(alpha)])
+            color = (.95, .72, .38, .95) if camera.key == selected_key else (.62, .70, .78, .85)
+            self._regions.append(scene.visuals.Line(np.vstack([position, np.zeros(3)]), color=color,
+                                                    width=1, parent=self.view.scene))
+            marker = scene.visuals.Markers(parent=self.view.scene)
+            marker.set_data(np.atleast_2d(position), face_color=color, edge_color="#302a24", size=9)
+            self._regions.append(marker)
         self.canvas.update()
 
     def set_candidates(self, candidates):

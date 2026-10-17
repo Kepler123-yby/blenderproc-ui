@@ -155,3 +155,12 @@ def test_native_pass_finishes_before_signal_is_honored(monkeypatch,signum):
     backend.assess=native_assess
     r=runner.run_project(project(),{},backend,Writer(),Recorder())
     assert finished==[True] and r.status=="interrupted" and r.saved==0 and r.exit_code==128+signum
+
+
+def test_missing_occluders_accepts_every_target_visibility(monkeypatch):
+    def propose(c,m,r,a): return SimpleNamespace(request_index=r,attempt_index=a,wants_unoccluded=False)
+    monkeypatch.setattr(runner,"propose_candidate",propose)
+    recorder=Recorder()
+    run=runner.run_project(project(),{},Backend(),Writer(),recorder)
+    assert (run.status,run.saved,run.skipped)==("completed",2,0)
+    assert recorder.rejections==[]

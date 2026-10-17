@@ -52,3 +52,51 @@ def test_distribution_rotation_determinism_and_resize():
     assert cam.fx == pytest.approx(1144.8228)
     assert cam.cx == pytest.approx(650.5222)
     assert resize_camera(replace(CameraSpec(), auto_scale=False), 1280, 960).fx == CameraSpec().fx
+
+
+def test_pinned_camera_repeats_exactly_and_counts_split_independently():
+    from bproc_core.config import FixedCameraSpec
+    from bproc_core.sampling import camera_for_request
+
+    pinned = FixedCameraSpec('c1', '正面', .7, -90., 25.)
+    poses = [sample_camera(pinned.region(), np.zeros(3), np.eye(3), CameraSpec(), request_rng(42, i, 0))
+             for i in range(5)]
+    assert all(np.array_equal(p.world_from_camera, poses[0].world_from_camera) for p in poses)
+    assert poses[0].radius_m == pytest.approx(.7)
+    assert poses[0].azimuth_deg == pytest.approx(-90) and poses[0].elevation_deg == pytest.approx(25)
+    assert poses[0].position_m == pytest.approx([0, -.7 * np.cos(np.deg2rad(25)), .7 * np.sin(np.deg2rad(25))])
+
+    plan = [camera_for_request(3, ['c1', 'c2'], 4, ['r1'], i) for i in range(7)]
+    assert plan == [('fixed', 'c1'), ('fixed', 'c1'), ('fixed', 'c2')] + [('random', 'r1')] * 4
+    with pytest.raises(ValueError):
+        camera_for_request(3, ['c1', 'c2'], 4, ['r1'], 7)
+    with pytest.raises(ValueError):
+        camera_for_request(2, [], 1, ['r1'], 0)
+    assert camera_for_request(0, [], 2, ['r1', 'r2'], 0) == ('random', 'r1')
+
+
+def test_fit_radius_scales_with_the_model_and_not_a_fixed_distance():
+    from bproc_core.camera import fit_radius_m
+    camera = CameraSpec()
+    small = np.array([[-.0005, -.0005, -.0005], [.0005, .0005, .0005]])
+    large = small * 100
+    assert fit_radius_m(large, camera) == pytest.approx(100 * fit_radius_m(small, camera))
+    visible = fit_radius_m(small, camera)
+    assert visible > 0 and visible < .05
+
+
+def test_fitted_distance_keeps_the_whole_box_inside_the_frame():
+    from bproc_core.camera import fit_radius_m, CameraPose
+    from bproc_core.camera import project_points
+    from bproc_core.scene import bounds_corners
+    camera = CameraSpec()
+    bounds = np.array([[-.05, -.05, -.05], [.05, .05, .05]])
+    radius = fit_radius_m(bounds, camera, fill=1.0)
+    world_from_camera = np.eye(4)
+    world_from_camera[2, 3] = radius
+    pose = CameraPose(world_from_camera, np.array([0., 0., radius]), radius, 0., 0., .01, 10.)
+    uv, valid = project_points(bounds_corners(bounds), pose, camera)
+    assert valid.all()
+    assert uv[:, 0].min() >= 0 and uv[:, 0].max() <= camera.width
+    assert uv[:, 1].min() >= 0 and uv[:, 1].max() <= camera.height
+    assert fit_radius_m(bounds, camera, fill=.5) == pytest.approx(2 * radius)

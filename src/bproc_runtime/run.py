@@ -73,7 +73,7 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
         recorder.begin(config)
         began = True
         native_call(backend.prepare, config, meshes)
-        for request in range(config.num_samples):
+        for request in range(config.total_shots):
             for attempt in range(config.occlusion.max_attempts):
                 candidate = propose_candidate(config, meshes, request, attempt)
                 if isinstance(candidate, Rejection):
@@ -95,7 +95,8 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
                     reject(request, attempt, "invisible_target")
                     continue
                 ratio = occlusion_ratio(evidence, anchor_id)
-                accepted = (ratio == 0.0 if candidate.wants_unoccluded else
+                # Without occluders nothing can cover the target, so a ratio above zero is unreachable.
+                accepted = (ratio == 0.0 if candidate.wants_unoccluded or not config.occluders else
                             config.occlusion.ratio.minimum <= ratio <= config.occlusion.ratio.maximum)
                 if not accepted:
                     reject(request, attempt, "occlusion")
@@ -151,12 +152,12 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
         status = "failed"
     elif interrupted:
         status = "interrupted"
-    elif saved == config.num_samples:
+    elif saved == config.total_shots:
         status = "completed"
     else:
         status, exit_code = "partial", 2
-    summary = RunSummary(status, config.num_samples, written, saved,
-                         config.num_samples - saved, dict(failures), exit_code)
+    summary = RunSummary(status, config.total_shots, written, saved,
+                         config.total_shots - saved, dict(failures), exit_code)
     try:
         if began:
             recorder.finish(summary)

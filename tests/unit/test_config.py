@@ -36,10 +36,10 @@ def test_incomplete_draft_can_be_saved_and_reloaded(tmp_path):
     (lambda p: replace(p, targets=(replace(p.targets[0], enabled=False), p.targets[1])), "anchor_key"),
     (lambda p: replace(p, targets=(p.targets[0], replace(p.targets[1], obj_id=2))), "targets[1].obj_id"),
     (lambda p: replace(p, targets=(p.targets[0], replace(p.targets[1], asset=p.targets[0].asset))), "targets[1].asset.key"),
-    (lambda p: replace(p, regions=()), "regions"),
+    (lambda p: replace(p, regions=(), camera_mode="random"), "regions"),
     (lambda p: replace(p, regions=(replace(p.regions[0], radius_m=Range(0, 1)),)), "regions[0].radius_m.minimum"),
     (lambda p: replace(p, camera=replace(p.camera, fx=float("nan"))), "camera.fx"),
-    (lambda p: replace(p, num_samples=True), "num_samples"),
+    (lambda p: replace(p, scene_count=True), "scene_count"),
     (lambda p: replace(p, camera=replace(p.camera, height=False)), "camera.height"),
     (lambda p: replace(p, output=replace(p.output, format="rgb")), "output.format"),
     (lambda p: replace(p, occlusion=replace(p.occlusion, ratio=Range(.8, .2))), "occlusion.ratio"),
@@ -52,7 +52,7 @@ def test_invalid_configs_have_specific_fields(tmp_path, change, expected):
     "schema_version: 2\n",
     "schema_version: 1\nschema_version: 1\n",
     "schema_version: 1\ncamera:\n  skew: 1\n",
-    "schema_version: 1\nnum_samples: true\n",
+    "schema_version: 1\nscene_count: true\n",
     "schema_version: 1\ncamera:\n  fx: .nan\n",
     "schema_version: 1\ncamera:\n  width: 10.5\n",
     "schema_version: 1\nocclusion:\n  count: [1, 2, 3]\n",
@@ -133,20 +133,28 @@ def test_fixed_cameras_validate_roundtrip_and_rescale(tmp_path):
     from bproc_core.config import FixedCameraSpec
     project = make_project(tmp_path)
     pinned = (FixedCameraSpec('cam-a', '正面', .7, -90, 25), FixedCameraSpec('cam-b', '侧面', .6, 0, 10))
-    config = replace(project, fixed_cameras=pinned, fixed_shots=2, num_samples=6)
-    assert config.total_shots == 8
+    config = replace(project, fixed_cameras=pinned, camera_mode='fixed', scene_count=2,
+                     views_per_scene=9)
+    assert config.views == 2 and config.total_shots == 4
+    assert config.with_total_shots(10).scene_count == 5
     path = tmp_path / 'cameras.yaml'
     save_project(config, path)
     assert load_project(path) == config
     assert not {field for field in error_fields(config) if field.startswith('fixed')}
 
-    assert config.with_total_shots(4).fixed_shots == 1
-    assert config.with_total_shots(4).num_samples == 3
-    all_fixed = replace(config, num_samples=0, fixed_shots=3)
-    assert all_fixed.total_shots == 3 and not error_fields(all_fixed)
     assert 'fixed_cameras[1].key' in error_fields(replace(config, fixed_cameras=(pinned[0], replace(pinned[1], key='cam-a'))))
     assert 'fixed_cameras[0].elevation_deg' in error_fields(
         replace(config, fixed_cameras=(replace(pinned[0], elevation_deg=91.), pinned[1])))
-    assert 'fixed_shots' in error_fields(replace(config, fixed_cameras=(), fixed_shots=2))
-    assert 'total_shots' not in error_fields(all_fixed)
-    assert 'num_samples' in error_fields(replace(config, fixed_cameras=(), regions=(), fixed_shots=0, num_samples=0))
+    assert 'fixed_cameras' in error_fields(replace(config, fixed_cameras=()))
+    assert 'views_per_scene' in error_fields(replace(config, camera_mode='random', views_per_scene=0))
+    assert 'regions' in error_fields(replace(config, camera_mode='random', regions=()))
+    assert 'total_shots' not in error_fields(config)
+    assert 'scene_count' in error_fields(replace(config, scene_count=0))
+
+
+def test_random_mode_counts_views_per_scene(tmp_path):
+    project = make_project(tmp_path)
+    config = replace(project, camera_mode='random', scene_count=7, views_per_scene=3)
+    assert config.views == 3 and config.total_shots == 21
+    assert config.with_total_shots(3).scene_count == 1
+    assert config.with_total_shots(0).scene_count == 0

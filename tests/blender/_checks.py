@@ -37,7 +37,7 @@ def verify_metadata(root: Path, *, require_complete=True):
         requested, written, saved = (status[k] for k in ("requested", "written_frames", "saved"))
         if not 0 <= saved <= written <= requested or status["skipped"] != requested - saved:
             errors.append("Run counters are inconsistent (0 <= saved <= written <= requested; skipped=requested-saved)")
-        if requested != config.num_samples:
+        if requested != config.total_shots:
             errors.append("Requested frame count differs from project snapshot")
         name, code = status.get("status"), status["exit_code"]
         if name == "completed" and (saved != requested or written != saved or code != 0):
@@ -71,7 +71,8 @@ def verify_metadata(root: Path, *, require_complete=True):
                 meshes[obj_id] = load_mesh(target.asset)
             except Exception as exc:
                 errors.append(f"Cannot validate canonical source model {obj_id}: {exc}")
-        seen_requests = set()
+        seen_views = set()
+        view_counts = {}
         regions = {r.key: r for r in config.regions}
         for index, row in enumerate(records):
             try:
@@ -80,10 +81,16 @@ def verify_metadata(root: Path, *, require_complete=True):
                 if sorted(row["gt_obj_ids"]) != sorted(targets):
                     errors.append(f"Frame {index}: target ID list differs from project")
                 candidate = row["candidate"]
-                request, attempt = candidate["request_index"], candidate["attempt_index"]
-                if isinstance(request, bool) or not isinstance(request, int) or not 0 <= request < requested or request in seen_requests:
-                    errors.append(f"Frame {index}: invalid or duplicate request index")
-                seen_requests.add(request)
+                scene_index, view_index, attempt = (candidate["scene_index"], candidate["view_index"],
+                                                   candidate["attempt_index"])
+                if isinstance(scene_index, bool) or not isinstance(scene_index, int) or not 0 <= scene_index < config.scene_count:
+                    errors.append(f"Frame {index}: invalid scene index")
+                if isinstance(view_index, bool) or not isinstance(view_index, int) or not 0 <= view_index < config.views:
+                    errors.append(f"Frame {index}: invalid view index")
+                if (scene_index, view_index) in seen_views:
+                    errors.append(f"Frame {index}: duplicate scene/view pair")
+                seen_views.add((scene_index, view_index))
+                view_counts[scene_index] = view_counts.get(scene_index, 0) + 1
                 if isinstance(attempt, bool) or not isinstance(attempt, int) or not 0 <= attempt < config.occlusion.max_attempts:
                     errors.append(f"Frame {index}: attempt index exceeds shared retry budget")
                 if candidate["anchor_key"] != config.anchor_key:

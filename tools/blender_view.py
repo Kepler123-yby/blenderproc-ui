@@ -28,7 +28,8 @@ def _parse(argv):
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--save-blend", type=Path)
     parser.add_argument("--view-only", action="store_true")
-    parser.add_argument("--request", type=int, default=0)
+    parser.add_argument("--scene", type=int, default=0)
+    parser.add_argument("--view", type=int, default=0)
     return parser.parse_args(argv)
 
 
@@ -55,11 +56,14 @@ def _set_rendered_viewport() -> str:
     return f"viewport: rendered camera view in {touched} area(s)"
 
 
-def _load_candidate(config, meshes, request):
-    from bproc_core.scene import Rejection, propose_candidate
+def _load_candidate(config, meshes, scene_index, view_index):
+    from bproc_core.scene import Rejection, propose_candidate, propose_scene
 
+    scene = propose_scene(config, meshes, scene_index)
+    if isinstance(scene, Rejection):
+        raise SystemExit(f"场景无法摆放：{scene.reason}")
     for attempt in range(60):
-        candidate = propose_candidate(config, meshes, request, attempt)
+        candidate = propose_candidate(config, meshes, scene, view_index, attempt)
         if not isinstance(candidate, Rejection):
             return candidate
     raise SystemExit("没有可用候选机位；先在 UI 里调整距离或位置范围")
@@ -84,7 +88,7 @@ def _build(arguments) -> dict:
     assets = [t.asset for t in targets] + list(config.occluders)
     meshes = {asset.key: load_mesh(asset) for asset in assets}
     candidate = (candidate_from_dict(json.loads(arguments.candidate.read_text(encoding="utf-8")))
-                 if arguments.candidate else _load_candidate(config, meshes, arguments.request))
+                 if arguments.candidate else _load_candidate(config, meshes, arguments.scene, arguments.view))
     backend = BlenderBackend()
     backend.prepare(config, meshes)
     backend.apply(candidate)

@@ -7,7 +7,7 @@ import pytest
 
 from bproc_core.assets import load_mesh
 from bproc_core.project_io import load_project
-from bproc_core.scene import candidate_from_dict, candidate_to_dict, propose_candidate
+from bproc_core.scene import candidate_from_dict, candidate_to_dict, propose_candidate, propose_scene
 from bproc_export import blender_view
 
 from tests.factories import make_project
@@ -25,7 +25,7 @@ def _locator(tmp_path: Path) -> dict:
 def _candidate(config):
     meshes = {asset.key: load_mesh(asset)
               for asset in [*(t.asset for t in config.targets if t.enabled), *config.occluders]}
-    return propose_candidate(config, meshes, 0, 0)
+    return propose_candidate(config, meshes, propose_scene(config, meshes, 0), 0, 0)
 
 
 def test_snapshot_round_trips_the_exact_candidate(tmp_path):

@@ -1,0 +1,19 @@
+{
+  "status": "completed",
+  "requested": 6,
+  "written_frames": 6,
+  "saved": 6,
+  "skipped": 0,
+  "failures_by_reason": {},
+  "exit_code": 0,
+  "world": {
+    "kind": "neutral",
+    "color": [
+      0.05,
+      0.05,
+      0.05
+    ]
+  },
+  "started_at": "2026-10-17T12:20:09.968043+00:00",
+  "finished_at": "2026-10-17T12:20:13.434125+00:00"
+}

@@ -184,12 +184,12 @@ class MainWindow(QMainWindow):
         sample_layout.setSpacing(8)
         controls = QHBoxLayout()
         controls.setSpacing(8)
-        controls.addWidget(QLabel("区域"))
+        controls.addWidget(QLabel("机位来源"))
         self.preview_region = QComboBox()
         self.preview_region.setMinimumWidth(110)
         self.preview_region.currentIndexChanged.connect(self._bottom_region_changed)
         controls.addWidget(self.preview_region)
-        controls.addWidget(QLabel("机位"))
+        controls.addWidget(QLabel("视角"))
         self.sample_index = integer(1, 1, 10000000)
         self.sample_index.setMaximumWidth(82)
         self.sample_index.valueChanged.connect(self._sample_changed)
@@ -312,11 +312,11 @@ class MainWindow(QMainWindow):
             region = None if fixed else next((r for r in self.state.config.regions if r.key == candidate.region_key), None)
             label = f"固定机位 · {fixed.name}" if fixed else (region.name if region else candidate.region_key)
             if hasattr(self.camera_preview, "caption"):
-                self.camera_preview.caption.setText(f"  中心 {anchor.name}  |  {label}  |  机位 {candidate.request_index + 1}")
+                self.camera_preview.caption.setText(f"  中心 {anchor.name}  |  {label}  |  场景 {candidate.scene_index + 1} · 视角 {candidate.view_index + 1}")
                 self.camera_preview.setWindowTitle(f"相机视角 · {anchor.name} · {label} · 候选机位构图预览")
             pose = candidate.camera
             kind = "固定" if getattr(candidate, "camera_kind", "random") == "fixed" else "随机"
-            self.viewport_caption.setText(f"  候选机位 {candidate.request_index + 1} · {kind}   r {pose.radius_m:.3f} m   φ {pose.azimuth_deg:.1f}°   α {pose.elevation_deg:.1f}°"
+            self.viewport_caption.setText(f"  场景 {candidate.scene_index + 1} · 视角 {candidate.view_index + 1} · {kind}   r {pose.radius_m:.3f} m   φ {pose.azimuth_deg:.1f}°   α {pose.elevation_deg:.1f}°"
                                           "    |    左键旋转 / Shift + 左键平移 / 滚轮缩放")
         else:
             self.viewport_caption.setText("  用户透视 · 辅助网格不参与输出")
@@ -371,9 +371,11 @@ class MainWindow(QMainWindow):
         self.preview_region.setCurrentIndex(self.preview_region.findData(self.sampling.current_region_key))
         self.sample_index.setMaximum(config.total_shots)
         self.scene_view.set_regions(config, self.sampling.current_region_key)
+        cameras = (f"{len(config.fixed_cameras)} 个固定机位" if config.camera_mode == "fixed"
+                   else f"{len(config.regions)} 个随机区域 · 每场景 {config.views} 视角")
         self.statusBar().showMessage(f"{sum(t.enabled for t in config.targets)} 个启用目标    |    "
-                                     f"{len(config.fixed_cameras)} 个固定机位 · {len(config.regions)} 个随机区域"
-                                     f"    |    {config.total_shots:,} 张场景图    |    "
+                                     f"{cameras}"
+                                     f"    |    {config.scene_count:,} 场景 × {config.views} 视角 = {config.total_shots:,} 张    |    "
                                      + ("RGB + mask + mask_visib" if config.output.format == "rgb_masks" else "BOP"))
         self._update_title()
         self._updating = False

@@ -4,7 +4,7 @@ import pytest
 
 from bproc_core.camera import sample_camera, project_points, projection_matrix, resize_camera
 from bproc_core.config import CameraSpec, RegionSpec, Range, Azimuth
-from bproc_core.sampling import allocate_regions, request_rng, unoccluded_requests
+from bproc_core.sampling import allocate_regions, view_rng, unoccluded_scenes, camera_for_view
 
 
 def fixed(phi=0, alpha=0):
@@ -13,7 +13,7 @@ def fixed(phi=0, alpha=0):
 
 def test_fixed_camera_pixel_axes_and_matrix():
     cam = CameraSpec()
-    p = sample_camera(fixed(), np.zeros(3), np.eye(3), cam, request_rng(42, 0, 0))
+    p = sample_camera(fixed(), np.zeros(3), np.eye(3), cam, view_rng(42, 0, 0, 0))
     uv, valid = project_points([[0, 0, 0], [0, .05, 0], [0, 0, .05]], p, cam)
     assert valid.all()
     assert uv[0] == pytest.approx([cam.cx, cam.cy])
@@ -26,7 +26,7 @@ def test_fixed_camera_pixel_axes_and_matrix():
 
 def test_wrapping_fixed_full_and_poles():
     cam = CameraSpec()
-    rng = request_rng(8, 3, 1)
+    rng = view_rng(8, 3, 1, 0)
     r = replace(fixed(), azimuth=Azimuth(170, -170, False))
     phi = [sample_camera(r, np.zeros(3), np.eye(3), cam, rng).azimuth_deg for _ in range(100)]
     assert all(abs(x) >= 170 for x in phi)
@@ -40,13 +40,13 @@ def test_wrapping_fixed_full_and_poles():
 
 def test_distribution_rotation_determinism_and_resize():
     assert allocate_regions(5, ['a', 'b', 'c']) == {'a': 2, 'b': 2, 'c': 1}
-    assert len(unoccluded_requests(7, .2, 42)) == 1
-    rng = request_rng(42, 0, 0)
+    assert len(unoccluded_scenes(7, .2, 42)) == 1
+    rng = view_rng(42, 0, 0, 0)
     region = replace(fixed(), elevation_deg=Range(0, 90))
     vals = [sample_camera(region, np.zeros(3), np.eye(3), CameraSpec(), rng).elevation_deg for _ in range(3000)]
     assert np.mean(np.sin(np.deg2rad(vals))) == pytest.approx(.5, abs=.02)
     rot = np.array([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
-    pose = sample_camera(fixed(), np.zeros(3), rot, CameraSpec(), request_rng(42, 0, 0))
+    pose = sample_camera(fixed(), np.zeros(3), rot, CameraSpec(), view_rng(42, 0, 0, 0))
     assert pose.position_m == pytest.approx([0, 1, 0])
     cam = resize_camera(CameraSpec(), 1280, 960)
     assert cam.fx == pytest.approx(1144.8228)
@@ -54,25 +54,34 @@ def test_distribution_rotation_determinism_and_resize():
     assert resize_camera(replace(CameraSpec(), auto_scale=False), 1280, 960).fx == CameraSpec().fx
 
 
-def test_pinned_camera_repeats_exactly_and_counts_split_independently():
+def test_pinned_camera_repeats_exactly_and_views_map_to_cameras():
     from bproc_core.config import FixedCameraSpec
-    from bproc_core.sampling import camera_for_request
 
     pinned = FixedCameraSpec('c1', '正面', .7, -90., 25.)
-    poses = [sample_camera(pinned.region(), np.zeros(3), np.eye(3), CameraSpec(), request_rng(42, i, 0))
+    poses = [sample_camera(pinned.region(), np.zeros(3), np.eye(3), CameraSpec(), view_rng(42, 0, i, 0))
              for i in range(5)]
     assert all(np.array_equal(p.world_from_camera, poses[0].world_from_camera) for p in poses)
     assert poses[0].radius_m == pytest.approx(.7)
     assert poses[0].azimuth_deg == pytest.approx(-90) and poses[0].elevation_deg == pytest.approx(25)
     assert poses[0].position_m == pytest.approx([0, -.7 * np.cos(np.deg2rad(25)), .7 * np.sin(np.deg2rad(25))])
 
-    plan = [camera_for_request(3, ['c1', 'c2'], 4, ['r1'], i) for i in range(7)]
-    assert plan == [('fixed', 'c1'), ('fixed', 'c1'), ('fixed', 'c2')] + [('random', 'r1')] * 4
-    with pytest.raises(ValueError):
-        camera_for_request(3, ['c1', 'c2'], 4, ['r1'], 7)
-    with pytest.raises(ValueError):
-        camera_for_request(2, [], 1, ['r1'], 0)
-    assert camera_for_request(0, [], 2, ['r1', 'r2'], 0) == ('random', 'r1')
+    assert [camera_for_view('fixed', ['c1', 'c2'], [], 0, i) for i in range(2)] == [('fixed', 'c1'), ('fixed', 'c2')]
+    assert ([camera_for_view('random', [], ['r1', 'r2'], 4, i) for i in range(4)]
+            == [('random', 'r1'), ('random', 'r1'), ('random', 'r2'), ('random', 'r2')])
+    for arguments in (("fixed", ['c1'], [], 0, 1), ("fixed", [], [], 0, 0),
+                      ("random", [], ['r1'], 1, 1), ("random", [], [], 1, 0), ("mixed", [], ['r1'], 1, 0)):
+        with pytest.raises(ValueError):
+            camera_for_view(*arguments)
+
+
+def test_scene_and_view_streams_are_independent_and_stable():
+    from bproc_core.sampling import scene_rng
+    scene = [scene_rng(11, 3).random() for _ in range(3)]
+    assert all(value == scene[0] for value in scene)
+    assert scene_rng(11, 4).random() != scene[0]
+    assert view_rng(11, 3, 0, 0).random() != scene_rng(11, 3).random()
+    assert all(view_rng(11, 3, 2, 0).random() == view_rng(11, 3, 2, 0).random() for _ in range(2))
+    assert view_rng(11, 3, 2, 0).random() != view_rng(11, 3, 2, 1).random()
 
 
 def test_fit_radius_scales_with_the_model_and_not_a_fixed_distance():

@@ -12,7 +12,7 @@
 
 | 检查 | 实际结果 |
 |---|---|
-| 单元与 Qt 测试 | **238 passed**，3.42 s（含 GPU、PLY、无 HDRI、Blender 查看与固定机位用例） |
+| 单元与 Qt 测试 | **243 passed**，3.60 s（含 GPU、PLY、无 HDRI、Blender 查看、固定机位与场景/视角用例） |
 | RGB + mask + mask_visib | 同场景两个目标 ID 2 / 7，4 / 4 完成，语义检查通过 |
 | BOP | 4 / 4 完成；深度、K、位姿、模型毫米坐标、GT 索引和 gt_info 检查通过 |
 | 无 BOP toolkit 的轻格式 | toolkit_path=None，离线预检及 4 / 4 渲染通过 |
@@ -33,7 +33,8 @@
 | 未选环境图的项目 | 去掉 HDRI 的同一演示项目通过校验、导出、运行：1 / 1 帧写出，退出码 0，世界背景为中性灰 0.05，不是黑屏 |
 | 无 HDRI 的运行记录 | `run_metadata/manifest.json` 与 `status.json` 的 `world` 为 `{"kind":"neutral","color":[0.05,0.05,0.05]}`，候选 `hdri_path` 为 null |
 | n 边形与带边 PLY | `~/文档/cores.ply` 读到 1035 顶点、1837 面，不再读成空网格 |
-| 固定机位 + 随机区域混合任务 | 2 台固定机位 + 1 个随机区域、5 张：`manifest.json` 前两帧为 `camera_kind=fixed`，r/φ/α 与设定完全一致（0.06 m / −90° / 10°，0.07 m / 45° / 60°），后三帧为 `random`，退出码 0 |
+| 固定机位模式 | `camera_mode: fixed` + 2 个机位 + 2 场景 = 4 张：每场景两个视角，视角 0 恒为机位 A、视角 1 恒为机位 B，r/φ/α 与设定完全一致 |
+| 场景内摆放固定、机位随机 | `scene_count: 2`、`views_per_scene: 3`、1 个区域：6 张全部 saved，同场景三帧的 `placements` 与 `light` 完全一致，`azimuth_deg` 分别为 −22.0° / 137.4° / 154.7°，退出码 0 |
 | 无遮挡物时的遮挡要求 | 修掉空遮挡物清单下“ratio 永远到不了下限”的死循环：5 / 5 帧写出，`rejections.jsonl` 为空 |
 | 机位距离随模型缩放 | `fit_radius_m` 与归一化包围盒成正比；`suggest_ranges` 不再把 1 mm 模型放到 5 cm 之外 |
 

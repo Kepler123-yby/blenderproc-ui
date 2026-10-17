@@ -43,7 +43,8 @@ def test_overrides_are_applied_before_validation(tmp_path):
     import argparse
     args = argparse.Namespace(format='rgb_masks', output=tmp_path, num_samples=3)
     config = apply_overrides(ProjectConfig(), args)
-    assert config.output.format == 'rgb_masks' and config.num_samples == 3 and config.output.root == tmp_path
+    assert config.output.format == 'rgb_masks' and config.total_shots == 4 and config.output.root == tmp_path
+    assert config.scene_count == 1
 
 
 def test_launcher_installs_handlers_before_spawn_and_isolates_process_group(monkeypatch):

@@ -10,7 +10,7 @@ import bpy
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from bproc_core.camera import sample_camera, project_points, projection_matrix
 from bproc_core.config import CameraSpec, RegionSpec, Azimuth, Range
-from bproc_core.sampling import request_rng
+from bproc_core.sampling import view_rng
 from blenderproc.python.utility.SetupUtility import SetupUtility
 
 
@@ -26,7 +26,7 @@ args.output.mkdir(parents=True, exist_ok=False)
 bproc.init()
 cam = CameraSpec(width=64, height=48, fx=81.3, fy=67.8, cx=25.3, cy=18.7)
 region = RegionSpec(radius_m=Range(1, 1), azimuth=Azimuth(17, 17, False), elevation_deg=Range(28, 28))
-pose = sample_camera(region, np.zeros(3), np.eye(3), cam, request_rng(42, 0, 0))
+pose = sample_camera(region, np.zeros(3), np.eye(3), cam, view_rng(42, 0, 0, 0))
 K = np.array([[cam.fx, 0, cam.cx], [0, cam.fy, cam.cy], [0, 0, 1.]])
 bproc.camera.set_intrinsics_from_K_matrix(K, cam.width, cam.height, clip_start=.001, clip_end=100)
 bproc.camera.add_camera_pose(pose.world_from_camera, frame=0)

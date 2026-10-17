@@ -151,32 +151,37 @@ class ProjectConfig:
     schema_version: int = 1
     targets: tuple[TargetSpec, ...] = ()
     anchor_key: str | None = None
+    camera_mode: Literal["fixed", "random"] = "random"
+    scene_count: int = 250
+    views_per_scene: int = 4
     regions: tuple[RegionSpec, ...] = (RegionSpec(),)
     fixed_cameras: tuple[FixedCameraSpec, ...] = ()
-    fixed_shots: int = 0
     camera: CameraSpec = CameraSpec()
     occluders: tuple[AssetSpec, ...] = ()
     hdri: HdriSpec = HdriSpec()
     light: LightSpec = LightSpec()
     occlusion: OcclusionSpec = OcclusionSpec()
-    num_samples: int = 1000
     seed: int = 42
     render: RenderSpec = RenderSpec()
     output: OutputSpec = OutputSpec()
     runtime: RuntimeSpec = field(default_factory=RuntimeSpec)
 
     @property
+    def views(self) -> int:
+        """Camera views rendered for every scene: pinned cameras, or the random view count."""
+        return len(self.fixed_cameras) if self.camera_mode == "fixed" else self.views_per_scene
+
+    @property
     def total_shots(self) -> int:
-        """Frames produced by one run: pinned cameras plus randomly sampled regions."""
-        return self.fixed_shots + self.num_samples
+        """Frames produced by one run; every scene contributes :attr:`views` frames."""
+        return self.scene_count * self.views
 
     def with_total_shots(self, total: int) -> ProjectConfig:
-        """Rescale both counts to a new total while keeping their ratio (quick preflight runs)."""
+        """Rescale the scene count to a new frame total (quick preflight runs)."""
         if total < 0:
             raise ValueError("Image count must be nonnegative")
-        current = self.total_shots
-        fixed = 0 if not self.fixed_cameras or current == 0 else round(total * self.fixed_shots / current)
-        return replace(self, fixed_shots=min(fixed, total), num_samples=total - min(fixed, total))
+        views = max(1, self.views)
+        return replace(self, scene_count=0 if total == 0 else max(1, round(total / views)))
 
 
 @dataclass(frozen=True)
@@ -236,7 +241,15 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
     integer("schema_version", config.schema_version, 1)
     if config.schema_version != 1:
         issue("schema_version", "仅支持 schema_version: 1")
-    integer("num_samples", config.num_samples, 0)
+    if config.camera_mode not in ("fixed", "random"):
+        issue("camera_mode", "机位模式只能是 fixed 或 random")
+    integer("scene_count", config.scene_count, 0)
+    if config.camera_mode == "random":
+        integer("views_per_scene", config.views_per_scene, 1)
+        if not config.regions:
+            issue("regions", "随机机位模式至少需要一个随机区域")
+    elif not config.fixed_cameras:
+        issue("fixed_cameras", "固定机位模式至少需要一个机位")
     integer("seed", config.seed, 0)
     enabled = [t for t in config.targets if t.enabled]
     if not enabled:
@@ -267,8 +280,6 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
         if asset.key in keys:
             issue(name + ".key", "目标和遮挡物的资源 key 不能重复")
         keys.add(asset.key)
-    if not config.regions and not config.fixed_cameras:
-        issue("regions", "至少保留一个相机采样区域或固定机位")
     region_keys: set[str] = set()
     for index, region in enumerate(config.regions):
         name = f"regions[{index}]"
@@ -283,7 +294,6 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
                 issue(name + ".azimuth." + endpoint, "方位角必须位于 −180° 到 180°")
         if not isinstance(region.azimuth.full_circle, bool):
             issue(name + ".azimuth.full_circle", "全方位必须是布尔值")
-    integer("fixed_shots", config.fixed_shots, 0)
     camera_keys = set(region_keys)
     for index, fixed in enumerate(config.fixed_cameras):
         name = f"fixed_cameras[{index}]"
@@ -297,12 +307,8 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
             issue(name + ".azimuth_deg", "方位角必须位于 −180° 到 180°")
         if finite(name + ".elevation_deg", fixed.elevation_deg) and not -90 <= fixed.elevation_deg <= 90:
             issue(name + ".elevation_deg", "仰角必须位于 −90° 到 90°")
-    if config.fixed_shots and not config.fixed_cameras:
-        issue("fixed_shots", "固定机位张数大于 0，但还没有添加机位")
-    if config.fixed_cameras and config.fixed_shots < len(config.fixed_cameras):
-        issue("fixed_shots", "固定机位张数少于机位数，部分机位不会生成样本", "warning")
     if isinstance(config.total_shots, int) and config.total_shots < 1:
-        issue("num_samples", "总张数至少为 1")
+        issue("scene_count", "总张数至少为 1")
     cam = config.camera
     integer("camera.width", cam.width, 1)
     integer("camera.height", cam.height, 1)
@@ -380,8 +386,6 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
                 issue("runtime." + name, f"找不到运行时文件：{expected}")
     if output.format == "bop" and runtime.toolkit_path is not None and check_files and not runtime.toolkit_path.is_dir():
         issue("runtime.toolkit_path", f"找不到 BOP toolkit 目录：{runtime.toolkit_path}")
-    if isinstance(config.num_samples, int) and config.num_samples < len(config.regions):
-        issue("regions", "样本数少于区域数，部分区域不会生成样本", "warning")
     return tuple(issues)
 
 

@@ -75,7 +75,7 @@ image.save()
     config = ProjectConfig(targets=(target2, target7), anchor_key="target-2",
         occluders=(AssetSpec("occluder", root / "occluder.ply", "m"),),
         regions=(RegionSpec("front", "正面", Range(.55,.65), Azimuth(-25,25,False), Range(15,35)),),
-        hdri=HdriSpec(files=(root / "studio.hdr",)), num_samples=4,
+        hdri=HdriSpec(files=(root / "studio.hdr",)), scene_count=2, views_per_scene=2,
         render=RenderSpec(samples=8), output=OutputSpec(root=root / "renders", dataset_name="demo-rgb"),
         runtime=RuntimeSpec(blender_dir=executable.parent, toolkit_path=toolkit if toolkit.is_dir() else None))
     save_project(config, root / "demo.yaml")

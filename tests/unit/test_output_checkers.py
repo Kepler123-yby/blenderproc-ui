@@ -11,7 +11,7 @@ from bproc_core.assets import load_mesh, write_bop_models
 from bproc_core.camera import resize_camera
 from bproc_core.config import Azimuth, Box, OcclusionSpec, Range, RegionSpec
 from bproc_core.project_io import save_project
-from bproc_core.scene import SceneCandidate, propose_candidate
+from bproc_core.scene import SceneCandidate, propose_candidate, propose_scene
 from bproc_runtime.contracts import RenderedFrame, VisibilityEvidence
 from bproc_runtime.output import JsonRunRecorder, atomic_json, reserve_dataset
 from bproc_runtime.records import FrameRef, RunSummary
@@ -25,11 +25,11 @@ from tests.factories import make_project
 def fixture_scene(tmp_path, output_format):
     config = make_project(tmp_path / "inputs", output_format=output_format)
     target = replace(config.targets[1], offset=Box(Range(0, 0), Range(.12, .12), Range(0, 0)))
-    config = replace(config, num_samples=1, camera=resize_camera(config.camera, 64, 48), targets=(config.targets[0], target),
+    config = replace(config, scene_count=1, views_per_scene=1, camera=resize_camera(config.camera, 64, 48), targets=(config.targets[0], target),
                      regions=(RegionSpec(radius_m=Range(.6, .6), azimuth=Azimuth(0, 0, False), elevation_deg=Range(0, 0)),),
                      occlusion=OcclusionSpec(none_fraction=1))
     meshes = {target.asset.key: load_mesh(target.asset) for target in config.targets}
-    candidate = propose_candidate(config, meshes, 0, 0)
+    candidate = propose_candidate(config, meshes, propose_scene(config, meshes, 0), 0, 0)
     assert isinstance(candidate, SceneCandidate)
     root = reserve_dataset(config.output.root, config.output.dataset_name)
     return config, meshes, candidate, root

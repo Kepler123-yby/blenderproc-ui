@@ -8,7 +8,7 @@ from typing import Protocol
 import numpy as np
 
 from bproc_core.masks import occlusion_ratio
-from bproc_core.scene import propose_candidate, Rejection
+from bproc_core.scene import propose_candidate, propose_scene, Rejection
 from .records import FrameRef, RunSummary
 
 
@@ -35,9 +35,9 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
     expected_ids = {t.obj_id for t in config.targets if t.enabled}
     anchor_id = next(t.obj_id for t in config.targets if t.asset.key == config.anchor_key)
 
-    def reject(request, attempt, reason):
+    def reject(scene_index, view_index, attempt, reason):
         failures[reason] += 1
-        recorder.record_rejection(request, attempt, reason)
+        recorder.record_rejection(scene_index, view_index, attempt, reason)
 
     def interrupt(signum, frame):
         nonlocal pending_signal
@@ -73,47 +73,52 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
         recorder.begin(config)
         began = True
         native_call(backend.prepare, config, meshes)
-        for request in range(config.total_shots):
-            for attempt in range(config.occlusion.max_attempts):
-                candidate = propose_candidate(config, meshes, request, attempt)
-                if isinstance(candidate, Rejection):
-                    reject(request, attempt, candidate.reason)
-                    continue
-                native_call(backend.apply, candidate)
-                evidence = native_call(backend.assess, anchor_id)
-                if set(evidence.visible) != expected_ids:
-                    raise ValueError("Backend mask IDs do not match enabled targets")
-                shape = (config.camera.height, config.camera.width)
-                if evidence.anchor_full.shape != shape or any(m.shape != shape for m in evidence.visible.values()):
-                    raise ValueError("Backend masks have incorrect image dimensions")
-                if evidence.anchor_full.dtype != bool or any(m.dtype != bool for m in evidence.visible.values()):
-                    raise ValueError("Backend masks must contain boolean pixels")
-                if not np.any(evidence.anchor_full):
-                    reject(request, attempt, "empty_baseline")
-                    continue
-                if any(not np.any(mask) for mask in evidence.visible.values()):
-                    reject(request, attempt, "invisible_target")
-                    continue
-                ratio = occlusion_ratio(evidence, anchor_id)
-                # Without occluders nothing can cover the target, so a ratio above zero is unreachable.
-                accepted = (ratio == 0.0 if candidate.wants_unoccluded or not config.occluders else
-                            config.occlusion.ratio.minimum <= ratio <= config.occlusion.ratio.maximum)
-                if not accepted:
-                    reject(request, attempt, "occlusion")
-                    continue
-                frame = native_call(backend.render, evidence)
-                committing = True
-                try:
-                    ref = writer.write(written, candidate, frame)
-                    written += 1
-                    recorder.record_frame(ref, candidate, evidence)
-                    if config.output.format != "bop":
-                        saved = written
-                finally:
-                    committing = False
-                if pending_signal is not None:
-                    interrupt(pending_signal, None)
-                break
+        for scene_index in range(config.scene_count):
+            scene = propose_scene(config, meshes, scene_index)
+            if isinstance(scene, Rejection):
+                reject(scene_index, 0, 0, scene.reason)
+                continue
+            for view_index in range(config.views):
+                for attempt in range(config.occlusion.max_attempts):
+                    candidate = propose_candidate(config, meshes, scene, view_index, attempt)
+                    if isinstance(candidate, Rejection):
+                        reject(scene_index, view_index, attempt, candidate.reason)
+                        continue
+                    native_call(backend.apply, candidate)
+                    evidence = native_call(backend.assess, anchor_id)
+                    if set(evidence.visible) != expected_ids:
+                        raise ValueError("Backend mask IDs do not match enabled targets")
+                    shape = (config.camera.height, config.camera.width)
+                    if evidence.anchor_full.shape != shape or any(m.shape != shape for m in evidence.visible.values()):
+                        raise ValueError("Backend masks have incorrect image dimensions")
+                    if evidence.anchor_full.dtype != bool or any(m.dtype != bool for m in evidence.visible.values()):
+                        raise ValueError("Backend masks must contain boolean pixels")
+                    if not np.any(evidence.anchor_full):
+                        reject(scene_index, view_index, attempt, "empty_baseline")
+                        continue
+                    if any(not np.any(mask) for mask in evidence.visible.values()):
+                        reject(scene_index, view_index, attempt, "invisible_target")
+                        continue
+                    ratio = occlusion_ratio(evidence, anchor_id)
+                    # Without occluders nothing can cover the target, so a ratio above zero is unreachable.
+                    accepted = (ratio == 0.0 if candidate.wants_unoccluded or not config.occluders else
+                                config.occlusion.ratio.minimum <= ratio <= config.occlusion.ratio.maximum)
+                    if not accepted:
+                        reject(scene_index, view_index, attempt, "occlusion")
+                        continue
+                    frame = native_call(backend.render, evidence)
+                    committing = True
+                    try:
+                        ref = writer.write(written, candidate, frame)
+                        written += 1
+                        recorder.record_frame(ref, candidate, evidence)
+                        if config.output.format != "bop":
+                            saved = written
+                    finally:
+                        committing = False
+                    if pending_signal is not None:
+                        interrupt(pending_signal, None)
+                    break
     except KeyboardInterrupt:
         interrupted, exit_code = True, 130
         failures["sigint"] += 1

@@ -4,7 +4,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from bproc_core.scene import Rejection, propose_candidate
+from bproc_core.scene import Rejection, propose_candidate, propose_scene
 
 
 class PreviewController(QObject):
@@ -46,24 +46,28 @@ class PreviewController(QObject):
             self.state.set_candidate(None)
             self.status_changed.emit("导入目标并设置渲染中心，即可预览候选构图")
             return None
-        request = 0 if fixed is not None else min(max(0, self.sample_index), max(0, config.num_samples - 1))
+        view_index = 0 if fixed is not None else min(max(0, self.sample_index), max(0, config.views - 1))
         if fixed is not None:
-            preview_config = replace(config, regions=(), fixed_cameras=(fixed,), fixed_shots=1,
-                                     num_samples=0, seed=self.preview_seed)
+            preview_config = replace(config, camera_mode="fixed", regions=(), fixed_cameras=(fixed,),
+                                     scene_count=1, seed=self.preview_seed)
         else:
-            preview_config = replace(config, regions=(region,), fixed_cameras=(), fixed_shots=0,
-                                     seed=self.preview_seed)
+            preview_config = replace(config, camera_mode="random", regions=(region,), fixed_cameras=(),
+                                     views_per_scene=1, scene_count=1, seed=self.preview_seed)
         rejection = None
         try:
-            for attempt in range(min(config.occlusion.max_attempts, 30)):
-                candidate = propose_candidate(preview_config, self.state.meshes, request, attempt)
-                if isinstance(candidate, Rejection):
-                    rejection = candidate
-                    continue
-                self.state.set_candidate(candidate)
-                self.status_changed.emit("候选构图已更新 · 尚未经过 Blender 像素遮挡验收")
-                self.refreshed.emit(candidate)
-                return candidate
+            scene = propose_scene(preview_config, self.state.meshes, 0)
+            if isinstance(scene, Rejection):
+                rejection = scene
+            else:
+                for attempt in range(min(config.occlusion.max_attempts, 30)):
+                    candidate = propose_candidate(preview_config, self.state.meshes, scene, view_index, attempt)
+                    if isinstance(candidate, Rejection):
+                        rejection = candidate
+                        continue
+                    self.state.set_candidate(candidate)
+                    self.status_changed.emit("候选构图已更新 · 尚未经过 Blender 像素遮挡验收")
+                    self.refreshed.emit(candidate)
+                    return candidate
         except (ValueError, KeyError, TypeError) as error:
             self.state.set_candidate(None)
             self.status_changed.emit(f"预览参数无效：{error}")
@@ -71,7 +75,7 @@ class PreviewController(QObject):
         self.state.set_candidate(None)
         reasons = {"missing_anchor": "请选择启用的渲染中心", "missing_mesh": "正在载入网格，或存在无法读取的资源",
                    "collision": "目标或遮挡物位置范围相交", "out_of_frame": "目标超出相机画幅，请增大距离或调整位置范围",
-                   "camera_inside": "机位落在模型内部"}
+                   "camera_inside": "机位落在模型内部", "invalid_mesh": "遮挡物网格没有体积"}
         message = reasons.get(rejection.reason, rejection.detail) if rejection else "没有有效候选"
         self.status_changed.emit(f"{min(config.occlusion.max_attempts, 30)} 次内未获得候选：{message}")
         return None

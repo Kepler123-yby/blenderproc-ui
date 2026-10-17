@@ -28,7 +28,7 @@ def apply_overrides(config, args):
     if args.output is not None:
         config = replace(config, output=replace(config.output, root=Path(args.output).expanduser().resolve()))
     if args.num_samples is not None:
-        config = config.with_total_shots(args.num_samples)
+        config = config.with_total_shots(args.num_samples)  # total frames, not scenes
     return config
 
 

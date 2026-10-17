@@ -15,14 +15,14 @@ import bproc_runtime.run as runner
 
 def project(output_format="rgb_masks"):
     return ProjectConfig(targets=(TargetSpec(AssetSpec("a",Path("a.ply")),"a",2),),
-                         anchor_key="a",camera=CameraSpec(width=2,height=1),num_samples=2,
+                         anchor_key="a",camera=CameraSpec(width=2,height=1),scene_count=2,views_per_scene=1,
                          output=OutputSpec(format=output_format))
 
 
 class Backend:
     def __init__(self, error=None): self.calls=[]; self.error=error; self.closed=False
     def prepare(self,*args): pass
-    def apply(self,c): self.current=c; self.calls.append((c.request_index,c.attempt_index))
+    def apply(self,c): self.current=c; self.calls.append((c.scene_index,c.view_index,c.attempt_index))
     def assess(self,anchor):
         if self.error: raise self.error
         return VisibilityEvidence(np.ones((1,2),bool),{2:np.ones((1,2),bool)})
@@ -47,21 +47,31 @@ class Recorder:
     def finish(self,s): self.summary=s
 
 
-def candidate(c,m,request,attempt):
-    return SimpleNamespace(request_index=request,attempt_index=attempt,wants_unoccluded=True)
+def candidate(c,m,scene,view,attempt):
+    return SimpleNamespace(scene_index=scene.scene_index,view_index=view,attempt_index=attempt,
+                           wants_unoccluded=True)
+
+
+def stub_scene(monkeypatch):
+    """Every scene index maps to a usable scene state so camera proposals are reached."""
+    from bproc_core.scene import SceneState
+    state = SceneState(0,(),None,1.,0.,None,True)
+    monkeypatch.setattr(runner,"propose_scene",lambda c,m,i: SimpleNamespace(scene_index=i, scene=state))
 
 
 def test_retry_budget_shared(monkeypatch):
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",lambda *args:Rejection("collision",""))
     backend,recorder=Backend(),Recorder()
     r=runner.run_project(project(),{},backend,Writer(),recorder)
     assert (r.status,r.saved,r.skipped,r.exit_code)==("partial",0,2,2)
     assert len(recorder.rejections)==60
-    assert recorder.rejections[-1]==(1,29,"collision") and backend.closed
+    assert recorder.rejections[-1]==(1,0,29,"collision") and backend.closed
 
 
 def test_partial_is_not_success(monkeypatch):
-    def propose(c,m,r,a): return candidate(c,m,r,a) if r==0 else Rejection("collision","")
+    def propose(c,m,scene,view,attempt): return candidate(c,m,scene,view,attempt) if scene.scene_index==0 else Rejection("collision","")
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",propose)
     recorder=Recorder(); writer=Writer()
     r=runner.run_project(project(),{},Backend(),writer,recorder)
@@ -70,6 +80,7 @@ def test_partial_is_not_success(monkeypatch):
 
 
 def test_bop_postprocess_failure_is_not_saved(monkeypatch):
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",candidate)
     r=runner.run_project(project("bop"),{},Backend(),Writer(True),Recorder())
     assert (r.status,r.written_frames,r.saved,r.skipped,r.exit_code)==("failed",2,0,2,1)
@@ -77,6 +88,7 @@ def test_bop_postprocess_failure_is_not_saved(monkeypatch):
 
 @pytest.mark.parametrize("error,code",[(KeyboardInterrupt(),130),(runner.RunTerminated(),143)])
 def test_interrupt_counts_unattempted_images(monkeypatch,error,code):
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",candidate)
     b=Backend(error)
     r=runner.run_project(project(),{},b,Writer(),Recorder())
@@ -85,6 +97,7 @@ def test_interrupt_counts_unattempted_images(monkeypatch,error,code):
 
 
 def test_unknown_target_is_fatal(monkeypatch):
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",candidate)
     b=Backend(); b.assess=lambda _:VisibilityEvidence(np.ones((1,2),bool),{7:np.ones((1,2),bool)})
     r=runner.run_project(project(),{},b,Writer(),Recorder())
@@ -92,6 +105,7 @@ def test_unknown_target_is_fatal(monkeypatch):
 
 
 def test_invisible_target_retries(monkeypatch):
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",candidate)
     b=Backend(); b.assess=lambda _:VisibilityEvidence(np.ones((1,2),bool),{2:np.zeros((1,2),bool)})
     r=runner.run_project(project(),{},b,Writer(),Recorder())
@@ -99,6 +113,7 @@ def test_invisible_target_retries(monkeypatch):
 
 
 def test_empty_baseline_retries(monkeypatch):
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",candidate)
     b=Backend(); b.assess=lambda _:VisibilityEvidence(np.zeros((1,2),bool),{2:np.ones((1,2),bool)})
     r=runner.run_project(project(),{},b,Writer(),Recorder())
@@ -106,6 +121,7 @@ def test_empty_baseline_retries(monkeypatch):
 
 
 def test_failed_write_is_never_committed(monkeypatch):
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",candidate)
     writer=Writer()
     def fail(*args):raise OSError("disk full")
@@ -118,6 +134,7 @@ def test_failed_write_is_never_committed(monkeypatch):
 
 @pytest.mark.parametrize("signum",[signal.SIGINT,signal.SIGTERM])
 def test_signal_during_commit_finishes_manifest_and_counters(monkeypatch,signum):
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",candidate)
     recorder=Recorder()
     original=recorder.record_frame
@@ -131,6 +148,7 @@ def test_signal_during_commit_finishes_manifest_and_counters(monkeypatch,signum)
 
 
 def test_blender_c_signal_handler_can_be_represented_as_none(monkeypatch):
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",candidate)
     restored=[]
     def fake_signal(signum,handler):
@@ -145,6 +163,7 @@ def test_blender_c_signal_handler_can_be_represented_as_none(monkeypatch):
 
 @pytest.mark.parametrize("signum",[signal.SIGINT,signal.SIGTERM])
 def test_native_pass_finishes_before_signal_is_honored(monkeypatch,signum):
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",candidate)
     backend=Backend(); finished=[]
     original=backend.assess
@@ -158,7 +177,8 @@ def test_native_pass_finishes_before_signal_is_honored(monkeypatch,signum):
 
 
 def test_missing_occluders_accepts_every_target_visibility(monkeypatch):
-    def propose(c,m,r,a): return SimpleNamespace(request_index=r,attempt_index=a,wants_unoccluded=False)
+    def propose(c,m,scene,view,attempt): return SimpleNamespace(scene_index=scene.scene_index,view_index=view,attempt_index=attempt,wants_unoccluded=False)
+    stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",propose)
     recorder=Recorder()
     run=runner.run_project(project(),{},Backend(),Writer(),recorder)

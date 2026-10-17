@@ -8,6 +8,7 @@ from vispy import app, scene
 from vispy.visuals.transforms import MatrixTransform
 
 from bproc_core.camera import sample_camera
+from bproc_core.scene import bounds_corners, transform_points
 
 
 def create_canvas(**kwargs):
@@ -109,15 +110,30 @@ class SceneView(QWidget):
         self.canvas.update()
 
     def fit_scene(self):
-        radius = 1.
-        if self._candidate is not None:
+        # Frame the imported geometry; a helper grid sized by camera distance would dwarf a
+        # millimetre-scale or centimetre-scale model.
+        radius = self._content_radius()
+        if radius <= 0 and self._candidate is not None:
             radius = self._candidate.camera.radius_m
-        elif self._config is not None and (self._config.regions or self._config.fixed_cameras):
-            radius = max([r.radius_m.maximum for r in self._config.regions]
-                         + [c.radius_m for c in self._config.fixed_cameras])
+        if radius <= 0:
+            radius = 1.
         self.view.camera.center = (0, 0, 0)
         self.view.camera.scale_factor = max(radius * 2.5, .02)
         self._grid(radius)
+
+    def _content_radius(self):
+        """Half diagonal of the placed geometry, in metres."""
+        if self._candidate is None:
+            return 0.
+        radius = 0.
+        for placement in self._candidate.placements:
+            mesh = self._meshes.get(placement.asset_key)
+            bounds = None if mesh is None else np.asarray(mesh.bounds_m, dtype=float)
+            if bounds is None or bounds.shape != (2, 3) or not np.isfinite(bounds).all():
+                continue
+            corners = transform_points(bounds_corners(bounds), np.asarray(placement.world_from_model))
+            radius = max(radius, float(np.linalg.norm(np.ptp(corners, axis=0))) / 2)
+        return radius
 
     def set_regions(self, config, selected_key=None):
         self._config = config

@@ -93,7 +93,7 @@ class CameraPreview(QDialog):
         if candidate is None:
             self.caption.setText("  等待有效候选机位")
         else:
-            self.caption.setText(f"  中心 {candidate.anchor_key}  |  {candidate.region_key}  |  机位 {candidate.request_index + 1}")
+            self.caption.setText(f"  中心 {candidate.anchor_key}  |  {candidate.region_key}  |  场景 {candidate.scene_index + 1} · 视角 {candidate.view_index + 1}")
         self.canvas.update()
 
     def show_preview(self):

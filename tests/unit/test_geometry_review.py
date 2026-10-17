@@ -5,7 +5,7 @@ import pytest
 
 from bproc_core.camera import project_points, projection_matrix, sample_camera
 from bproc_core.config import Azimuth, CameraSpec, Range, RegionSpec
-from bproc_core.sampling import allocate_regions, request_rng, unoccluded_requests
+from bproc_core.sampling import allocate_regions, view_rng, unoccluded_scenes
 
 
 @pytest.mark.parametrize("total", [True, 1.5, "5", None])
@@ -17,7 +17,7 @@ def test_region_allocation_requires_integer_count(total):
 def test_asymmetric_intrinsics_pixel_boundaries_match_gl_projection():
     camera = CameraSpec(width=321, height=197, fx=203.25, fy=244.75, cx=105.75, cy=123.125)
     region = RegionSpec(radius_m=Range(1.2, 1.2), azimuth=Azimuth(43, 43, False), elevation_deg=Range(31, 31))
-    pose = sample_camera(region, np.array([.2, -.3, .4]), np.eye(3), camera, request_rng(7, 2, 1))
+    pose = sample_camera(region, np.array([.2, -.3, .4]), np.eye(3), camera, view_rng(7, 2, 1, 0))
     pixels = np.array([[-.5, -.5], [camera.width - .5, camera.height - .5], [camera.cx, camera.cy], [21.125, 175.75]])
     depth = np.array([.5, 2., .7, 3.])
     local = np.column_stack([(pixels[:, 0] - camera.cx) / camera.fx * depth,
@@ -40,7 +40,7 @@ def test_rotated_polar_camera_is_right_handed_and_centered():
     camera = CameraSpec()
     for pole in (-90, 90):
         region = RegionSpec(radius_m=Range(.6, .6), azimuth=Azimuth(12, 12, False), elevation_deg=Range(pole, pole))
-        pose = sample_camera(region, center, rotation, camera, request_rng(1, 0, 0))
+        pose = sample_camera(region, center, rotation, camera, view_rng(1, 0, 0, 0))
         basis = pose.world_from_camera[:3, :3]
         assert np.linalg.det(basis) == pytest.approx(1)
         np.testing.assert_allclose(basis.T @ basis, np.eye(3), atol=1e-12)
@@ -52,9 +52,9 @@ def test_rotated_polar_camera_is_right_handed_and_centered():
 def test_default_sample_golden_and_sampling_does_not_touch_global_rng():
     before = np.random.get_state()
     try:
-        pose = sample_camera(RegionSpec(), np.zeros(3), np.eye(3), CameraSpec(), request_rng(42, 0, 0))
+        pose = sample_camera(RegionSpec(), np.zeros(3), np.eye(3), CameraSpec(), view_rng(42, 0, 0, 0))
         assert [pose.radius_m, pose.azimuth_deg, pose.elevation_deg] == pytest.approx([.732186814566789, -22.003761689261154, 53.38949966173828])
-        assert len(unoccluded_requests(13, .2, 42)) == 3
+        assert len(unoccluded_scenes(13, .2, 42)) == 3
         after = np.random.get_state()
         assert before[0] == after[0] and before[2:] == after[2:]
         np.testing.assert_array_equal(before[1], after[1])

@@ -60,7 +60,7 @@ def main():
         meshes[key] = MeshData(key, vertices, faces, np.tile(color, (4, 1)),
                                np.array([vertices.min(axis=0), vertices.max(axis=0)]))
         placements.append(Placement(key, key, channel + 1, np.eye(4), "target"))
-    candidate = SimpleNamespace(placements=placements, camera=pose, anchor_key="marker-0", region_key="projection", request_index=0)
+    candidate = SimpleNamespace(placements=placements, camera=pose, anchor_key="marker-0", region_key="projection", scene_index=0, view_index=0)
     app = create_app([])
     preview = CameraPreview()
     preview.resize(camera.width * 10, camera.height * 10 + 61)

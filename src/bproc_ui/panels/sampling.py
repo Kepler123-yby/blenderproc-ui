@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QComboBox, QLineEdit, QPushButton,
-                               QCheckBox, QLabel)
+                               QCheckBox, QLabel, QRadioButton)
 
 from bproc_core.config import Azimuth, FixedCameraSpec, Range, RegionSpec
 from bproc_core.camera import fit_radius_m, resize_camera
@@ -31,6 +31,14 @@ class SamplingPanel(QWidget):
         self.center.currentIndexChanged.connect(self._center_changed)
         form.addRow("渲染中心", self.center)
 
+        form = section("机位模式", layout)
+        self.mode_fixed = QRadioButton("固定机位：列表里每个机位各出一张，张数自动跟着机位数")
+        self.mode_random = QRadioButton("随机采样：每个场景在范围内抽 N 个机位")
+        self.mode_fixed.toggled.connect(lambda on: on and self._mode_changed("fixed"))
+        self.mode_random.toggled.connect(lambda on: on and self._mode_changed("random"))
+        form.addRow(self.mode_fixed)
+        form.addRow(self.mode_random)
+
         form = section("固定机位", layout)
         self.fixed = QComboBox()
         self.fixed.currentIndexChanged.connect(self._fixed_selected)
@@ -43,13 +51,10 @@ class SamplingPanel(QWidget):
         for field, editor in (("radius_m", self.fixed_radius), ("azimuth_deg", self.fixed_azimuth),
                               ("elevation_deg", self.fixed_elevation)):
             editor.valueChanged.connect(lambda _value, name=field: self._fixed_edited(name))
-        self.fixed_shots = integer(0, 0, 1000000)
-        self.fixed_shots.valueChanged.connect(self._fixed_shots_changed)
         form.addRow("名称", self.fixed_name)
         form.addRow("距离 r", self.fixed_radius)
         form.addRow("方位 φ", self.fixed_azimuth)
         form.addRow("仰角 α", self.fixed_elevation)
-        form.addRow("机位张数", self.fixed_shots)
         add_fixed, capture = QPushButton("＋ 机位"), QPushButton("用当前视角添加")
         duplicate_fixed, remove_fixed = QPushButton("复制"), QPushButton("删除")
         fit_fixed = QPushButton("适配距离")
@@ -60,7 +65,9 @@ class SamplingPanel(QWidget):
         fit_fixed.clicked.connect(self.fit_fixed_distance)
         form.addRow(row(add_fixed, capture))
         form.addRow(row(duplicate_fixed, remove_fixed, fit_fixed))
-        form.addRow(note("固定机位每张都用同一台相机；与随机区域的张数各自独立计数。「适配距离」按模型实际尺寸重算 r。"))
+        form.addRow(note("每场景视角数 = 机位个数；加一个机位就多一张图，不用另填张数。「适配距离」按模型实际尺寸重算 r。"))
+        self._fixed_widgets = [self.fixed_name, self.fixed_radius, self.fixed_azimuth, self.fixed_elevation,
+                              add_fixed, capture, duplicate_fixed, remove_fixed, fit_fixed]
 
         form = section("随机区域", layout)
         self.region = QComboBox()
@@ -91,16 +98,21 @@ class SamplingPanel(QWidget):
         form.addRow(self.full_circle)
         form.addRow("仰角 α", self.elevation)
         form.addRow(note("φ 0° 沿中心局部 +X，向 +Y 增大；α 0° 为水平，+90° 朝 +Z。\n相同上下限即退化为固定机位；170° → −170° 是跨界的 20°。"))
+        self._region_widgets = [self.region, self.region_name, add, duplicate, remove, fit_region, self.radius,
+                                self.azimuth_start, self.azimuth_end, self.full_circle, self.elevation]
         form = section("数据集采样", layout)
-        self.total = integer(1000, 0)
+        self.scene_count = integer(250, 0, 1000000)
+        self.views = integer(4, 1, 1000)
         self.seed = SeedEditor(42)
-        self.total.valueChanged.connect(lambda: self._counts_changed("num_samples"))
+        self.scene_count.valueChanged.connect(lambda: self._counts_changed("scene_count"))
+        self.views.valueChanged.connect(lambda: self._counts_changed("views_per_scene"))
         self.seed.valueChanged.connect(lambda: self._counts_changed("seed"))
-        form.addRow("随机区域张数", self.total)
+        form.addRow("场景数", self.scene_count)
+        form.addRow("每场景视角数", self.views)
         form.addRow("随机种子", self.seed)
         self.allocation = note("")
         form.addRow(self.allocation)
-        form.addRow(note("多目标在同一张图中出现。重叠区域会增加对应方向的出现频率。"))
+        form.addRow(note("同一场景里物体摆放与光照固定，只有机位在变；视角数按区域平均分配。\n多目标在同一张图中出现。"))
 
         form = section("光照 · 点光源", layout)
         self.energy = RangeEditor(minimum=0, suffix=" W", decimals=1)
@@ -187,8 +199,7 @@ class SamplingPanel(QWidget):
             camera = FixedCameraSpec(key="camera-" + uuid4().hex[:8], name=f"机位 {len(cameras) + 1}",
                                      radius_m=round(fitted, 4) if fitted else 0.7)
         self.current_region_key = camera.key
-        self.state.update(fixed_cameras=cameras + (camera,),
-                          fixed_shots=max(self.state.config.fixed_shots, len(cameras) + 1))
+        self.state.update(fixed_cameras=cameras + (camera,))
         self.region_changed.emit(camera.key)
         return camera
 
@@ -216,8 +227,7 @@ class SamplingPanel(QWidget):
         cameras = tuple(c for c in self.state.config.fixed_cameras if c.key != camera.key)
         keys = [c.key for c in cameras] + [r.key for r in self.state.config.regions]
         self.current_region_key = keys[0] if keys else None
-        self.state.update(fixed_cameras=cameras,
-                          fixed_shots=min(self.state.config.fixed_shots, len(cameras)))
+        self.state.update(fixed_cameras=cameras)
         if self.current_region_key:
             self.region_changed.emit(self.current_region_key)
 
@@ -234,9 +244,9 @@ class SamplingPanel(QWidget):
         self.state.update(fixed_cameras=tuple(updated if c.key == camera.key else c
                                               for c in self.state.config.fixed_cameras))
 
-    def _fixed_shots_changed(self):
-        if not self._updating:
-            self.state.update(fixed_shots=self.fixed_shots.value())
+    def _mode_changed(self, mode):
+        if not self._updating and self.state.config.camera_mode != mode:
+            self.state.update(camera_mode=mode)
 
     def fit_fixed_distance(self):
         """Refit pinned cameras to the loaded model size; the selection narrows it to one camera."""
@@ -318,8 +328,14 @@ class SamplingPanel(QWidget):
             self.state.update(regions=tuple(updated if r.key == selected.key else r for r in self.state.config.regions))
 
     def _counts_changed(self, field):
-        if not self._updating:
-            self.state.update(**{field: self.total.value() if field == "num_samples" else self.seed.value()})
+        if self._updating:
+            return
+        if field == "scene_count":
+            self.state.update(scene_count=self.scene_count.value())
+        elif field == "views_per_scene":
+            self.state.update(views_per_scene=self.views.value())
+        else:
+            self.state.update(seed=self.seed.value())
 
     def _light_changed(self, field):
         if not self._updating:
@@ -380,7 +396,6 @@ class SamplingPanel(QWidget):
             self.fixed_radius.setValue(fixed.radius_m)
             self.fixed_azimuth.setValue(fixed.azimuth_deg)
             self.fixed_elevation.setValue(fixed.elevation_deg)
-        self.fixed_shots.setValue(config.fixed_shots)
         self.region.clear()
         for region in config.regions:
             self.region.addItem(region.name, region.key)
@@ -395,21 +410,28 @@ class SamplingPanel(QWidget):
             self.azimuth_start.setEnabled(not region.azimuth.full_circle)
             self.azimuth_end.setEnabled(not region.azimuth.full_circle)
             self.elevation.set_value(region.elevation_deg)
-        self.total.setValue(config.num_samples)
+        self.scene_count.setValue(config.scene_count)
+        self.views.setValue(config.views)
         self.seed.setValue(config.seed)
-        lines = []
-        zero = False
-        if config.fixed_cameras:
-            fixed_alloc = allocate_regions(config.fixed_shots, [c.key for c in config.fixed_cameras])
-            zero = zero or any(value == 0 for value in fixed_alloc.values())
-            lines.append("固定机位：" + " / ".join(f"{c.name} {fixed_alloc[c.key]} 张" for c in config.fixed_cameras))
-        if config.regions and config.num_samples:
-            allocations = allocate_regions(config.num_samples, [r.key for r in config.regions])
-            zero = zero or any(value == 0 for value in allocations.values())
-            lines.append("随机区域：" + " / ".join(f"{r.name} {allocations[r.key]} 张" for r in config.regions))
-        text = "\n".join(lines) + f"\n合计 {config.total_shots} 张"
-        if zero:
-            text += "\n部分机位分配为 0；请增加对应张数。"
+        fixed_mode = config.camera_mode == "fixed"
+        self.mode_fixed.setChecked(fixed_mode)
+        self.mode_random.setChecked(not fixed_mode)
+        self.views.setEnabled(not fixed_mode)
+        for widget in self._fixed_widgets:
+            widget.setEnabled(fixed_mode)
+        for widget in self._region_widgets:
+            widget.setEnabled(not fixed_mode)
+        if fixed_mode:
+            views = len(config.fixed_cameras)
+            detail = " / ".join(c.name for c in config.fixed_cameras) or "还没有机位"
+            text = f"固定机位（每场景 {views} 个视角）：{detail}"
+        else:
+            allocations = allocate_regions(config.views, [r.key for r in config.regions])
+            detail = " / ".join(f"{r.name} {allocations[r.key]}" for r in config.regions)
+            text = f"随机区域（每场景 {config.views} 个视角）：{detail}"
+        text += f"\n{config.scene_count} 场景 × {config.views} 视角 = {config.total_shots} 张"
+        if config.camera_mode == "random" and any(value == 0 for value in allocations.values()):
+            text += "\n部分区域分配为 0；请增加视角数或减少区域。"
         self.allocation.setText(text)
         self.energy.set_value(config.light.energy_w)
         self.light_radius.set_value(config.light.radius_m)

@@ -10,15 +10,16 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from bproc_core.assets import load_mesh
 from bproc_core.project_io import load_project
-from bproc_core.scene import Rejection, candidate_from_dict, propose_candidate
+from bproc_core.scene import Rejection, candidate_from_dict, propose_candidate, propose_scene
 from bproc_export.blender_view import open_gui, prepare_scene
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, required=True)
-    parser.add_argument("--candidate", type=Path, help="candidate.json；缺省时按 --request 采样一个")
-    parser.add_argument("--request", type=int, default=0, help="采样序号，与 UI 的试渲染序号一致")
+    parser.add_argument("--candidate", type=Path, help="candidate.json；缺省时按 --scene/--view 采样一个")
+    parser.add_argument("--scene", type=int, default=0, help="场景序号，与 UI 的试渲染序号一致")
+    parser.add_argument("--view", type=int, default=0, help="该场景内的视角序号")
     parser.add_argument("--workspace", type=Path, help="快照与日志目录，默认为项目同级的 .blender-view/")
     parser.add_argument("--script", type=Path, default=Path(__file__).with_name("blender_view.py"))
     arguments = parser.parse_args(argv)
@@ -30,8 +31,12 @@ def main(argv=None) -> int:
         assets = [t.asset for t in config.targets if t.enabled] + list(config.occluders)
         meshes = {asset.key: load_mesh(asset) for asset in assets}
         candidate = None
+        scene = propose_scene(config, meshes, arguments.scene)
+        if isinstance(scene, Rejection):
+            print(f"场景无法摆放：{scene.reason}", file=sys.stderr)
+            return 1
         for attempt in range(60):
-            proposal = propose_candidate(config, meshes, arguments.request, attempt)
+            proposal = propose_candidate(config, meshes, scene, arguments.view, attempt)
             if not isinstance(proposal, Rejection):
                 candidate = proposal
                 break

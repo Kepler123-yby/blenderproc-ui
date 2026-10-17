@@ -8,7 +8,7 @@ import numpy as np
 
 from bproc_core.assets import load_mesh
 from bproc_core.config import DEFAULT_WORLD_COLOR, HdriSpec, world_metadata
-from bproc_core.scene import propose_candidate
+from bproc_core.scene import propose_candidate, propose_scene
 from bproc_runtime.contracts import VisibilityEvidence
 from bproc_runtime.output import JsonRunRecorder
 from bproc_runtime.records import FrameRef, RunSummary
@@ -18,7 +18,7 @@ from tests.factories import make_project
 def _candidate(config):
     meshes = {asset.key: load_mesh(asset)
               for asset in [*(t.asset for t in config.targets if t.enabled), *config.occluders]}
-    return propose_candidate(config, meshes, 0, 0)
+    return propose_candidate(config, meshes, propose_scene(config, meshes, 0), 0, 0)
 
 
 def test_world_metadata_names_the_hdri_set(tmp_path):
@@ -35,7 +35,7 @@ def test_world_metadata_falls_back_to_the_neutral_background(tmp_path):
 
 
 def test_recorder_keeps_the_world_after_frames_are_recorded(tmp_path):
-    config = replace(make_project(tmp_path), hdri=HdriSpec(files=()), num_samples=1)
+    config = replace(make_project(tmp_path), hdri=HdriSpec(files=()), scene_count=1, views_per_scene=1)
     candidate = _candidate(config)
     anchor = candidate.anchor_key
     obj_id = next(t.obj_id for t in config.targets if t.asset.key == anchor)

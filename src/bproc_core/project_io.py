@@ -90,6 +90,26 @@ def _decode(value: Any, kind: Any, field_name: str, base_dir: Path):
     raise ConfigError(f"{field_name} 含不支持的类型 {kind}")
 
 
+def _migrate_counts(data: dict) -> dict:
+    """Upgrade ``fixed_shots``/``num_samples`` documents to scene and view counts."""
+    if "fixed_shots" not in data and "num_samples" not in data:
+        return data
+    upgraded = {key: value for key, value in data.items() if key not in ("fixed_shots", "num_samples")}
+    fixed_shots = data.get("fixed_shots", 0)
+    num_samples = data.get("num_samples", 0)
+    valid = lambda value: isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    total = (fixed_shots if valid(fixed_shots) else 0) + (num_samples if valid(num_samples) else 0)
+    # One frame per scene keeps the old frame count intact; the pinned cameras become the
+    # views of a fixed-mode project with a single scene.
+    cameras = data.get("fixed_cameras") or ()
+    upgraded.setdefault("camera_mode", "fixed" if cameras else "random")
+    upgraded.setdefault("views_per_scene", 1)
+    views = max(1, len(cameras))
+    upgraded.setdefault("scene_count", (0 if total == 0 else max(1, -(-total // views)))
+                        if upgraded["camera_mode"] == "fixed" else total)
+    return upgraded
+
+
 def project_from_dict(data: dict, *, base_dir: Path | None = None) -> ProjectConfig:
     if not isinstance(data, dict) or "schema_version" not in data:
         raise ConfigError("项目必须声明 schema_version: 1")
@@ -97,6 +117,7 @@ def project_from_dict(data: dict, *, base_dir: Path | None = None) -> ProjectCon
     # modifying the source document; all newly exported jobs require a GPU.
     if isinstance(data.get("render"), dict) and data["render"].get("device") == "CPU":
         data = {**data, "render": {**data["render"], "device": "OPTIX"}}
+    data = _migrate_counts(data)
     config = _decode(data, ProjectConfig, "project", Path(base_dir or Path.cwd()).resolve())
     if isinstance(config.schema_version, bool) or config.schema_version != 1:
         raise ConfigError("仅支持 schema_version: 1；请先迁移配置")

@@ -1,12 +1,44 @@
 """Small reusable numeric and editor widgets."""
 
-from PySide6.QtCore import Qt, Signal, QRegularExpression
+from PySide6.QtCore import QEvent, QObject, Qt, Signal, QRegularExpression
 from PySide6.QtGui import QRegularExpressionValidator
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
+from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
                                QLabel, QDoubleSpinBox, QSpinBox, QGroupBox,
                                QScrollArea, QFrame, QLineEdit, QSizePolicy)
 
 from bproc_core.config import Range
+
+
+class _WheelNeedsFocus(QObject):
+    """Wheel over an unfocused editor scrolls its container instead of editing the value.
+
+    Qt only delivers wheel input to a spin box without focus on some styles; the guard makes
+    the rule explicit so a hovered field never rewrites a camera distance by accident.
+    """
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Wheel and not watched.hasFocus():
+            parent = watched.parentWidget()
+            if parent is not None:
+                QApplication.sendEvent(parent, event)
+            return True
+        return False
+
+
+_GUARD = None
+
+
+def _wheel_guard():
+    global _GUARD
+    if _GUARD is None:
+        _GUARD = _WheelNeedsFocus()
+    return _GUARD
+
+
+def _guard_wheel(widget):
+    widget.setFocusPolicy(Qt.StrongFocus)
+    widget.installEventFilter(_wheel_guard())
+    return widget
 
 
 def number(value=0.0, minimum=-1e6, maximum=1e6, decimals=4, suffix=""):
@@ -17,6 +49,7 @@ def number(value=0.0, minimum=-1e6, maximum=1e6, decimals=4, suffix=""):
     widget.setValue(value)
     widget.setSuffix(suffix)
     widget.setKeyboardTracking(False)
+    _guard_wheel(widget)
     widget.setMinimumWidth(76)
     widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
     return widget
@@ -27,7 +60,7 @@ def integer(value=0, minimum=0, maximum=10000000):
     widget.setRange(minimum, maximum)
     widget.setValue(value)
     widget.setKeyboardTracking(False)
-    return widget
+    return _guard_wheel(widget)
 
 
 class RangeEditor(QWidget):

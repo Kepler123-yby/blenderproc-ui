@@ -262,3 +262,26 @@ def test_fit_distance_follows_the_loaded_mesh_size(state, qtbot):
     region = state.config.regions[0]
     assert region.radius_m.minimum == pytest.approx(round(raw * .9, 4))
     assert region.radius_m.maximum == pytest.approx(round(raw * 1.4, 4))
+
+
+def test_reopening_a_project_fits_distances_to_the_loaded_mesh(state, qtbot):
+    from bproc_core.camera import fit_radius_m
+    from tests.factories import make_mesh
+
+    # Camera distances tuned for a metre-scale asset, then a 5 cm mesh is loaded.
+    state.update(regions=(replace(state.config.regions[0], radius_m=Range(1.2, 2.5)),))
+    panel = SamplingPanel(state)
+    qtbot.addWidget(panel)
+    assert state.config.regions[0].radius_m.maximum == pytest.approx(2.5)
+
+    mesh = make_mesh(state.config.anchor_key, size=0.05)
+    state.set_meshes({state.config.anchor_key: mesh})
+    panel.sync()
+    fitted = fit_radius_m(mesh.bounds_m, state.config.camera)
+    assert state.config.regions[0].radius_m.maximum == pytest.approx(round(fitted * 1.4, 4))
+
+    # A deliberate edit afterwards is not snapped back on the next sync.
+    panel.radius.minimum.setValue(fitted * .5)
+    panel.radius.maximum.setValue(fitted * .6)
+    panel.sync()
+    assert state.config.regions[0].radius_m.maximum == pytest.approx(fitted * .6, rel=1e-6)

@@ -20,6 +20,7 @@ class SamplingPanel(QWidget):
         super().__init__(parent)
         self.state = state
         self._updating = False
+        self._auto_fit_signature = None
         config = state.config
         self.current_region_key = (config.fixed_cameras[0].key if config.fixed_cameras else
                                    config.regions[0].key if config.regions else None)
@@ -248,6 +249,40 @@ class SamplingPanel(QWidget):
         if not self._updating and self.state.config.camera_mode != mode:
             self.state.update(camera_mode=mode)
 
+    def _auto_fit_scene(self):
+        """Fit once per loaded model, so a reopened project matches the mesh it now points at."""
+        signature = (self.state.config.anchor_key, tuple(sorted(self.state.meshes)))
+        if signature == self._auto_fit_signature or self._fit_radius() is None:
+            return
+        self._auto_fit_signature = signature
+        self.auto_fit_distances()
+
+    def auto_fit_distances(self):
+        """Pull camera distances to the model scale when a project was tuned for another size.
+
+        Without this, opening a project whose radius was sized for a metre-scale asset shows a
+        region sphere several times larger than the imported mesh.
+        """
+        fitted = self._fit_radius()
+        if fitted is None:
+            return False
+        config, changed = self.state.config, False
+        regions, cameras = [], []
+        for region in config.regions:
+            far = max(region.radius_m.minimum, region.radius_m.maximum) / fitted
+            if far > 1.6 or far < 1 / 1.6:
+                region, changed = replace(region, radius_m=Range(round(fitted * .9, 4),
+                                                                 round(fitted * 1.4, 4))), True
+            regions.append(region)
+        for camera in config.fixed_cameras:
+            far = camera.radius_m / fitted
+            if far > 1.6 or far < 1 / 1.6:
+                camera, changed = replace(camera, radius_m=round(fitted, 4)), True
+            cameras.append(camera)
+        if changed:
+            self.state.update(regions=tuple(regions), fixed_cameras=tuple(cameras))
+        return changed
+
     def fit_fixed_distance(self):
         """Refit pinned cameras to the loaded model size; the selection narrows it to one camera."""
         fitted = self._fit_radius()
@@ -374,6 +409,7 @@ class SamplingPanel(QWidget):
             self.state.update(camera=replace(self.state.config.camera, **{field: value}))
 
     def sync(self):
+        self._auto_fit_scene()
         self._updating = True
         config = self.state.config
         self.center.clear()

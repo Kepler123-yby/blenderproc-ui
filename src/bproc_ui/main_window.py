@@ -138,6 +138,10 @@ class MainWindow(QMainWindow):
         state.project_changed.connect(self.sync)
         state.selection_changed.connect(self._selection_changed)
         state.candidate_changed.connect(self._candidate_changed)
+        # Meshes arrive after the project opens; panels must resync so sizes and camera
+        # distances follow the geometry instead of the placeholder values.
+        state.meshes_changed.connect(self.sampling.sync)
+        state.meshes_changed.connect(self.sync)
         state.dirty_changed.connect(self._update_title)
         self.sync()
         self._set_workspace(0)

@@ -3,7 +3,8 @@
 from itertools import product
 
 import numpy as np
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QLabel, QWidget, QVBoxLayout
 from vispy import app, scene
 from vispy.visuals.transforms import MatrixTransform
 
@@ -13,7 +14,7 @@ from bproc_core.scene import bounds_corners, transform_points
 
 def create_canvas(**kwargs):
     app.use_app("pyside6")
-    kwargs.setdefault("bgcolor", "#3b3b3b")
+    kwargs.setdefault("bgcolor", "#393939")  # Blender's solid-shading viewport grey
     return scene.SceneCanvas(keys=None, show=False, **kwargs)
 
 
@@ -59,6 +60,32 @@ def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False
     return nodes
 
 
+def floor_grid(scale):
+    """Blender-style floor geometry: faded cell lines, section lines every ten, coloured axes.
+
+    ``scale`` is the sight radius in metres, so a centimetre model gets a centimetre grid.
+    """
+    extent = max(float(scale), 1e-4) * 1.6
+    cells = 20
+    step = 2 * extent / cells
+    minor, section = [], []
+    for i in range(-cells // 2, cells // 2 + 1):
+        (section if i % 10 == 0 else minor).append(i * step)
+
+    def segments(values):
+        pairs = []
+        for at in values:
+            pairs.extend(([-extent, at, 0], [extent, at, 0], [at, -extent, 0], [at, extent, 0]))
+        return np.array(pairs, dtype=float).reshape(-1, 3)
+
+    return {"extent": extent,
+            "minor": segments(minor),
+            "section": segments(section),
+            "axes": (np.array([[-extent, 0, 0], [extent, 0, 0]], dtype=float),
+                     np.array([[0, -extent, 0], [0, extent, 0]], dtype=float),
+                     np.array([[0, 0, 0], [0, 0, extent * .3]], dtype=float))}
+
+
 class SceneView(QWidget):
     def __init__(self, parent=None, canvas_factory=None):
         super().__init__(parent)
@@ -69,6 +96,10 @@ class SceneView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.canvas.native)
+        self.view_label = QLabel("用户透视", self)
+        self.view_label.setObjectName("muted")
+        self.view_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.view_label.move(10, 8)
         self._objects, self._regions, self._points = [], [], []
         self._candidate = None
         self._meshes = {}
@@ -76,29 +107,39 @@ class SceneView(QWidget):
         self._last_keys = ()
         self._config = None
         self._helper_radius = None
-        self._grid_visual = scene.visuals.Line(np.zeros((0, 3)), connect="segments", color="#4a4a4a",
-                                               width=1, parent=self.view.scene)
-        self._axis_visuals = [scene.visuals.Line(np.zeros((0, 3)), color=color, width=1.5,
-                                                 parent=self.view.scene)
-                              for color in ("#a35858", "#65a06d", "#6596c8")]
+        self._hud, self._grid_scale = [], None
         self._grid(1)
 
     def _grid(self, scale):
-        """Ground grid and axes sized to the geometry; no screen-space labels that dwarf it.
+        """Blender-style ground grid: faded minor cells, brighter section lines, coloured axes.
 
-        The visuals are created once and only their data changes: recreating them leaked a
-        stale oversized Z axis into the scene after the first rescale.
+        Rebuilt only when the scale changes, and always with real data: a visual created
+        empty and filled in later can keep stale bounds and silently vanish.
         """
-        scale = max(float(scale), 1e-4)  # 0.1 mm floor: a millimetre model must not get a 1 cm grid
-        length = scale * .9
-        lines = []
-        for a in np.linspace(-length, length, 21):
-            lines.extend(([-length, a, 0], [length, a, 0], [a, -length, 0], [a, length, 0]))
-        self._grid_visual.set_data(np.array(lines))
-        for axis, visual in enumerate(self._axis_visuals):
-            end = np.zeros(3)
-            end[axis] = length * .55
-            visual.set_data(np.array([np.zeros(3), end]))
+        scale = max(float(scale), 1e-4)
+        if self._grid_scale is not None and abs(scale - self._grid_scale) <= .02 * self._grid_scale:
+            return
+        self._grid_scale = scale
+        _clear(self._hud)
+        grid = floor_grid(scale)
+        extent = grid["extent"]
+
+        def add(positions, color, width, fade=True):
+            rgba = np.tile(np.array(color, dtype=float), (len(positions), 1))
+            if fade:  # Blender fades the floor out with distance instead of cutting it off.
+                radial = np.linalg.norm(positions[:, :2], axis=1) / (extent * 1.42)
+                rgba[:, 3] = np.clip(1.15 - radial * .8, 0., 1.)
+            self._hud.append(scene.visuals.Line(positions, connect="segments", color=rgba,
+                                                width=width, parent=self.view.scene))
+
+        add(grid["minor"], (.35, .35, .35, 1), 1)
+        add(grid["section"], (.47, .47, .47, 1), 1)
+        add(grid["axes"][0], (.62, .32, .32, .95), 2)
+        add(grid["axes"][1], (.42, .58, .34, .95), 2)
+        add(grid["axes"][2], (.34, .47, .66, .95), 2, fade=False)
+        origin = scene.visuals.Markers(parent=self.view.scene)
+        origin.set_data(np.zeros((1, 3)), face_color=(.95, .72, .38, .9), edge_color="#2b2b2b", size=6)
+        self._hud.append(origin)
 
     def set_selection(self, key):
         self._selected_key = key
@@ -152,7 +193,7 @@ class SceneView(QWidget):
             span = 360. if angle.full_circle else (angle.end_deg - angle.start_deg) % 360.
             phis = np.deg2rad(angle.start_deg + np.linspace(0, span, 80))
             lo, hi = np.deg2rad([region.elevation_deg.minimum, region.elevation_deg.maximum])
-            color = (.79, .62, .36, .55) if region.key == selected_key else (.47, .59, .69, .3)
+            color = (.79, .62, .36, .45) if region.key == selected_key else (.47, .59, .69, .18)
             curves = []
             for r in {region.radius_m.minimum, region.radius_m.maximum}:
                 for alpha in {lo, hi}:

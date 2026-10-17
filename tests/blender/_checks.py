@@ -134,7 +134,7 @@ def verify_metadata(root: Path, *, require_complete=True):
                         errors.append(f"Frame {index}: camera outside azimuth range")
                 if not np.isclose(np.linalg.norm(position), radius, atol=1e-7):
                     errors.append(f"Frame {index}: recorded camera radius differs from actual position")
-                if candidate["hdri_path"] not in [str(p) for p in config.hdri.files]:
+                if candidate["hdri_path"] is not None and candidate["hdri_path"] not in [str(p) for p in config.hdri.files]:
                     errors.append(f"Frame {index}: HDRI is outside configured resource list")
                 ratio = float(row["occlusion_ratio"])
                 if not np.isfinite(ratio) or not 0 <= ratio <= 1:

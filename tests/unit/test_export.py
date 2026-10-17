@@ -32,6 +32,12 @@ def project(tmp_path):
                          runtime=RuntimeSpec(blender_dir=blender, blenderproc_executable=executable))
 
 
+def test_bundle_without_an_hdri_exports_an_empty_resource_list(project, tmp_path):
+    job = export_job(replace(project, hdri=HdriSpec(files=())), tmp_path / "job")
+    assert load_project(job.directory / "scene.yaml").hdri.files == ()
+    assert (job.directory / "render_scene.py").is_file()
+
+
 def test_bundle_is_standalone_and_paths_literal(project, tmp_path):
     job = export_job(project, tmp_path / "中文 ' $(literal) job")
     assert shlex.split(job.command)[-1] == str(job.directory / 'scene.yaml')

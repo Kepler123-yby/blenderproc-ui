@@ -51,20 +51,27 @@ class JsonRunRecorder:
         self._config = None
         self._frames = []
         self._started = None
+        self._world = None
 
     def begin(self, config) -> None:
+        from bproc_core.config import world_metadata
         from bproc_core.project_io import save_project
         self._config = config
+        self._world = world_metadata(config)
         self.root.mkdir(parents=True, exist_ok=True)
         self._started = datetime.now(timezone.utc).isoformat()
         atomic_json(self.root / "status.json", {"status": "running", "started_at": self._started,
-                    "requested": config.num_samples, "written_frames": 0, "saved": 0})
+                    "requested": config.num_samples, "written_frames": 0, "saved": 0,
+                    "world": self._world})
         save_project(config, self.root / "project.yaml")
         atomic_json(self.root / "objects.json", [
             {"key": t.asset.key, "obj_id": t.obj_id, "name": t.name,
              "source": str(t.asset.path), "unit": t.asset.unit}
             for t in config.targets if t.enabled])
-        atomic_json(self.root / "manifest.json", {"seed": config.seed, "frames": []})
+        atomic_json(self.root / "manifest.json", self._manifest())
+
+    def _manifest(self) -> dict:
+        return {"seed": self._config.seed, "world": self._world, "frames": self._frames}
 
     def record_frame(self, ref, candidate, evidence) -> None:
         from bproc_core.scene import candidate_to_dict
@@ -72,7 +79,7 @@ class JsonRunRecorder:
         row = {**asdict(ref), "candidate": candidate_to_dict(candidate),
                "occlusion_ratio": occlusion_ratio(evidence, anchor), "seed": self._config.seed}
         self._frames.append(row)
-        atomic_json(self.root / "manifest.json", {"seed": self._config.seed, "frames": self._frames})
+        atomic_json(self.root / "manifest.json", self._manifest())
 
     def record_rejection(self, request_index, attempt_index, reason) -> None:
         with (self.root / "rejections.jsonl").open("a", encoding="utf-8") as stream:
@@ -80,5 +87,6 @@ class JsonRunRecorder:
                                      "reason": reason}, ensure_ascii=False) + "\n")
 
     def finish(self, summary) -> None:
-        atomic_json(self.root / "status.json", {**asdict(summary), "started_at": self._started,
+        atomic_json(self.root / "status.json", {**asdict(summary), "world": self._world,
+                    "started_at": self._started,
                     "finished_at": datetime.now(timezone.utc).isoformat()})

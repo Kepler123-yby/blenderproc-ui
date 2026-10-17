@@ -8,14 +8,11 @@ import math
 import tempfile
 import numpy as np
 
+from bproc_core.config import DEFAULT_WORLD_COLOR
 from bproc_core.masks import decode_instances
 from .contracts import RenderError, VisibilityEvidence, RenderedFrame
 from .render_quality import (apply_object_shading, assert_gpu_only, configure_gpu,
                              configure_rgb_quality, label_pass_without_denoising)
-
-# Mid grey, the same value Blender's default world uses, so a project without an HDRI
-# still shows silhouettes and shading instead of a black frame.
-NEUTRAL_WORLD = (0.05, 0.05, 0.05)
 
 
 class BlenderBackend:
@@ -161,7 +158,7 @@ class BlenderBackend:
             # A project without an HDRI still has to preview: black would hide the model.
             for link in list(color.links):
                 world.node_tree.links.remove(link)
-            color.default_value = (*NEUTRAL_WORLD, 1.0)
+            color.default_value = (*DEFAULT_WORLD_COLOR, 1.0)
         else:
             if not color.links:
                 world.node_tree.links.new(env.outputs["Color"], color)

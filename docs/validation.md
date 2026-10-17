@@ -12,7 +12,7 @@
 
 | 检查 | 实际结果 |
 |---|---|
-| 单元与 Qt 测试 | **223 passed**，3.23 s（含 2026-10-17 GPU、PLY 与 Blender 查看用例） |
+| 单元与 Qt 测试 | **229 passed**，3.64 s（含 2026-10-17 GPU、PLY、无 HDRI 与 Blender 查看用例） |
 | RGB + mask + mask_visib | 同场景两个目标 ID 2 / 7，4 / 4 完成，语义检查通过 |
 | BOP | 4 / 4 完成；深度、K、位姿、模型毫米坐标、GT 索引和 gt_info 检查通过 |
 | 无 BOP toolkit 的轻格式 | toolkit_path=None，离线预检及 4 / 4 渲染通过 |
@@ -30,7 +30,8 @@
 | BOP EGL 硬件校验 | 两个 EGL 上下文均读到 NVIDIA GeForce RTX 3060 Ti；软件渲染器拒绝由注入身份的用例覆盖 |
 | GPU BOP 端到端 | 独立导出的 BOP 任务 4 / 4 完成，退出码 0，掩码、深度、GT 有效 |
 | Blender 查看当前构图 | 后台 Blender 重建并写 `scene.blend`，另起 GUI 进程打开；相机点位与候选一致，视图为渲染着色 |
-| 未选环境图的项目 | 去掉 HDRI 的同一演示项目照常构建、打开并渲染；世界背景为中性灰 0.05，不是黑屏 |
+| 未选环境图的项目 | 去掉 HDRI 的同一演示项目通过校验、导出、运行：1 / 1 帧写出，退出码 0，世界背景为中性灰 0.05，不是黑屏 |
+| 无 HDRI 的运行记录 | `run_metadata/manifest.json` 与 `status.json` 的 `world` 为 `{"kind":"neutral","color":[0.05,0.05,0.05]}`，候选 `hdri_path` 为 null |
 | n 边形与带边 PLY | `~/文档/cores.ply` 读到 1035 顶点、1837 面，不再读成空网格 |
 
 测试演示由本地 Blender 生成 HDRI，并使用偏置 CAD 原点的 mm / cm 目标及 m 遮挡物；单元测试另覆盖三种单位。演示是合成网格，尚未使用用户自己的生产模型和 Haven 资源批量验证。

@@ -6,8 +6,8 @@ import math
 
 import pytest
 
-from bproc_runtime import blender_backend
-from bproc_runtime.blender_backend import NEUTRAL_WORLD, BlenderBackend
+from bproc_core.config import DEFAULT_WORLD_COLOR
+from bproc_runtime.blender_backend import BlenderBackend
 
 
 class Socket:
@@ -69,7 +69,7 @@ def candidate(hdri=None, strength=0.7, rotation=90.0):
 def test_project_without_an_hdri_previews_on_neutral_grey():
     backend, tree, environment, background, images = make_backend()
     backend._apply_world(candidate(None))
-    assert background.inputs["Color"].default_value == (*NEUTRAL_WORLD, 1.0)
+    assert background.inputs["Color"].default_value == (*DEFAULT_WORLD_COLOR, 1.0)
     assert background.inputs["Color"].links == []
     assert environment.image is None
     assert images.loaded == []

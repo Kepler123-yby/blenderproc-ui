@@ -91,7 +91,7 @@ class BlenderViewer(QObject):
     def _hdri_hint(self) -> str:
         if self.state.config.hdri.files:
             return ""
-        return "（项目还没选环境图，预览用中性灰背景；导出前需要一张 .hdr / .exr）"
+        return "（还没选环境图，预览用中性灰背景）"
 
     @Slot(str)
     def _failed(self, message) -> None:

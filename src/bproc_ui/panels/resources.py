@@ -123,7 +123,7 @@ class ResourcesPanel(QWidget):
         self.rotation.changed.connect(self._hdri_changed)
         form.addRow("环境强度", self.strength)
         form.addRow("Z 旋转", self.rotation)
-        form.addRow(note("HDRI 提供背景与照明；视口网格仅为辅助线。"))
+        form.addRow(note("HDRI 提供背景与照明；未选时用中性灰 0.05 世界背景，视口网格仅为辅助线。"))
         self.error_label = QLabel()
         self.error_label.setObjectName("errorLabel")
         self.error_label.setWordWrap(True)

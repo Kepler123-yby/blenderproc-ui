@@ -71,6 +71,11 @@ class CameraSpec:
     auto_scale: bool = True
 
 
+# A project may start before its environment map is chosen: it then renders against this
+# neutral world, the same grey Blender's default world uses.
+DEFAULT_WORLD_COLOR = (0.05, 0.05, 0.05)
+
+
 @dataclass(frozen=True)
 class HdriSpec:
     files: tuple[Path, ...] = ()
@@ -253,8 +258,7 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
         finite("camera." + field_name, getattr(cam, field_name), positive=field_name in ("fx", "fy"))
     if not isinstance(cam.auto_scale, bool):
         issue("camera.auto_scale", "内参缩放选项必须是布尔值")
-    if not config.hdri.files:
-        issue("hdri.files", "请选择至少一张 HDRI 环境图（.hdr / .exr）")
+    # No HDRI yet is a supported state: the renderer falls back to DEFAULT_WORLD_COLOR.
     for index, path in enumerate(config.hdri.files):
         if not isinstance(path, Path):
             issue(f"hdri.files[{index}]", "环境图路径必须是 Path")
@@ -327,3 +331,10 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
     if isinstance(config.num_samples, int) and config.num_samples < len(config.regions):
         issue("regions", "样本数少于区域数，部分区域不会生成样本", "warning")
     return tuple(issues)
+
+
+def world_metadata(config: ProjectConfig) -> dict:
+    """Record what lit the scene: the chosen HDRI, or the default neutral background."""
+    if config.hdri.files:
+        return {"kind": "hdri", "files": [str(path) for path in config.hdri.files]}
+    return {"kind": "neutral", "color": list(DEFAULT_WORLD_COLOR)}

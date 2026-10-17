@@ -27,7 +27,8 @@ def test_incomplete_draft_can_be_saved_and_reloaded(tmp_path):
     draft = new_project(tmp_path)
     save_project(draft, tmp_path / "draft.yaml")
     assert load_project(tmp_path / "draft.yaml") == draft
-    assert {"targets", "anchor_key", "hdri.files"} <= error_fields(draft)
+    assert {"targets", "anchor_key"} <= error_fields(draft)
+    assert "hdri.files" not in error_fields(draft)
 
 
 @pytest.mark.parametrize("change,expected", [

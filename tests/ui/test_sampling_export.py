@@ -1,10 +1,12 @@
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 import shlex
 
 import pytest
 
 from bproc_core.project_io import load_project
-from bproc_core.config import Azimuth, Range
+from bproc_core.config import Azimuth, Range, validate_project
 from bproc_ui.panels.sampling import SamplingPanel
 from bproc_ui.panels.export import ExportPanel
 
@@ -64,14 +66,37 @@ def test_output_switch_exports_selected_snapshot(state, qtbot, tmp_path, monkeyp
 
 
 def test_export_reports_incomplete_draft_without_creating_output(state, qtbot, tmp_path):
-    state.update(hdri=replace(state.config.hdri, files=()))
+    state.update(targets=())
     panel = ExportPanel(state)
     qtbot.addWidget(panel)
     with pytest.raises(ValueError):
         panel.export_to(tmp_path / "job")
-    assert "hdri.files" in panel.validation.text()
+    assert "targets" in panel.validation.text()
     assert not (tmp_path / "job").exists()
 
+
+def test_draft_without_an_hdri_is_not_a_validation_error(state, qtbot):
+    state.update(hdri=replace(state.config.hdri, files=()))
+    panel = ExportPanel(state)
+    qtbot.addWidget(panel)
+    assert "hdri.files" not in panel.validation.text()
+    fields = {issue.field for issue in validate_project(state.config, check_files=False)
+              if issue.severity == "error"}
+    assert "hdri.files" not in fields
+
+
+def test_export_reaches_the_bundler_without_an_hdri(state, qtbot, tmp_path):
+    state.update(hdri=replace(state.config.hdri, files=()))
+    seen = {}
+
+    def export(config, path):
+        seen["files"] = config.hdri.files
+        return SimpleNamespace(directory=Path(path), command="cmd", preview_command="preview")
+
+    panel = ExportPanel(state, export_function=export)
+    qtbot.addWidget(panel)
+    panel.export_to(tmp_path / "job")
+    assert seen["files"] == ()
 
 def test_large_yaml_seed_load_and_unrelated_edits_preserve_exact_integer(state, qtbot, tmp_path):
     large = 2 ** 72 + 4294967297

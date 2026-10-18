@@ -49,3 +49,30 @@ def test_candidate_and_selection_do_not_mark_scientific_config_dirty(state):
     state.set_candidate(object())
     state.select_target("target-7")
     assert not state.dirty
+
+
+def test_context_revision_tracks_project_changes_only(state, tmp_path):
+    start = state.context_revision
+    state.set_candidate(object())
+    state.select_target("target-7")
+    state.set_meshes({})
+    assert state.context_revision == start                 # preview work never invalidates a snapshot
+    state.set_anchor("target-7")
+    assert state.context_revision == start + 1
+    state.set_project(replace(state.config, scene_count=9))
+    assert state.context_revision == start + 2
+    path = tmp_path / "saved.yaml"
+    state.save(path)
+    assert state.context_revision == start + 3             # save-as points at a different file
+    state.save()
+    assert state.context_revision == start + 3             # saving in place keeps the context
+
+
+def test_load_sets_the_new_path_before_announcing_it(state, tmp_path):
+    path = tmp_path / "loaded.yaml"
+    state.save(path)
+    seen = []
+    state.project_changed.connect(lambda: seen.append(state.path))
+    state.load(path)
+    assert seen == [path.resolve()]
+    assert state.dirty is False

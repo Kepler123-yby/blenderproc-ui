@@ -24,6 +24,12 @@ class ProjectState(QObject):
         self.candidate = None
         self.dirty = False
         self.path = None
+        # Bumped whenever the project behind the editor changes; background work compares it to
+        # decide whether a finished result still describes what the user is looking at.
+        self.context_revision = 0
+
+    def _touch_context(self):
+        self.context_revision += 1
 
     def _set_dirty(self, dirty):
         if self.dirty != dirty:
@@ -43,6 +49,7 @@ class ProjectState(QObject):
         if self.edited_target_key not in {t.asset.key for t in config.targets}:
             self.edited_target_key = config.targets[0].asset.key if config.targets else None
         self.candidate = None
+        self._touch_context()
         self._set_dirty(False)
         self.project_changed.emit()
         self.selection_changed.emit(self.edited_target_key)
@@ -68,6 +75,7 @@ class ProjectState(QObject):
             self.edited_target_key = config.targets[0].asset.key if config.targets else None
             self.selection_changed.emit(self.edited_target_key)
         self.candidate = None
+        self._touch_context()
         self._set_dirty(True)
         self.project_changed.emit()
         if stale:
@@ -100,13 +108,16 @@ class ProjectState(QObject):
     def load(self, path):
         config = load_project(Path(path))
         self.meshes = {}
+        self.path = Path(path).resolve()   # set before the change signal, so background work sees the new file
         self.set_project(config)
-        self.path = Path(path).resolve()
 
     def save(self, path=None):
         target = Path(path) if path is not None else self.path
         if target is None:
             raise ValueError("请先选择项目文件")
         save_project(self.config, target)
-        self.path = target.resolve()
+        resolved = target.resolve()
+        if resolved != self.path:
+            self.path = resolved
+            self._touch_context()          # save-as invalidates work started for the previous file
         self._set_dirty(False)

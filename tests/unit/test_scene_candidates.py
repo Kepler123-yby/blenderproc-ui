@@ -379,3 +379,42 @@ def test_occluder_offset_is_aimed_at_the_occlusion_window():
                            pose, config.camera)
         share = _covered_share(target, hull)
         assert config.occlusion.ratio.minimum <= share <= config.occlusion.ratio.maximum, share
+
+
+def _thin_plate_fixture(ratio):
+    """100 x 100 x 1 mm plates, occluder 1.2x the target, top view at 0.5 m.
+
+    The reviewer's counterexample: projected silhouettes are filled rectangles, so the hull
+    estimate is the coverage itself and a mis-aimed window is visible as a number, not as noise.
+    """
+    target_box = np.array([[-.05, -.05, -.0005], [.05, .05, .0005]])
+    occluder_box = np.array([[-.06, -.06, -.0006], [.06, .06, .0006]])
+    meshes = {"a": MeshData("a", bounds_corners(target_box), np.array([[0, 1, 2]]), None, target_box),
+              "o": MeshData("o", bounds_corners(occluder_box), np.array([[0, 1, 2]]), None, occluder_box)}
+    config = ProjectConfig(
+        targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
+        occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
+        regions=(RegionSpec(radius_m=Range(.5, .5), azimuth=Azimuth(0, 0, False),
+                            elevation_deg=Range(90, 90)),),
+        occlusion=OcclusionSpec(none_fraction=1., ratio=ratio, count=(1, 1),
+                                scale=Range(1.2, 1.2)))
+    pose = CameraPose(np.eye(4), np.array([0., 0., .5]), .5, 0., 0., .005, 50.)
+    return config, meshes, pose
+
+
+@pytest.mark.parametrize("window", [Range(.8, .9), Range(0., .01), Range(.3, .3), Range(.1, .5)])
+def test_the_aim_stays_inside_the_requested_window(window):
+    """Aiming outside the user's interval cannot be excused as estimator noise."""
+    config, meshes, pose = _thin_plate_fixture(window)
+    shares = []
+    for seed in range(12):
+        placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(seed), ())
+        assert isinstance(placements, list), placements
+        target = _silhouette(bounds_corners(meshes["a"].bounds_m), np.eye(4), pose, config.camera)
+        hull = _silhouette(bounds_corners(meshes["o"].bounds_m), placements[0].world_from_model,
+                          pose, config.camera)
+        shares.append(_covered_share(target, hull))
+    # A zero-width window is only reachable within rasterisation resolution (float area rounding),
+    # so allow a hair on it; non-degenerate windows must be hit exactly by the estimate.
+    slack = 1e-4 if window.minimum == window.maximum else 0.
+    assert all(window.minimum - slack <= share <= window.maximum + slack for share in shares), shares

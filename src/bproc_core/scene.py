@@ -280,20 +280,35 @@ def _aimed_offset(base, direction, mesh, scale, target_boxes, pose, config, rng,
     wanted = config.occlusion.ratio
     if wanted.maximum <= 0 or not target_boxes:
         return spread * rng.uniform(.1, .9)
-    aim = max(.02, min((wanted.minimum + wanted.maximum) / 2, wanted.maximum * .8))
+    # Aim inside the *user's* closed window, never near it: an 80-90 % window must not be aimed at
+    # 72 %, and a 0-1 % window must not be aimed at 2 %. Clamping after the midpoint keeps the
+    # target valid for any interval, including a fixed ratio where minimum == maximum.
+    aim = min(max((wanted.minimum + wanted.maximum) / 2, wanted.minimum), wanted.maximum)
     low, high = 0., max(spread * 2.5, 1e-9)
-    for _ in range(9):
-        middle = (low + high) / 2
+
+    def estimate(offset):
         matrix = np.eye(4)
         matrix[:3, :3] *= scale
-        matrix[:3, 3] = base + direction * middle - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
+        matrix[:3, 3] = base + direction * offset - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
         hull = _silhouette(bounds_corners(mesh.bounds_m), matrix, pose, config.camera)
-        estimate = 0. if hull is None else max(_covered_share(t, hull) for t in target_boxes)
-        if estimate > aim:
+        return 0. if hull is None else max(_covered_share(t, hull) for t in target_boxes)
+
+    for _ in range(10):
+        middle = (low + high) / 2
+        if estimate(middle) > aim:
             low = middle      # too much cover: move further aside
         else:
             high = middle
-    return (low + high) / 2
+    # Bisection alone is only accurate to its step; a linear refinement against the bracket's own
+    # estimates lands within a fraction of a percent, which tight windows (80-90 %, fixed ratios)
+    # need. Three extra evaluations, three candidates, keep the closest.
+    low_share, high_share = estimate(low), estimate(high)
+    candidates = [(abs(low_share - aim), low), (abs(high_share - aim), high)]
+    if low_share != high_share:
+        guess = low + (low_share - aim) * (high - low) / (low_share - high_share)
+        guess = min(max(guess, min(low, high)), max(low, high))
+        candidates.append((abs(estimate(guess) - aim), guess))
+    return min(candidates)[1]
 
 
 def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], pose: CameraPose,

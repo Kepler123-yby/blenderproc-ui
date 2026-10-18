@@ -1,6 +1,8 @@
 """Load canonical meshes once, converting units without changing their origins."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -226,39 +228,41 @@ def suggest_layout(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]
                          if target.asset.key == anchor_key), None)
     if anchor_index is None:
         raise ValueError("渲染中心必须是启用的目标")
-    extents = {target.asset.key: np.ptp(meshes[target.asset.key].bounds_m, axis=0) for target in enabled}
-    largest = max(float(extent.max()) for extent in extents.values())
+    bounds = {target.asset.key: meshes[target.asset.key].bounds_m for target in enabled}
+    spans = {key: np.ptp(value, axis=0) for key, value in bounds.items()}
+    largest = max(float(span.max()) for span in spans.values())
     if largest <= 0:
         raise ValueError("目标的包围盒为空")
     gap = largest * LAYOUT_GAP_FRACTION
     jitter_y = largest * .15
-    anchor_half = extents[enabled[anchor_index].asset.key][0] / 2
+
+    def span(key):
+        """X extent of a model as (low, high): CAD origins are not always at the centre."""
+        return float(bounds[key][0][0]), float(bounds[key][1][0])
+
+    anchor_low, anchor_high = span(enabled[anchor_index].asset.key)
     # The render centre is the reference point every other target is placed around; a jittered
     # anchor would move the whole layout and make the offsets below meaningless.
     boxes = {enabled[anchor_index].asset.key: Box(Range(0., 0.), Range(0., 0.), Range(0., 0.))}
-    left_edge, right_edge = -anchor_half - gap, anchor_half + gap
+    left_edge, right_edge = anchor_low - gap, anchor_high + gap
     for index, target in enumerate(enabled):
         if index == anchor_index:
             continue
-        half = extents[target.asset.key][0] / 2
-        width = max(largest * .5, 2 * half)
+        low, high = span(target.asset.key)
+        width = max(largest * .5, high - low)
         jitter = Range(-jitter_y, jitter_y)
         depth = Range(-.35 * jitter_y, .35 * jitter_y)
         if index < anchor_index:
-            near = left_edge - half - width
-            boxes[target.asset.key] = Box(Range(near, near + width), jitter, depth)
-            left_edge = near - half - gap
+            far = left_edge - high
+            near = far - width
+            boxes[target.asset.key] = Box(Range(near, far), jitter, depth)
+            left_edge = near + low - gap
         else:
-            near = right_edge + half
+            near = right_edge - low
             boxes[target.asset.key] = Box(Range(near, near + width), jitter, depth)
-            right_edge = near + width + half + gap
-    low, high = np.full(3, np.inf), np.full(3, -np.inf)
-    for target in enabled:
-        box = boxes[target.asset.key]
-        half = extents[target.asset.key] / 2
-        low = np.minimum(low, np.array([box.x.minimum, box.y.minimum, box.z.minimum]) - half)
-        high = np.maximum(high, np.array([box.x.maximum, box.y.maximum, box.z.maximum]) + half)
-    return boxes, framing_band(np.stack((low, high)), camera)
+            right_edge = near + width + high + gap
+    placed = tuple(replace(target, offset=boxes[target.asset.key]) for target in enabled)
+    return boxes, framing_band(content_bounds(meshes, placed), camera)
 
 
 def content_bounds(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]) -> np.ndarray | None:
@@ -272,11 +276,11 @@ def content_bounds(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]
         mesh = meshes.get(target.asset.key)
         if not target.enabled or mesh is None:
             continue
-        reach = np.array([max(abs(target.offset.x.minimum), abs(target.offset.x.maximum)),
-                          max(abs(target.offset.y.minimum), abs(target.offset.y.maximum)),
-                          max(abs(target.offset.z.minimum), abs(target.offset.z.maximum))])
-        half = np.ptp(mesh.bounds_m, axis=0) / 2
-        low, high = np.minimum(low, -reach - half), np.maximum(high, reach + half)
+        # CAD origins are not always at the centre, so each side adds its own model extent.
+        near = np.array([target.offset.x.minimum, target.offset.y.minimum, target.offset.z.minimum])
+        far = np.array([target.offset.x.maximum, target.offset.y.maximum, target.offset.z.maximum])
+        low = np.minimum(low, near + mesh.bounds_m[0])
+        high = np.maximum(high, far + mesh.bounds_m[1])
     if not np.isfinite(low).all() or not (high > low).all():
         return None
     return np.stack((low, high))

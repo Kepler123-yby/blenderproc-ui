@@ -108,3 +108,63 @@ def test_suggest_layout_drives_the_framing_distance_it_reports():
     bounds = content_bounds(meshes, placed)
     assert radius.minimum > np.ptp(bounds, axis=0).max() / 2, "the band must sit outside the content"
     assert radius.maximum == pytest.approx(radius.minimum * 1.35)
+
+
+
+def _intersects(first, second):
+    """True when two AABBs share volume on every axis."""
+    return bool(np.all(np.minimum(first[1], second[1]) > np.maximum(first[0], second[0])))
+
+
+def test_suggest_layout_respects_cad_origins_that_are_not_centred():
+    """A model whose origin sits on its corner must not be treated as centred on it."""
+    meshes = {"corner": make_mesh("corner", center=(.05, 0, 0), size=.1),
+              "offset": make_mesh("offset", center=(-.03, .02, 0), size=.1)}
+    targets = _targets([("corner", 1), ("offset", 2)])
+    boxes, radius = suggest_layout(meshes, targets, "corner", CameraSpec())
+
+    anchor_right = meshes["corner"].bounds_m[1][0]
+    free = boxes["offset"]
+    tightest_left = free.x.minimum + meshes["offset"].bounds_m[0][0]
+    assert tightest_left >= anchor_right + .1 * .1 - 1e-9, "the tight end of the band keeps the gap"
+    assert free.x.maximum > free.x.minimum
+
+    config = _config(tuple(replace(target, offset=boxes[target.asset.key]) for target in targets), radius, "corner")
+    for scene_index in range(60):
+        scene = propose_scene(config, meshes, scene_index)
+        assert isinstance(scene, SceneState), f"scene {scene_index} rejected: {getattr(scene, 'reason', '')}"
+        first, second = (placement_bounds(placement, meshes) for placement in scene.placements)
+        assert not _intersects(first, second), f"scene {scene_index} overlaps"
+
+
+def test_suggest_layout_leaves_meshes_and_ids_untouched():
+    meshes = {key: make_mesh(key, center=(.02, 0, 0), size=.1) for key in ("a", "b")}
+    before = {key: (mesh.key, mesh.vertices_m.copy(), mesh.bounds_m.copy()) for key, mesh in meshes.items()}
+    targets = _targets([("a", 1), ("b", 2)])
+
+    suggest_layout(meshes, targets, "a", CameraSpec())
+
+    for key, mesh in meshes.items():
+        name, vertices, bounds = before[key]
+        assert mesh.key == name
+        assert np.array_equal(mesh.vertices_m, vertices), "suggestions must not rewrite geometry"
+        assert np.array_equal(mesh.bounds_m, bounds), "suggestions must not rescale or recentre"
+
+
+def test_suggest_layout_keeps_the_authored_offset_of_a_disabled_target():
+    meshes = {"a": make_mesh("a", size=.1), "b": make_mesh("b", size=.1), "idle": make_mesh("idle", size=.1)}
+    authored = Box(Range(.4, .6), Range(-.1, .1), Range(-.1, .1))
+    targets = _targets([("a", 1), ("b", 2)]) + (
+        replace(TargetSpec(AssetSpec("idle", None), "idle", 3), enabled=False, offset=authored),)
+
+    boxes, radius = suggest_layout(meshes, targets, "a", CameraSpec())
+
+    assert set(boxes) == {"a", "b"}, "a disabled target must not get a suggestion"
+    assert "idle" not in boxes
+    placed = tuple(replace(target, offset=boxes[target.asset.key]) if target.enabled else target
+                   for target in targets)
+    assert placed[-1].offset == authored
+    everything = content_bounds(meshes, placed)
+    enabled_only = content_bounds(meshes, [target for target in placed if target.enabled])
+    assert np.array_equal(enabled_only, everything), "a disabled target must not widen the framing box"
+    assert everything[1][0] < .4, "the disabled target's authored offset must not leak in"

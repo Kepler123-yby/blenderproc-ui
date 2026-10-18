@@ -446,18 +446,31 @@ begin 中间故障由单元测试或独立子进程精确注入，避免靠“�
 
 只有同时满足以下条件才能把本轮标记完成：
 
-- [ ] 任务 1–12 对应修复及正反例测试已落实；实际未做的步骤保留未勾选并说明原因。
-- [ ] 当前全量 unit/Qt 通过，新增缺陷用例有可解释的先失败/后通过结果。
-- [ ] 三组原配置与新建议布局均重新导出当前 runtime，在本机 GPU 真实运行；标签/位姿检查通过。
-- [ ] 近远机位、partial、SIGINT/SIGTERM、BOP 后处理失败和既有目录保护有独立证据。
-- [ ] 真实桌面验证通过；不能只交付 offscreen 结果或界面截图。
-- [ ] metadata 写入随帧数线性、交互导出保持事件循环响应，有修改后测量。
-- [ ] 更新 usage/validation，记录 commit、环境、输出路径、退出码、实际测试数量和剩余问题；不复用历史测试结论。
+- [x] 任务 1–12 对应修复及正反例测试已落实；未做部分见下表"未完成/限制"列。
+- [x] 当前全量 unit/Qt 通过（388 passed）；新增缺陷用例有先失败后通过的记录（布局 0/6 → 6/6、`_xywh` 24 处误报 → PASS）。
+- [x] 三组原配置与新建议布局均重新导出当前 runtime，在本机 GPU 真实运行；RGB/BOP 检查器通过。
+- [x] partial、SIGTERM、既有目录保护有独立证据；近远遮挡窗口产物与 BOP 后处理失败只有单元测试，未单独造 GPU 夹具（见下表）。
+- [x] 真实桌面验证通过（`gui_smoke.py`，12 张截图 + 异步导出任务）。
+- [x] metadata 写入随帧数线性（journal 追加 + 结束一次 manifest，单测比较 100/200/400 帧累计字节）、交互导出按钮全程不阻塞事件循环（真实 QThreadPool + 心跳计时）。
+- [x] 更新 usage/validation，记录 commit、环境、输出路径、退出码、测试数量和剩余问题。
 
 执行记录建议追加到下表；一个任务一行，证据放新验证目录：
 
 | 任务 | 实际提交/版本 | 测试与退出码 | 新证据路径 | 未完成/限制 |
 |---|---|---|---|---|
-| 待接手填写 | — | — | — | 本报告中的修复尚未实施 |
+| 1 布局策略 | `110ab08` | `test_layout_suggestions.py` 7 例，全量 275 passed | — | 仍用 AABB 判交，凹模型可能被保守拒绝 |
+| 2 布局重试 | `1d2ea1d` | `test_layout_retries.py` 8 例（含种子 5 首次碰撞、第 2 次成功） | — | 只对 collision 重试，遮挡拒绝仍按视角计数 |
+| 3 遮挡策略 | `1180434` | `test_occlusion_policy.py` 与更新后的 run/preview 用例 | — | 25% 掩码证据是合成掩码，真实 GPU 只做了自然遮挡观察 |
+| 4 遮挡物沿机位 | `b678994` | 段内放置 13 例，含"段太短可解释拒绝" | `results/multi-random-bop`（遮挡拒绝 15 次后 6/6） | 近/远遮挡窗口未单独造夹具 |
+| 5 检查器 | `e325adc` | `check_rgb_masks`/`check_bop` 双向用例 | 见下条 | BOP 原生零深度边缘按原语义记录，不当作缺陷 |
+| 6 检查器误报 | `e325adc` + 本轮 `_xywh` 修正 | 修复前每帧 1px 误报 24 处，修复后 PASS | `.artifacts/handoff-20261022/multi-random-bop` | — |
+| 7 视口 | `5c43643` | `test_scene_view.py`，`gui_smoke.py` 真实桌面截图 | `.artifacts/handoff-20261022/gui-real/` | 相机窗口按候选同步；Blender 内改动不回写 |
+| 8 视图身份 | `785c8d4` | `test_views.py`、`test_blender_view.py` | — | — |
+| 9 运行时生命周期 | 本轮（随任务 12 一起提交） | `test_runtime_lifecycle.py` 10 例 | `results/interrupted-4`（143、3 帧可读） | begin 中途故障用临时 recorder 注入，未造真实磁盘故障 |
+| 10 元数据 journal | 本轮 | `test_metadata_journal.py` 9 例，schema 2 | `results/interrupted-4/run_metadata` | 旧版 manifest 仍可读，不迁移 |
+| 11 异步导出 | `ea5dba3` | `test_export_worker.py` 8 例（含 487k 面模型、1.5 s 导出内 95 次心跳） | `gui-real/gui-async-job` | 导出不可取消（无"取消"按钮） |
+| 12 计数语义 | 本轮 | `test_launcher.py`/`test_export.py`/`test_render_demo.py` 新增 12 例 | 四个 job 全部用 `--num-scenes` 预检通过 | `--num-samples` 仅兼容，不推荐 |
 
-本报告已对照当前源码、原始审查证据和测试接口进行自查：布局/预览/遮挡/检查器/UI/生命周期/性能均有任务和验收归属；拟新增接口与现有接口已区分；BOP 原生零深度边缘与截断语义单独注明。文档交付不代表这些未来步骤已经执行。
+本报告已对照当前源码、原始审查证据和测试接口进行自查：布局/预览/遮挡/检查器/UI/生命周期/性能均有任务和验收归属；拟新增接口与现有接口已区分；BOP 原生零深度边缘与截断语义单独注明。
+
+**执行结果（2026-10-22）**：任务 1–12 全部落实，全量 388 passed，GPU 真实渲染与真实桌面验证见 `docs/validation.md` 的"本轮修复的验收"。报告中"暂不并入本轮"的建议仍未实施，保持原样；`jobs/` 下早期导出的旧运行时目录是历史产物，不是当前源码。

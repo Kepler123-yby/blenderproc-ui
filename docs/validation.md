@@ -12,7 +12,7 @@
 
 | 检查 | 实际结果 |
 |---|---|
-| 单元与 Qt 测试 | **273 passed**，4.01 s（含 GPU、PLY、无 HDRI、Blender 查看、固定机位、场景/视角、目标材质与遮挡物摆位用例） |
+| 单元与 Qt 测试 | **388 passed**，12.8 s（含 GPU、PLY、无 HDRI、Blender 查看、场景/视角、布局策略与重试、遮挡策略、目标材质、遮挡物沿机位、视图身份、运行生命周期、元数据 journal、异步导出） |
 | RGB + mask + mask_visib | 同场景两个目标 ID 2 / 7，4 / 4 完成，语义检查通过 |
 | BOP | 4 / 4 完成；深度、K、位姿、模型毫米坐标、GT 索引和 gt_info 检查通过 |
 | 无 BOP toolkit 的轻格式 | toolkit_path=None，离线预检及 4 / 4 渲染通过 |
@@ -154,6 +154,27 @@ env -u PYTHONPATH .venv/bin/python tools/render_demo.py \
 真实中断测试还暴露了 BlenderProc 原生进度线程与 bpy 中途抛异常的问题。后端避开其进度线程，并将中断延迟到当前原生渲染调用结束，再完成已接受帧的提交与后处理。因此 Ctrl+C 可能需要等待当前渲染 pass 结束；不会声称立即取消，也不会把未完成的 BOP 后处理计为成功。
 
 实现使用原生协作工具并行落实模块，接口稳定后集成验证。初始依赖下载期间先实现后补齐测试，没有执行计划中每一项“先红后绿”的历史命令；提交按模块合并，不伪造逐任务红测试或逐任务提交记录。
+
+## 本轮修复的验收（2026-10-22）
+
+环境：`.venv` Python 3.10.12 / PySide6 6.8.3 / vispy 0.15.2 / trimesh 4.12.2；运行环境 `bop` Python 3.8.20 / BlenderProc 2.8.0 / Blender 4.2.1 LTS；GPU 为 RTX 3060 Ti（OPTIX，CPU 设备禁用，BOP 走 NVIDIA EGL）。全量 unit/Qt 回归 **388 passed**（12.8 s，offscreen + `pytestqt`）。
+
+证据目录 `.artifacts/handoff-20261022/`（任务、结果与日志都在这里；旧审计快照未被改动）：
+
+| 用例 | 规模 | 退出码 | 结果 | 检查器 |
+|---|---|---|---|---|
+| 原 cores RGB | 2 场景 × 3 视角 | 0 | 6/6 保存，0 skipped | `check_rgb_masks.py` PASS |
+| 原固定机位 RGB | 2 场景 × 2 固定视角 | 0 | 4/4 保存（遮挡拒绝 10 次、不可见拒绝 13 次后接受） | `check_rgb_masks.py` PASS |
+| 原随机 BOP | 2 场景 × 3 视角 | 0 | 6/6 保存 | `check_bop.py` PASS |
+| 新建议布局 | 2 场景 × 3 视角，ratio `[0,1]`，无专用遮挡物 | 0 | 6/6 保存（同一夹具在修复前是 0/6 collision） | `check_rgb_masks.py` PASS |
+| 原 collision 快照 | 2 场景 × 3 视角 | 2 | 0/6，skipped 6，`collision: 60` | 保留为历史失败证据，未篡改 |
+| 手工不可能布局 | 两目标固定相交，2 场景 × 3 视角 | 2 | 0/6，skipped 6，`collision: 60`（布局阶段有界结束） | `status.json` + `rejections.jsonl` |
+| SIGTERM 中断 | 12 场景 × 3 视角，256 samples | 143 | 已提交 3 帧，`status=interrupted` | `frames.jsonl` 可逐行恢复；`check_rgb_masks.py` 明确拒绝把中断数据集判为完整 |
+
+补充说明：
+
+- BOP 检查器原来的 `_xywh` 用 `max - min + 1` 计算 bbox，而 BlenderProc 的 `scene_gt_info` 用 `max - min`（外沿像素中心之间的跨度），导致每帧都误报宽度/高度差 1 像素（24 处）。已改为原生语义并在函数 docstring 中记录，改动后 `check_bop.py` PASS。这不是放宽检查，而是把检查器对齐到被检查产物的定义。
+- 真实桌面（`DISPLAY=:1`）跑 `tools/gui_smoke.py` 生成了 12 张截图与 `gui-manifest.json`，包含视口/相机窗口、统一红色、切换渲染中心、导出 RGB 与 BOP 两份快照，以及一次异步导出任务（`gui-async-job`）。Qt offscreen 用例只证明不创建 GL 上下文时可以工作，不能替代这组截图。
 
 ## 当前边界
 

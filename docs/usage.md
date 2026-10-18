@@ -103,11 +103,18 @@ Ctrl+S 保存 YAML，草稿允许缺少资源；“检查配置”列出具体�
 
 ```bash
 conda run --no-capture-output -n bop python /任务目录/run_job.py --check-only
-conda run --no-capture-output -n bop python /任务目录/run_job.py --num-samples 4 --output /新的试渲染父目录
+conda run --no-capture-output -n bop python /任务目录/run_job.py --num-scenes 1 --output /新的试渲染父目录
 conda run --no-capture-output -n bop python /任务目录/run_job.py
 ```
 
 `--output` 是父目录，最终路径为 `<父目录>/<dataset_name>`。试渲染和完整任务必须采用不同最终目录。`--format rgb_masks|bop` 可以临时切换格式，并重新检查所需依赖。UI 仅复制命令，不执行渲染。
+
+两个计数选项互斥，都从启动器透传到预检与渲染：
+
+- `--num-scenes N` 只渲染前 N 个场景，每个场景的视角数不变；试渲染默认用它（`--num-scenes 1`）。
+- `--num-samples N` 是旧参数，只保留兼容：按张数截断，向上取整到整场景。3 视角项目里 1/4/5 张实际是 3/3/6 张，所以界面不再承诺"4 张"。
+
+导出面板的"少量试渲染"命令固定为 `--num-scenes 1`，实际张数等于该项目的每场景视角数。两参数同时出现会被启动器、预检和渲染 CLI 一致拒绝。
 
 启动器兼容 conda Python 3.8，用实际 Blender Python 3.11 预检真实依赖版本、导入位置与安装缓存。通过后直接启动指定 Blender，沿用 BlenderProc 2.8 的初始化参数，同时准确转发中断信号。渲染入口首行仍为 `import blenderproc as bproc`。
 
@@ -131,6 +138,6 @@ dataset/
 
 `BOP` 默认 RGB JPEG，另有深度 PNG、相机、位姿、canonical models、双掩码和 `scene_gt_info.json`。模型坐标与位姿平移用毫米；默认深度恢复公式为 `PNG数值 × 0.1 / 1000` 米。掩码后缀是 **GT 列表索引**，例如对象 ID 2 和 7 对应索引 0 和 1。BOP 可见性使用原生 0.015 m 容差，不等同于采样验收的精确分割遮挡率。本版不生成 COCO / YOLO。
 
-`run_metadata/status.json` 记录 requested、written_frames、saved、skipped 和失败原因；manifest 记录每帧相机、位姿、环境、光源及遮挡率。BOP 只有后处理完成才计入 saved。退出码：完成 0、部分完成 2、失败 1、SIGINT 130、SIGTERM 143。
+`run_metadata/status.json` 记录 requested、written_frames、saved、skipped 和失败原因。每帧提交时先向 `run_metadata/frames.jsonl` 追加并落盘一行（相机、位姿、环境、光源、遮挡率），整轮结束时再一次性写 `manifest.json`；因此写入量随帧数线性增长，中断后 journal 仍可逐行读取，末尾未写完的一行默认报错、只允许显式按"可恢复"方式忽略。BOP 只有后处理完成才计入 saved。退出码：完成 0、部分完成 2、失败 1、SIGINT 130、SIGTERM 143。
 
 已有任务或输出目录（包括空目录、软链接、断链）均拒绝覆盖。中断保留已有结果供检查，下次换新目录；不做断点续跑。

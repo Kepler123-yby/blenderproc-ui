@@ -84,7 +84,9 @@ def valid_bop_output(tmp_path):
             Image.fromarray(mask.astype(np.uint8) * 255).save(scene / kind / f"000000_{index:06d}.png")
         poses.append({"obj_id": placement.obj_id, "cam_R_m2c": matrix[:3, :3].reshape(-1).tolist(), "cam_t_m2c": (matrix[:3, 3]*1000).tolist()})
         infos.append({"px_count_all": int(mask.sum()), "px_count_valid": int(mask.sum()-1), "px_count_visib": int(mask.sum()), "visib_fract": 1.0,
-                      "bbox_obj": [int(lo[0]), int(lo[1]), int(hi[0]-lo[0]+1), int(hi[1]-lo[1]+1)], "bbox_visib": [int(lo[0]), int(lo[1]), int(hi[0]-lo[0]+1), int(hi[1]-lo[1]+1)]})
+                      # BlenderProc records the span between the outer pixel centres (max - min),
+                      # so a 5-pixel run from 31 to 35 is written as width 4, not 5.
+                      "bbox_obj": [int(lo[0]), int(lo[1]), int(hi[0]-lo[0]), int(hi[1]-lo[1])], "bbox_visib": [int(lo[0]), int(lo[1]), int(hi[0]-lo[0]), int(hi[1]-lo[1])]})
     Image.fromarray(depth).save(scene / "depth/000000.png")
     Image.fromarray(np.zeros((48, 64, 3), dtype=np.uint8)).save(scene / "rgb/000000.png")
     atomic_json(scene / "scene_gt.json", {"0": poses})

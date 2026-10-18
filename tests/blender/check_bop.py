@@ -19,11 +19,16 @@ from bproc_core.assets import load_mesh, mesh_diameter_m
 
 
 def _xywh(mask: np.ndarray):
-    """Inclusive BOP bounding box ``[x, y, w, h]`` of a boolean mask, or None when empty."""
+    """BOP ``[x, y, w, h]`` of a boolean mask, or None when empty.
+
+    BlenderProc writes the bounding box as ``max - min`` (the span between the outer pixel
+    centres). Measuring ``max - min + 1`` made every bbox look one pixel too narrow, so the
+    replay on this dataset reported a mismatch on every frame.
+    """
     rows, cols = np.nonzero(mask)
     if not rows.size:
         return None
-    return [int(cols.min()), int(rows.min()), int(cols.max() - cols.min() + 1), int(rows.max() - rows.min() + 1)]
+    return [int(cols.min()), int(rows.min()), int(cols.max() - cols.min()), int(rows.max() - rows.min())]
 
 
 def _touches_border(mask: np.ndarray) -> bool:

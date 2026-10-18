@@ -125,3 +125,30 @@ def test_gt_delta_scales_with_the_target_so_millimetre_scenes_stay_visible():
     project = replace(config, targets=(target,), occluders=())
     assert gt_delta(project, {target.asset.key: mesh(.001)}) < .0005
     assert gt_delta(project, {target.asset.key: mesh(.3)}) == pytest.approx(.015)
+
+
+def test_gt_delta_takes_the_smallest_target_in_a_mixed_scene():
+    """One tolerance serves the whole dataset, so a large part must not vouch for a small one."""
+    from dataclasses import replace
+    from pathlib import Path
+
+    import numpy as np
+
+    from bproc_core.assets import MeshData
+    from bproc_runtime.bop_postprocess import gt_delta, gt_delta_by_object
+    from tests.factories import make_project
+
+    def mesh(extent):
+        corners = np.array([[x, y, z] for x in (0, extent) for y in (0, extent) for z in (0, extent)])
+        return MeshData("k", corners, np.zeros((0, 3), int), None, corners)
+
+    config = make_project(Path(tempfile.mkdtemp()))
+    small, large = config.targets[0], replace(config.targets[1], asset=replace(
+        config.targets[1].asset, key="large"))
+    project = replace(config, targets=(small, large), occluders=())
+    meshes = {small.asset.key: mesh(.001), large.asset.key: mesh(.1)}
+    by_object = gt_delta_by_object(project, meshes)
+    assert by_object[small.obj_id] < .0003
+    assert by_object[large.obj_id] == pytest.approx(.005)
+    # 5 % of the largest target (5 mm) would hide an occluder from a 1 mm part entirely.
+    assert gt_delta(project, meshes) == pytest.approx(by_object[small.obj_id])

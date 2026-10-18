@@ -22,6 +22,45 @@ class RunTerminated(BaseException):
     pass
 
 
+#: Target size ratio above which one dataset cannot honestly describe every object.
+MIXED_SCALE_FACTOR = 10.0
+
+
+def target_extents(config, meshes) -> list[float]:
+    """Largest bounding-box side per enabled target, in metres."""
+    extents = []
+    for target in config.targets:
+        if not target.enabled or target.asset.key not in meshes:
+            continue
+        bounds = np.asarray(meshes[target.asset.key].bounds_m, dtype=float)
+        extents.append(float((bounds[1] - bounds[0]).max()))
+    return extents
+
+
+def warn_mixed_scale(config, meshes, recorder) -> float:
+    """Report the dataset-format limits that a mixed-size scene runs into. Returns the ratio.
+
+    Two format-level facts cannot follow the smallest object: the BOP GT depth tolerance is one
+    value per dataset (we take the smallest target's, so nothing is over-reported as visible) and
+    the occlusion window is one interval for every target, so a 1 mm part next to a 20 mm part
+    cannot be partly covered in the same frame as the large one.
+    """
+    extents = [value for value in target_extents(config, meshes) if value > 0]
+    if len(extents) < 2:
+        return 1.0
+    ratio = max(extents) / min(extents)
+    if ratio <= MIXED_SCALE_FACTOR:
+        return ratio
+    if config.occlusion.ratio.minimum > 0:
+        recorder.warn("mixed_scale_occlusion",
+                      f"启用目标尺寸相差 {ratio:.0f}×，同一个遮挡比例窗口〔{config.occlusion.ratio.minimum:g}–"
+                      f"{config.occlusion.ratio.maximum:g}〕无法同时适配最大与最小目标；先按尺度分组分别生成")
+    recorder.warn("mixed_scale_tolerance",
+                  f"启用目标尺寸相差 {ratio:.0f}×，BOP GT 深度容差按最小目标取值（更严），"
+                  "大目标标注同样使用该容差；如需各自容差请按尺度拆分数据集")
+    return ratio
+
+
 def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSummary:
     written = saved = committed = 0
     failures = Counter()
@@ -72,6 +111,7 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
             old_handlers[signum] = signal.signal(signum, interrupt)
     try:
         recorder.begin(config)
+        warn_mixed_scale(config, meshes, recorder)
         native_call(backend.prepare, config, meshes)
         for scene_index in range(config.scene_count):
             def layout_rejected(layout_attempt_index, rejection, scene_index=scene_index):

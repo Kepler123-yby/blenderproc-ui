@@ -95,12 +95,16 @@ class Writer:
 class Recorder:
     def __init__(self):
         self.rejections, self.frames, self.summary = [], [], None
+        self.warnings = []
 
     def begin(self, config):
         pass
 
     def record_frame(self, ref, candidate, evidence):
         self.frames.append(ref)
+
+    def warn(self, code, message):
+        self.warnings.append(code)
 
     def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view", details=None):
         self.rejections.append((scene_index, view_index, attempt_index, reason, phase))

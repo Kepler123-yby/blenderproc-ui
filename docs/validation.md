@@ -157,9 +157,11 @@ env -u PYTHONPATH .venv/bin/python tools/render_demo.py \
 
 ## 本轮修复的验收（2026-10-22）
 
-环境：`.venv` Python 3.10.12 / PySide6 6.8.3 / vispy 0.15.2 / trimesh 4.12.2；运行环境 `bop` Python 3.8.20 / BlenderProc 2.8.0 / Blender 4.2.1 LTS；GPU 为 RTX 3060 Ti（OPTIX，CPU 设备禁用，BOP 走 NVIDIA EGL）。全量 unit/Qt 回归 **388 passed**（12.8 s，offscreen + `pytestqt`）。
+环境：`.venv` Python 3.10.12 / PySide6 6.8.3 / vispy 0.15.2 / trimesh 4.12.2；运行环境 `bop` Python 3.8.20 / BlenderProc 2.8.0 / Blender 4.2.1 LTS；GPU 为 RTX 3060 Ti（OPTIX，CPU 设备禁用，BOP 走 NVIDIA EGL）。全量 unit/Qt 回归 **434 passed**（17.2 s，offscreen + `pytestqt`）。
 
-证据目录 `.artifacts/handoff-20261022/`（任务、结果与日志都在这里；旧审计快照未被改动）：
+证据目录 `.artifacts/handoff-20261022/` 与 `.artifacts/review4/`（任务、结果与日志都在这里；旧审计快照未被改动）。两者都在 `.artifacts/` 下，已被 `.gitignore` 忽略，重新生成的任务不会进仓库。
+
+两个不同的比率，全文按这两个名字使用：**提案接受率** = 保存帧数 ÷ 提案总数（含被拒提案），衡量采样器好不好抽；**出图率** = `saved ÷ requested`，衡量任务有没有完成。下面每一行证据都满足 `requested = saved + skipped`，没有第三种去向。
 
 | 用例 | 规模 | 退出码 | 结果 | 检查器 |
 |---|---|---|---|---|
@@ -170,14 +172,21 @@ env -u PYTHONPATH .venv/bin/python tools/render_demo.py \
 | 原 collision 快照 | 2 场景 × 3 视角 | 2 | 0/6，skipped 6，`collision: 60` | 保留为历史失败证据，未篡改 |
 | 手工不可能布局 | 两目标固定相交，2 场景 × 3 视角 | 2 | 0/6，skipped 6，`collision: 60`（布局阶段有界结束） | `status.json` + `rejections.jsonl` |
 | SIGTERM 中断 | 12 场景 × 3 视角，256 samples | 143 | 已提交 3 帧，`status=interrupted` | `frames.jsonl` 可逐行恢复；`check_rgb_masks.py` 明确拒绝把中断数据集判为完整 |
+| 双机位 0.5 m / 5 m | 1 场景 × 2 固定视角（384×288） | 0 | 2/2 保存 | `check_bop.py` PASS |
+| 混尺度 1 mm + 20 mm | 1 场景 × 2 固定视角（640×480），depth_scale 0.05 mm | 0 | 2/2 保存（修改前同一夹具 0/2，全部 collision），`status.json` 自动写入 `mixed_scale_tolerance` | 逐目标核到掩码与深度；`check_bop.py` 的深度一致性对最小目标不通过（>2 mm，见边界） |
+| 信号矩阵 ×4 | 60 场景 × 4 视角 = 240 帧，RGB 与 BOP × SIGINT/SIGTERM | 130 / 143 | `saved 2 + skipped 238 = requested 240` 四种情形一致 | 引用文件 0 缺失，GT 与已保存帧一致 |
 
 补充说明：
 
 - BOP 检查器原来的 `_xywh` 用 `max - min + 1` 计算 bbox，而 BlenderProc 的 `scene_gt_info` 用 `max - min`（外沿像素中心之间的跨度），导致每帧都误报宽度/高度差 1 像素（24 处）。已改为原生语义并在函数 docstring 中记录，改动后 `check_bop.py` PASS。这不是放宽检查，而是把检查器对齐到被检查产物的定义。
 - 真实桌面（`DISPLAY=:1`）跑 `tools/gui_smoke.py` 生成了 12 张截图与 `gui-manifest.json`，包含视口/相机窗口、统一红色、切换渲染中心、导出 RGB 与 BOP 两份快照，以及一次异步导出任务（`gui-async-job`）。Qt offscreen 用例只证明不创建 GL 上下文时可以工作，不能替代这组截图。
+- 预览候选在后台线程里算（`src/bproc_ui/preview.py::_Search`），连续三次点“刷新候选”只启动一个搜索。实测（`.artifacts/review4/preview_latency.py`）：99.6 万面的模型，单次搜索 0.4–1.8 ms，1 ms 心跳的最大事件循环间隔 0–1.8 ms；同一个脚本还能看到重复点击不会排队。窗口里的提示拆成两行：常驻模式说明（`preview_hint`）+ 当前候选状态（`preview_state`），不再和项目摘要挤在状态栏。
+- 检查器现在会核对 manifest 引用的图片是否真的存在（`tests/blender/_checks.py::missing_images`）：删掉一张被引用的 `rgb/000000.*` 就会失败，不再只看行数。7 份交付证据（`win-high`/`win-low`/`bop-current` 与四个信号数据集）在仓库检查器下逐个 PASS，`frames` 与磁盘文件数一致。
 
 ## 当前边界
 
 视口是几何预览；真实光照和遮挡依赖终端 Blender 渲染。首版保守 AABB 检查可能拒绝可行的凹模型布局，且不自动随机旋转目标。仅支持不透明面网格和基础颜色；不导入完整三维背景、不做 YOLO / COCO 转换、断点续跑或渲染队列。BOP 适配器针对 2.8.0 的原生接口，升级 BlenderProc 后需重新验证。
 
-`occlusion.ratio` 由采样器主动瞄准：遮挡物的大小按“看起来是目标的多少倍”抽取，物理尺寸由它到相机的距离反推；横向偏移对投影凸包做 9 步二分，使估计覆盖率落在窗口中部（`src/bproc_core/scene.py::occluder_placements` / `_aimed_offset`）。2026-10-18 的实测：240 帧试生产在瞄准前有 737 次拒绝（提案接受率 24.6%），瞄准后同一项目 240/240 保存、0 次拒绝、耗时 427 s → 186 s，204 个有遮挡帧的遮挡比全部落在 [0.05, 0.5]，p10/中位/p90 为 0.000 / 0.275 / 0.361（36 帧属于无遮挡类别，遮挡比 0 是设计值）；双机位验收里 0.5 m 与 5 m 机位的实际遮挡为 23.9% 与 44.4%。凸包仍比凹形轮廓大，所以估计是偏保守的近似；目标像素极少时（5 m 下 10 cm 目标只剩约 236 个掩码像素）遮挡比的量化误差仍有数个百分点，此时 `visib_fract` 只能当趋势看。数据集不做 train/val 划分：所有场景写在同一个目录，`run_metadata/frames.jsonl` 每帧带 `candidate.scene_index` 与（BOP 下的）`bop_scene_id`，下游按 scene 过滤即可切分，避免同一场景的多视图跨集合泄漏。BOP 的 GT 可见性容差按最大目标边长缩放（5%，下限两个深度步长、上限 15 mm），毫米级场景因此不再把遮挡物算成可见；已验证的尺度下限是 1 mm 目标、5 mm 机位。
+`occlusion.ratio` 由采样器主动瞄准：遮挡物的大小按“看起来是目标的多少倍”抽取，物理尺寸由它到相机的距离反推；横向偏移对投影凸包做 9 步二分，使估计覆盖率落在窗口中部（`src/bproc_core/scene.py::occluder_placements` / `_aimed_offset`）。2026-10-18 的实测：240 帧试生产在瞄准前有 737 次拒绝（提案接受率 24.6%），瞄准后同一项目 240/240 保存、0 次拒绝、耗时 427 s → 186 s，204 个有遮挡帧的遮挡比全部落在 [0.05, 0.5]，p10/中位/p90 为 0.000 / 0.275 / 0.361（36 帧属于无遮挡类别，遮挡比 0 是设计值）；双机位验收里 0.5 m 与 5 m 机位的实际遮挡为 23.9% 与 44.4%。凸包仍比凹形轮廓大，所以估计是偏保守的近似；目标像素极少时（5 m 下 10 cm 目标只剩约 80 个掩码像素）遮挡比的量化误差仍有数个百分点，此时 `visib_fract` 只能当趋势看。数据集不做 train/val 划分：所有场景写在同一个目录，`run_metadata/frames.jsonl` 每帧带 `candidate.scene_index` 与（BOP 下的）`bop_scene_id`，下游按 scene 过滤即可切分，避免同一场景的多视图跨集合泄漏。BOP 的 GT 可见性容差按最大目标边长缩放（5%，下限两个深度步长、上限 15 mm），毫米级场景因此不再把遮挡物算成可见；已验证的尺度下限是 1 mm 目标、5 mm 机位。
+
+**混尺度是数据集格式的边界，不是靠调参能解决的事。** 同一数据集只能有一份 BOP GT 深度容差和一份遮挡比例窗口：容差按最小目标取值（更严，不会把小件误标为可见，代价是大件的标注同样用这个严容差）；遮挡窗口是全局的，1 mm 件与 20 mm 件并存时，一个窗口无法同时“部分遮挡”两者。2026-10-18 实测：1 mm 件旁边放 20 mm 件（相差 20×）可以出图，2/2 保存，`status.json` 自动写入 `warnings`（`mixed_scale_tolerance`，存在遮挡窗口时再加 `mixed_scale_occlusion`）。但 `check_bop.py` 对这份数据的深度一致性报错：最小目标的 `mask_visib` 边缘取样到了更远的面（同一帧里 20 mm 件比 1 mm 件离镜头更近的部分），中位偏差 0，末尾 1% 像素偏 26 mm，超过 2 mm 的幅度上限。也就是说：能出图，但一个数据集里的深度—可见性语义不能同时服务相差 20× 的两个目标。要两者都过检查，只能按尺度拆成两个数据集分别生成 —— 本轮不做，列为已知边界。

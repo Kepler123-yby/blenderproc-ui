@@ -210,10 +210,14 @@ class MainWindow(QMainWindow):
         controls.addWidget(refresh)
         controls.addStretch()
         sample_layout.addLayout(controls)
-        self.preview_status = QLabel("导入目标，调整球坐标范围，然后查看候选构图")
-        self.preview_status.setObjectName("muted")
-        self.preview_status.setWordWrap(True)
-        sample_layout.addWidget(self.preview_status)
+        self.preview_hint = QLabel()
+        self.preview_hint.setObjectName("muted")
+        self.preview_hint.setWordWrap(True)
+        sample_layout.addWidget(self.preview_hint)
+        self.preview_state = QLabel("导入目标后这里显示候选是否可用")
+        self.preview_state.setObjectName("muted")
+        self.preview_state.setWordWrap(True)
+        sample_layout.addWidget(self.preview_state)
         self.bottom.addTab(samples, "▥  采样机位")
         command_widget = QWidget()
         command_layout = QHBoxLayout(command_widget)
@@ -333,7 +337,14 @@ class MainWindow(QMainWindow):
             self.viewport_caption.setText("  用户透视 · 辅助网格不参与输出")
 
     def _preview_status(self, message):
-        self.preview_status.setText(message)
+        """Transient line only: the persistent guidance lives in ``preview_hint``."""
+        self.preview_state.setText(message)
+
+    def _update_hint(self):
+        if self.state.config.camera_mode == "fixed":
+            self.preview_hint.setText("固定机位：视角序号对应机位列表里的第几台；候选只会来自这些机位。")
+        else:
+            self.preview_hint.setText("随机区域：在右侧调整距离/方位/仰角范围；换视角序号即换一组采样。")
 
     def _export_stale(self):
         """A shown command must never look like it belongs to the current project."""
@@ -393,12 +404,18 @@ class MainWindow(QMainWindow):
         self.sample_index.setValue(1 if pinned else self.sample_index.value())
         self.sample_index.setEnabled(not pinned)
         self.scene_view.set_regions(config, self.sampling.current_region_key)
+        if self.state.candidate is not None:
+            # Both viewports read the colour from the config, so an appearance-only change has to
+            # redraw them explicitly; geometry-only updates still arrive through candidate_changed.
+            self.camera_preview.set_scene(self.state.candidate, self.state.meshes,
+                                          target_preview_rgba(config))
         cameras = (f"{len(config.fixed_cameras)} 个固定机位" if config.camera_mode == "fixed"
                    else f"{len(config.regions)} 个随机区域 · 每场景 {config.views} 视角")
         self.statusBar().showMessage(f"{sum(t.enabled for t in config.targets)} 个启用目标    |    "
                                      f"{cameras}"
                                      f"    |    {config.scene_count:,} 场景 × {config.views} 视角 = {config.total_shots:,} 张    |    "
                                      + ("RGB + mask + mask_visib" if config.output.format == "rgb_masks" else "BOP"))
+        self._update_hint()
         self._update_title()
         self._updating = False
 

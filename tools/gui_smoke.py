@@ -53,6 +53,17 @@ def main():
         window.close()
         app.quit()
 
+    def wait_for_candidate(anchor=None, timeout=20.0):
+        """The preview searches on a worker thread, so wait for the result instead of its return."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            candidate = state.candidate
+            if candidate is not None and (anchor is None or candidate.anchor_key == anchor):
+                return candidate
+            app.processEvents()
+            time.sleep(0.02)
+        return None
+
     def finish():
         try:
             window.camera_preview.move(window.x() + 90, window.y() + 125)
@@ -116,8 +127,9 @@ def main():
             if alternatives:
                 original_anchor = state.config.anchor_key
                 state.set_anchor(alternatives[0])
-                if window.preview.refresh() is None:
-                    raise RuntimeError("Center switch could not produce a candidate: " + window.preview_status.text())
+                window.preview.refresh()
+                if wait_for_candidate(alternatives[0]) is None:
+                    raise RuntimeError("Center switch could not produce a candidate: " + window.preview_state.text())
                 app.processEvents()
                 expected_name = next(target.name for target in state.config.targets if target.asset.key == alternatives[0])
                 evidence["alternate_center_caption"] = window.camera_preview.caption.text()
@@ -198,9 +210,9 @@ def main():
         if state.candidate is not None:
             QTimer.singleShot(400, finish)
         elif time.monotonic() - started > args.timeout:
-            evidence.update(status="failed", error=window.preview_status.text())
+            evidence.update(status="failed", error=window.preview_state.text())
             (destination / "gui-manifest.json").write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
-            print("GUI smoke timed out: " + window.preview_status.text(), file=sys.stderr)
+            print("GUI smoke timed out: " + window.preview_state.text(), file=sys.stderr)
             stop()
         else:
             QTimer.singleShot(100, poll)

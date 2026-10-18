@@ -63,12 +63,13 @@ class JsonRunRecorder:
         from bproc_core.project_io import save_project
         self._config = config
         self._world = world_metadata(config)
+        self._warnings: list[dict] = []
         self._seed = config.seed
         self.root.mkdir(parents=True, exist_ok=True)
         self._started = datetime.now(timezone.utc).isoformat()
         atomic_json(self.root / "status.json", {"status": "running", "started_at": self._started,
                     "requested": config.total_shots, "written_frames": 0, "saved": 0,
-                    "world": self._world})
+                    "warnings": [], "world": self._world})
         reset_journal(self.root)
         save_project(config, self.root / "project.yaml")
         atomic_json(self.root / "objects.json", [
@@ -77,6 +78,22 @@ class JsonRunRecorder:
             for t in config.targets if t.enabled])
         atomic_json(self.root / "manifest.json", manifest_payload(self._seed, self._world, []))
         self.begun = True
+
+    def warn(self, code, message) -> None:
+        """Record a run-level limitation that a finished dataset must carry with it.
+
+        Mixed target scales cannot be expressed in the dataset format (one GT depth tolerance,
+        one occlusion window), so the run reports the limitation instead of silently producing
+        frames whose masks mean something different per object.
+        """
+        if code in {row["code"] for row in self._warnings}:
+            return
+        self._warnings.append({"code": code, "message": message})
+        status = self.root / "status.json"
+        if status.is_file():
+            payload = json.loads(status.read_text(encoding="utf-8"))
+            payload["warnings"] = list(self._warnings)
+            atomic_json(status, payload)
 
     def record_frame(self, ref, candidate, evidence) -> None:
         from bproc_core.scene import candidate_to_dict
@@ -115,6 +132,7 @@ class JsonRunRecorder:
                               failures_by_reason={**summary.failures_by_reason,
                                                   "manifest:" + type(manifest_error).__name__: 1})
         payload = {**asdict(summary), "finished_at": datetime.now(timezone.utc).isoformat()}
+        payload["warnings"] = list(getattr(self, "_warnings", ()))
         if self._started is not None:
             payload["started_at"] = self._started
         if self._world is not None:

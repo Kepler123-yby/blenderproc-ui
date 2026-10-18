@@ -62,6 +62,9 @@ class ProjectState(QObject):
     def replace_config(self, config):
         if config == self.config:
             return
+        # Appearance is not geometry: recolouring the target must not throw away the candidate
+        # the viewport is showing (the old behaviour blanked both viewports for a whole search).
+        appearance_only = replace(config, material=self.config.material) == self.config
         old_assets = {t.asset.key: t.asset for t in self.config.targets}
         old_assets.update({a.key: a for a in self.config.occluders})
         new_assets = {t.asset.key: t.asset for t in config.targets}
@@ -74,13 +77,16 @@ class ProjectState(QObject):
         if self.edited_target_key not in target_keys:
             self.edited_target_key = config.targets[0].asset.key if config.targets else None
             self.selection_changed.emit(self.edited_target_key)
-        self.candidate = None
+        keep_candidate = appearance_only and not stale and self.candidate is not None
+        if not keep_candidate:
+            self.candidate = None
         self._touch_context()
         self._set_dirty(True)
         self.project_changed.emit()
         if stale:
             self.meshes_changed.emit()
-        self.candidate_changed.emit(None)
+        if not keep_candidate:
+            self.candidate_changed.emit(None)
 
     def select_target(self, key):
         if key is not None and key not in {t.asset.key for t in self.config.targets}:

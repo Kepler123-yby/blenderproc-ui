@@ -76,3 +76,26 @@ def test_load_sets_the_new_path_before_announcing_it(state, tmp_path):
     state.load(path)
     assert seen == [path.resolve()]
     assert state.dirty is False
+
+
+def test_recolouring_the_target_keeps_the_candidate_on_screen(state):
+    """A material change is appearance, not geometry: the viewports must not blank."""
+    from dataclasses import replace
+    from bproc_core.scene import SceneCandidate
+
+    candidate = SceneCandidate.__new__(SceneCandidate)
+    state.set_candidate(candidate)
+    emitted = []
+    state.candidate_changed.connect(emitted.append)
+    state.update(material=replace(state.config.material, color="solid", base_color="#ff0000"))
+    assert state.candidate is candidate
+    assert emitted == []
+
+
+def test_moving_the_camera_still_invalidates_the_candidate(state):
+    from dataclasses import replace
+    from bproc_core.config import Range
+
+    state.set_candidate(object())
+    state.update(camera=replace(state.config.camera, fx=800.0))
+    assert state.candidate is None

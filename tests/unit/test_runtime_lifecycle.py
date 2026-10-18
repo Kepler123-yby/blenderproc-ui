@@ -56,6 +56,7 @@ class RecordingRecorder:
         self.begin_error, self.finish_error = begin_error, finish_error
         self.began = self.finished = False
         self.summary = None
+        self.warnings = []
 
     def begin(self, config):
         if self.begin_error:
@@ -64,6 +65,9 @@ class RecordingRecorder:
 
     def record_frame(self, ref, candidate, evidence):
         pass
+
+    def warn(self, code, message):
+        self.warnings.append(code)
 
     def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view", details=None):
         pass

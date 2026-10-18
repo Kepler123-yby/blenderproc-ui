@@ -52,22 +52,35 @@ def _initialize_report(width, height, meshes, near, far, ready):
         ready.put(f"{type(exc).__name__}: {exc}")
 
 
-def gt_delta(config, meshes) -> float:
-    """Depth tolerance for GT visibility, in metres.
+def gt_delta_by_object(config, meshes) -> dict:
+    """Depth tolerance per enabled target, in metres.
 
-    BlenderProc defaults to 15 mm, which is fine for 10-30 cm objects but swallows whole
-    millimetre scenes: everything within 15 mm of the model counts as the object, so occluders
-    end up inside ``mask_visib``. Scale the tolerance with the largest enabled target and never
-    let it fall below two depth steps.
+    BlenderProc defaults to 15 mm, which swallows whole millimetre scenes: everything within
+    15 mm of the model counts as the object, so occluders end up inside ``mask_visib``. The
+    tolerance follows each object's own size and never falls below two depth steps.
     """
-    extent = 0.0
+    step = float(getattr(config.output, "depth_scale_mm", .1)) / 1000
+    deltas = {}
     for target in config.targets:
         if not target.enabled or target.asset.key not in meshes:
             continue
         bounds = meshes[target.asset.key].bounds_m
-        extent = max(extent, float((bounds[1] - bounds[0]).max()))
-    step = float(getattr(config.output, "depth_scale_mm", .1)) / 1000
-    return float(min(.015, max(2 * step, .05 * extent)))
+        extent = float((bounds[1] - bounds[0]).max())
+        deltas[target.obj_id] = float(min(.015, max(2 * step, .05 * extent)))
+    return deltas
+
+
+def gt_delta(config, meshes) -> float:
+    """Depth tolerance for GT visibility, in metres, for the whole scene.
+
+    The toolkit computes visibility with one tolerance per dataset, so a mixed scene must use the
+    smallest object's tolerance: a fixed 5 % of the largest target lets a 100 mm part vouch for
+    pixels occluding a 1 mm part. Large objects are unaffected in practice because their own
+    depth is the model itself, while small ones would otherwise report occluded pixels as visible.
+    """
+    deltas = gt_delta_by_object(config, meshes)
+    return min(deltas.values()) if deltas else min(.015, 2 * float(
+        getattr(config.output, "depth_scale_mm", .1)) / 1000)
 
 
 def finalize_bop(dataset_dir: Path, config, meshes, *, near_m=1e-6, far_m=1000.0) -> None:

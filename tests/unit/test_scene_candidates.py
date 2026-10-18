@@ -416,11 +416,9 @@ def test_the_aim_stays_inside_the_requested_window(window):
         hull = _silhouette(bounds_corners(meshes["o"].bounds_m), placements[0].world_from_model,
                           pose, config.camera)
         shares.append(_covered_share(target, hull))
-    # A zero-width window is only reachable within the estimator's own resolution: the share is now
-    # bisected on the shared silhouette mask, so a half-pixel boundary on a target that spans the
-    # grid moves the area share by about 2 / grid pixels. Non-degenerate windows are still hit
-    # exactly by the estimate, so they keep no slack at all.
-    slack = 2. / SILHOUETTE_GRID_SIZE if window.minimum == window.maximum else 0.
+    # A zero-width window is reachable because the convex share is an exact polygon ratio, not a
+    # rasterised area: the estimate bisects it directly, so even a fixed ratio needs no slack.
+    slack = 1e-4 if window.minimum == window.maximum else 0.
     assert all(window.minimum - slack <= share <= window.maximum + slack for share in shares), shares
 
 
@@ -727,3 +725,67 @@ def test_a_low_face_concave_target_is_aimed_by_its_real_outline(window):
         occluder_mask = _raster(meshes["o"], placements[0].world_from_model, pose, config.camera)
         shares.append(float((target_mask & occluder_mask).sum()) / float(target_mask.sum()))
     assert all(window.minimum - .01 <= share <= window.maximum + .01 for share in shares), shares
+
+
+def _hull_share(config, meshes, pose, placement, key="a"):
+    """The test's own measure: share of the target's projected hull hidden by the occluder's hull."""
+    target = _silhouette(bounds_corners(meshes[key].bounds_m), np.eye(4), pose, config.camera)
+    occluder = _silhouette(bounds_corners(meshes["o"].bounds_m), placement.world_from_model, pose,
+                           config.camera)
+    return _covered_share(target, occluder)
+
+
+def test_convex_and_hollow_targets_are_classified_from_the_same_projected_pose():
+    """The envelope is only the outline for a shape that fills it, and a face count cannot tell.
+
+    A 12-face solid box and a 6-face U plate are on opposite sides of the same judgement, which is
+    made from the mask and envelope areas of the projection actually sampled.
+    """
+    config, meshes, pose = _solid_box_fixture(Range(.1, .5), .06)
+    solid = _target_shapes([(meshes["a"], np.eye(4))], pose, config.camera).shapes[0]
+    assert solid.convex, "a solid box's outline is its envelope"
+    assert solid.mask.sum() / solid.envelope_mask.sum() > .98
+    for mesh, expected_faces in ((_flat_u_mesh(), 6), (_frame_fixture(Range(.25, .35))[1]["a"], 48)):
+        shape = _target_shapes([(mesh, np.eye(4))], pose, config.camera).shapes[0]
+        assert len(mesh.faces) == expected_faces
+        assert not shape.convex, f"{mesh.key}: a hollow part must not be judged by its envelope"
+        assert shape.mask.sum() / shape.envelope_mask.sum() < .75
+        assert (shape.envelope_mask & ~shape.mask).sum() > 0, "the opening must be a real hole"
+
+
+def test_a_convex_target_is_aimed_by_the_exact_envelope_share():
+    """A fixed window on a solid part is hit exactly, which a rasterised share cannot do.
+
+    The convex envelope overlap is an exact polygon ratio, so a 0.3 -> 0.3 window closes to well
+    below the 1e-4 the acceptance allows instead of stopping on a grid pixel.
+    """
+    config, meshes, pose = _solid_box_fixture(Range(.3, .3), .06)
+    shapes = _target_shapes([(meshes["a"], np.eye(4))], pose, config.camera)
+    assert [shape.convex for shape in shapes.shapes] == [True]
+    shares = []
+    for seed in range(12):
+        placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(seed), ())
+        assert isinstance(placements, list), placements
+        shares.append(_hull_share(config, meshes, pose, placements[0]))
+    assert all(abs(share - .3) <= 1e-4 for share in shares), shares
+    # The envelope estimate is continuous, so it aims much closer than the grid's own resolution.
+    assert max(abs(share - .3) for share in shares) < 1. / SILHOUETTE_GRID_SIZE
+
+
+def test_mixed_targets_route_each_shape_through_its_own_estimator():
+    """A convex and a hollow target on one pose are measured differently, and it matters.
+
+    Both are classified from the same projection. The frame keeps its mask because its envelope is
+    a third larger, a difference far beyond the 1e-4 a window is allowed to miss by, so one shared
+    estimator cannot serve both shapes.
+    """
+    config, meshes, pose = _frame_fixture(Range(.25, .35))
+    hollow = _target_shapes([(meshes["a"], np.eye(4))], pose, config.camera).shapes[0]
+    solid = _target_shapes([(_solid_box_fixture(Range(.1, .5), .06)[1]["a"], np.eye(4))], pose,
+                           config.camera).shapes[0]
+    assert (solid.convex, hollow.convex) == (True, False)
+    assert abs(hollow.envelope_mask.sum() / hollow.mask.sum() - 1.) > .3
+    assert abs(solid.envelope_mask.sum() / solid.mask.sum() - 1.) < .02
+    # And the hollow target's proposals still satisfy the window on the shipped camera image.
+    shares = _pixel_shares(config, meshes, pose, seeds=range(12))
+    assert all(.25 <= share <= .35 for share in shares), shares

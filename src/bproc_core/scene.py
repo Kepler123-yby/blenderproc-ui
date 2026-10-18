@@ -185,7 +185,9 @@ OCCLUDER_DRAWS = 24
 # and a small occluder only starts covering at the rim, so coverage rises before it falls again.
 OFFSET_SCAN_MIN_SAMPLES = 32      # equal coarse probes across the target's whole projected span
 OFFSET_SCAN_MAX_SAMPLES = 64      # cap: a target far wider than the occluder does not need more
-OFFSET_SCAN_MAX_REFINEMENTS = 8   # bisection steps inside one crossing bracket
+OFFSET_SCAN_MAX_REFINEMENTS = 8   # bisection steps inside one crossing bracket (rasterised share)
+OFFSET_SCAN_EXACT_REFINEMENTS = 24  # bisection steps for the quantisation-free convex share
+OFFSET_SCAN_SHARE_TOLERANCE = 1e-6  # share error that counts as hitting a fixed ratio exactly
 OFFSET_SCAN_MAX_BRACKETS = 3      # crossing brackets refined per aim; the rest are only measured
 
 # The aiming estimate needs the projected *shape*, not its bounding box: a hollow or U-shaped
@@ -197,6 +199,10 @@ SILHOUETTE_MASK_MAX_FACES = 6000
 SILHOUETTE_MASK_MAX_VERTICES = 20000
 SILHOUETTE_POINT_LIMIT = 4096
 SILHOUETTE_GRID_SIZE = 256
+# A projection whose true outline fills this much of its own convex envelope is treated as convex,
+# where the envelope *is* the silhouette and the polygon ratio is exact. Below it the shape has a
+# real opening, the envelope over-states the area, and only the rasterised outline can be trusted.
+CONVEX_SILHOUETTE_RATIO = 0.9
 
 
 def _world_aabb(bounds_m: np.ndarray, world_from_model: np.ndarray):
@@ -323,34 +329,75 @@ def _maskable(mesh: MeshData) -> bool:
 
 
 @dataclass(frozen=True)
+class _TargetShape:
+    """One target measured on the current pose, ready for either coverage estimator.
+
+    ``hull`` is the exact projected convex envelope in screen units; ``mask`` is the rasterised
+    true outline on the shared grid (``None`` when the part is too heavy to rasterise);
+    ``envelope_mask`` is that same envelope filled on the grid. ``convex`` says the outline *is* its
+    envelope, measured from this pair of real projections, so a solid box is convex and a frame or
+    U-shaped plate is not, without a face-count threshold.
+    """
+    hull: np.ndarray | None
+    mask: np.ndarray | None
+    envelope_mask: np.ndarray | None
+    convex: bool
+
+
+@dataclass(frozen=True)
 class _TargetShapes:
-    """Targets as either exact masks or convex-hull fallbacks on one shared grid."""
-    hulls: tuple[np.ndarray, ...]
+    """Every target of this view, on one shared grid when any of them can be rasterised."""
+    shapes: tuple[_TargetShape, ...]
     grid: _SilhouetteGrid | None
-    masks: tuple[np.ndarray, ...]
+
+    @property
+    def hulls(self) -> tuple[np.ndarray, ...]:
+        """Targets measurable only by their convex hull: too dense, or not projectable."""
+        return tuple(shape.hull for shape in self.shapes
+                     if shape.mask is None and shape.hull is not None)
+
+    @property
+    def masks(self) -> tuple[np.ndarray, ...]:
+        """Rasterised true outlines, without the envelopes measured alongside them."""
+        return tuple(shape.mask for shape in self.shapes if shape.mask is not None)
+
+
+def _is_convex_silhouette(mask: np.ndarray, envelope_mask: np.ndarray) -> bool:
+    """Whether the true outline fills its own envelope on this projection.
+
+    Both rasters come from the pose actually sampled, so a solid box fills its envelope and a frame
+    or U-shaped plate does not (it keeps its hole). Six faces can be either shape, which is why the
+    test is the projected area ratio rather than a face count.
+    """
+    envelope = int(np.count_nonzero(envelope_mask))
+    return bool(envelope) and int(np.count_nonzero(mask)) / envelope >= CONVEX_SILHOUETTE_RATIO
 
 
 def _target_shapes(entries, pose: CameraPose, camera) -> _TargetShapes:
-    hulls, masked = [], []
+    """Measure each target silhouette once per pose: exact outline, envelope, and convexity."""
+    masked, shapes = [], []
     for mesh, matrix in entries:
+        hull = _silhouette(_silhouette_points(mesh), matrix, pose, camera)
         if _maskable(mesh):
-            masked.append((mesh, matrix))
-        else:
-            hull = _silhouette(_silhouette_points(mesh), matrix, pose, camera)
-            if hull is not None:
-                hulls.append(hull)
-    grid = _silhouette_grid(masked, pose, camera) if masked else None
+            masked.append((mesh, matrix, hull))
+        elif hull is not None:
+            # Past the mask budget the envelope is the only measurement available.
+            shapes.append(_TargetShape(hull, None, None, True))
+    grid = (_silhouette_grid([(mesh, matrix) for mesh, matrix, _ in masked], pose, camera)
+            if masked else None)
     if grid is None:
         # A mesh behind the camera (or a degenerate projection) cannot be masked; keep the
         # affine hull fallback rather than rejecting an otherwise valid target.
-        for mesh, matrix in masked:
-            hull = _silhouette(_silhouette_points(mesh), matrix, pose, camera)
+        for mesh, matrix, hull in masked:
             if hull is not None:
-                hulls.append(hull)
-        return _TargetShapes(tuple(hulls), None, ())
-    masks = tuple(_rasterize_mask(mesh, matrix, pose, camera, grid, triangles=True)
-                  for mesh, matrix in masked)
-    return _TargetShapes(tuple(hulls), grid, masks)
+                shapes.append(_TargetShape(hull, None, None, True))
+        return _TargetShapes(tuple(shapes), None)
+    for mesh, matrix, hull in masked:
+        mask = _rasterize_mask(mesh, matrix, pose, camera, grid, triangles=True)
+        envelope_mask = _rasterize_mask(mesh, matrix, pose, camera, grid, triangles=False)
+        shapes.append(_TargetShape(hull, mask, envelope_mask,
+                                   _is_convex_silhouette(mask, envelope_mask)))
+    return _TargetShapes(tuple(shapes), grid)
 
 
 def _polygon_area(polygon: np.ndarray) -> float:
@@ -449,28 +496,62 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
     pixel acceptance rejects it, rather than the sampler looping or inventing coverage.
     """
     wanted = config.occlusion.ratio
-    if wanted.maximum <= 0 or (not shapes.hulls and shapes.grid is None):
+    if wanted.maximum <= 0 or not shapes.shapes:
         return spread * rng.uniform(.1, .9)
     # Aim inside the *user's* closed window, never near it: an 80-90 % window must not be aimed at
     # 72 %, and a 0-1 % window must not be aimed at 2 %. Clamping after the midpoint keeps the
     # target valid for any interval, including a fixed ratio where minimum == maximum.
     aim = min(max((wanted.minimum + wanted.maximum) / 2, wanted.minimum), wanted.maximum)
 
-    def estimate(offset):
+    def matrix_at(offset):
         matrix = np.eye(4)
         matrix[:3, :3] *= scale
         matrix[:3, 3] = base + direction * offset - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
-        share = 0.
-        if shapes.hulls:
-            hull = _silhouette(_silhouette_points(mesh), matrix, pose, config.camera)
-            if hull is not None:
-                share = max(_covered_share(target, hull) for target in shapes.hulls)
-        if shapes.grid is not None:
-            occluder_mask = _rasterize_mask(mesh, matrix, pose, config.camera, shapes.grid,
-                                            triangles=_maskable(mesh))
-            share = max([share, *(_mask_covered_share(target, occluder_mask)
-                                  for target in shapes.masks)])
-        return share
+        return matrix
+
+    # Convexity is translation invariant, so the occluder is classified once at the search origin
+    # rather than on every probe: a solid box has an exact envelope, a hollow one does not.
+    occluder_convex = shapes.grid is None or _is_convex_silhouette(
+        _rasterize_mask(mesh, matrix_at(0.), pose, config.camera, shapes.grid,
+                        triangles=_maskable(mesh)),
+        _rasterize_mask(mesh, matrix_at(0.), pose, config.camera, shapes.grid, triangles=False))
+
+    def estimate(offset):
+        """Covered share of the best-covered target: exact polygons when convex, else real masks.
+
+        A convex target's projected envelope *is* its silhouette, and so is a convex occluder's, so
+        their overlap ratio is an exact polygon measure with no rasterisation quantum; that is the
+        only way a fixed window such as 0.3 -> 0.3 is reachable. A concave or hollow shape keeps its
+        real rasterised outline, because the envelope would fill a hole the render still shows.
+        """
+        matrix = matrix_at(offset)
+        regions = {}
+
+        def envelope():
+            """The occluder's projected convex envelope, projected only if an aim ends up using it."""
+            if "hull" not in regions:
+                regions["hull"] = _silhouette(_silhouette_points(mesh), matrix, pose, config.camera)
+            return regions["hull"]
+
+        def occluder_region():
+            key = "convex" if occluder_convex else "mask"
+            if key not in regions:
+                regions[key] = _rasterize_mask(
+                    mesh, matrix, pose, config.camera, shapes.grid,
+                    triangles=False if occluder_convex else _maskable(mesh))
+            return regions[key]
+
+        shares = []
+        for shape in shapes.shapes:
+            target_mask = shape.envelope_mask if shape.convex else shape.mask
+            if shape.convex and occluder_convex and envelope() is not None:
+                shares.append(_covered_share(shape.hull, envelope()))
+            elif target_mask is not None and shapes.grid is not None:
+                shares.append(_mask_covered_share(target_mask, occluder_region()))
+            elif envelope() is not None and shape.hull is not None:
+                # Nothing was rasterised for this pose: the envelopes are all that is left.
+                shares.append(_covered_share(shape.hull, envelope()))
+        return max(shares, default=0.)
 
     span = _offset_span(base, direction, mesh, scale, target_points, pose)
     if span is None:
@@ -497,12 +578,20 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
     brackets = [(measured[index], measured[index + 1]) for index in range(len(measured) - 1)
                 if (measured[index][0] - aim) * (measured[index + 1][0] - aim) < 0]
     brackets.sort(key=lambda pair: max(abs(pair[0][0] - aim), abs(pair[1][0] - aim)))
-    # The bracket is refined to a thousandth of the probed span, which is far below both the camera
-    # pixel and the grid pixel; the fixed step count keeps the probe budget bounded.
-    tolerance = width * 1e-3
+    # The refinement budget follows the estimator. A rasterised share moves in whole grid pixels, so
+    # a bracket finer than a thousandth of the probed span cannot improve it; the convex polygon
+    # share has no quantum and is bisected until the aim itself is met, which is what makes a fixed
+    # window reachable instead of merely approached.
+    exact = occluder_convex and all(shape.convex for shape in shapes.shapes)
+    if exact:
+        refinements, span_tolerance, share_tolerance = (
+            OFFSET_SCAN_EXACT_REFINEMENTS, width * 1e-9, OFFSET_SCAN_SHARE_TOLERANCE)
+    else:
+        refinements, span_tolerance, share_tolerance = (
+            OFFSET_SCAN_MAX_REFINEMENTS, width * 1e-3, 0.)
     for (left_share, left), (_, right) in brackets[:OFFSET_SCAN_MAX_BRACKETS]:
-        for _ in range(OFFSET_SCAN_MAX_REFINEMENTS):
-            if right - left <= tolerance:
+        for _ in range(refinements):
+            if right - left <= span_tolerance or abs(best_share - aim) <= share_tolerance:
                 break
             middle = (left + right) / 2
             middle_share = estimate(middle)

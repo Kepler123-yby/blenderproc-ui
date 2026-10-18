@@ -287,15 +287,15 @@ def content_bounds(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]
         if not target.enabled or mesh is None:
             continue
         if anchor_key is not None and target.asset.key == anchor_key:
-            centre = np.zeros(3)
+            # The render centre is pinned to the world origin, so the authored offset never applies.
+            lower = upper = np.zeros(3)
         else:
-            centre = np.array([(target.offset.x.minimum + target.offset.x.maximum) / 2,
-                               (target.offset.y.minimum + target.offset.y.maximum) / 2,
-                               (target.offset.z.minimum + target.offset.z.maximum) / 2])
+            lower = np.array([target.offset.x.minimum, target.offset.y.minimum, target.offset.z.minimum])
+            upper = np.array([target.offset.x.maximum, target.offset.y.maximum, target.offset.z.maximum])
         extent = np.asarray(mesh.bounds_m, dtype=float)
         extent = extent - extent.mean(axis=0)
-        low = np.minimum(low, centre + extent[0])
-        high = np.maximum(high, centre + extent[1])
+        low = np.minimum(low, lower + extent[0])
+        high = np.maximum(high, upper + extent[1])
     if not np.isfinite(low).all() or not (high > low).all():
         return None
     return np.stack((low, high))

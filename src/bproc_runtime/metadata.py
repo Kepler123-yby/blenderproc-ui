@@ -51,14 +51,22 @@ def read_frame_records(metadata_dir: Path, *, allow_incomplete_tail: bool = Fals
     manifest = _load_manifest(folder / MANIFEST_NAME)
     if journal.exists():
         frames = _read_journal(journal, allow_incomplete_tail=allow_incomplete_tail)
-        # Only the final manifest must agree with the journal; while a run is going the manifest
-        # is still the empty placeholder written by begin().
-        if manifest is not None and manifest.get("final") is True:
+        # Only the final manifest must agree row by row; while a run is going the manifest is
+        # still the empty placeholder written by begin(). Version and field types are validated
+        # for every snapshot so a tampered running manifest cannot slip through.
+        if manifest is not None:
             version = manifest.get("schema_version", 0)
             if version != SCHEMA_VERSION:
                 raise MetadataError(
                     f"manifest.json 与 frames.jsonl 版本不一致：manifest={version}, journal={SCHEMA_VERSION}")
-            _require_consistent(frames, manifest["frames"])
+            rows = manifest.get("frames")
+            if not isinstance(rows, list):
+                raise MetadataError("manifest.json 的 frames 不是列表")
+            final = manifest.get("final", False)
+            if not isinstance(final, bool):
+                raise MetadataError("manifest.json 的 final 不是布尔值")
+            if final:
+                _require_consistent(frames, rows)
         return frames
     if manifest is None:
         raise MetadataError("缺少 frames.jsonl 与 manifest.json，无法读取帧记录")

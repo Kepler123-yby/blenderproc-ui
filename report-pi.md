@@ -1,7 +1,7 @@
 # blenderproc-ui 交付报告（接手执行）
 
 **接手基线**：`aebd537`（26 个分阶段提交，268 passed）
-**当前 HEAD**：`4f75430`（在基线之上新增 17 个提交，403 passed）
+**当前 HEAD**：`4f75430` 之后的复核修复提交（403 → **411 passed**）
 **执行者**：Pi 编码代理；设计决策与验收口径由用户确认（逐条记录在 `report.md` 的 N1–N6 与本文）
 **日期**：2026-10-23
 
@@ -15,6 +15,7 @@
 |---|---|---|---|---|
 | 阶段一：审计任务 1–12 | `report.md` 前半（"执行清单"） | `aebd537..a86f999` | 14 | 268 → 388 |
 | 阶段二：复核任务 N1–N6 | `report.md`"当前版本复核与下一步指示" | `a86f999..4f75430` | 3 | 388 → 403 |
+| 阶段三：独立复核 R1–R4 与文档更正 | `report-review.md` | `4f75430` 之后 | 待记 | 403 → 411 |
 
 全部已推送到 `origin/main`。
 
@@ -24,7 +25,7 @@
 
 | 项 | 值 |
 |---|---|
-| 单元测试 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p pytestqt.plugin -q` → **403 passed, 14 s** |
+| 单元测试 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p pytestqt.plugin -q` → **411 passed, 14 s** |
 | 渲染环境 | conda `bop`：`/home/kepler/miniconda3/envs/bop/bin/python`（3.8.20，blenderproc 2.8.0，bop_toolkit） |
 | Blender | `/home/kepler/blender/blender-4.2.1-linux-x64/blender`（4.2.1） |
 | GPU | RTX 3060 Ti 8 GB；OptiX 设备；硬件 EGL（`EGL_PLATFORM_DEVICE_ID=0`） |
@@ -69,7 +70,7 @@
 |---|---|---|
 | 建议布局（原点偏移夹具） | `n5_layout.py`、`layout-suggestion.json`、`layout-run.log` | 4/4 保存，`verify_rgb_masks` PASS；建议 `right.x=[0.11,0.21]`，距离 `[0.526,0.710]` |
 | 建议布局（真实资源） | `real-pilot.yaml`、`real-pilot-job.json` | 建议距离 `0.289–0.394 m`，用于 240 帧试生产 |
-| 近/远/毫米机位 | `n5_occlusion.py`、`occlusion-summary.json` | 6/6、6/6、4/4，`verify_bop` PASS，遮挡比与角点深度逐帧留存 |
+| 近/远/毫米机位（**RGB 双掩码，非 BOP**） | `n5_occlusion.py`、`occlusion-summary.json`、`{near-500mm,far-5m,millimetre}.verify.log` | 6/6、6/6、4/4，`verify_rgb_masks` PASS；三份 YAML 均为 `format=rgb_masks`，**不产出深度与 GT** |
 | 信号链路 | `signal_evidence.sh`、`signal-evidence.jsonl` | RGB/BOP × SIGINT/SIGTERM → `exit 130/143`、`status=interrupted`、`requested 240`、`saved 2`、`skipped 238`、journal/manifest 各 2 行、引用文件 0 缺失 |
 | BOP 真实资源 | `real-bop.yaml`、`real-bop.log`、`real-bop.verify.log` | 6/6 保存，`verify_bop` PASS |
 | 大模型导出 | `n4_big_export.py`、`heavy-export.json` | 996,000 面 / 18.9 MB：2.79 s、390 次心跳；另测 327,680 面 1.04 s、1,310,720 面 3.63 s |
@@ -80,7 +81,8 @@
 
 | 指标 | 值 |
 |---|---|
-| 帧数 / 场景 / 视图 | 240 / 60 / 4（RGB + 双掩码 + 深度 + 位姿） |
+| 帧数 / 场景 / 视图 | 240 / 60 / 4 |
+| 实际产物 | `rgb`、`mask`、`mask_visib` 共 720 张 PNG；位姿在 `frames.jsonl` 的 `candidate.camera_pose_world_from_camera`。**该格式不输出深度图**，也没有 BOP 的 `scene_gt*` |
 | 机位半径 | 0.291–0.390 m（中位 0.341） |
 | 方位 / 仰角 | 1.3°–359.2° / 10.2°–64.9° |
 | 遮挡比 | 0.000–0.493（中位 0.264） |
@@ -102,22 +104,66 @@
 
 ---
 
+## 5.1 证据与格式对照（更正后）
+
+“检查器 PASS”只说明通过当前实现的检查，不代表每像素严格正确；格式不同的产物必须用对应检查器，不能互相代替。
+
+| 产物 | 格式 | 有深度？ | 有 `scene_gt*`？ | 正确检查器 | 结果 | 原始日志 |
+|---|---|---|---|---|---|---|
+| `layout-out/suggested` 4 帧 | `rgb_masks` | 否 | 否 | `verify_rgb_masks` | PASS | `layout-rgb.verify.log` |
+| `occlusion-out/near-500mm` 6 帧 | `rgb_masks` | 否 | 否 | `verify_rgb_masks` | PASS | `near-500mm.verify.log` |
+| `occlusion-out/far-5m` 6 帧 | `rgb_masks` | 否 | 否 | `verify_rgb_masks` | PASS | `far-5m.verify.log` |
+| `occlusion-out/millimetre` 4 帧 | `rgb_masks` | 否 | 否 | `verify_rgb_masks` | PASS | `millimetre.verify.log` |
+| `real-out/real-pilot` 240 帧 | `rgb_masks` | **否** | 否 | `verify_rgb_masks` | PASS | `real-pilot-240.verify.log` |
+| `real-out/real-bop` 6 帧 | `bop` | 是 | 是 | `verify_bop` | PASS | `real-bop-6.verify.log` |
+| `regress-out/regress-rgb` 4 帧 | `rgb_masks` | 否 | 否 | `verify_rgb_masks` | PASS | `regress-rgb.verify.log` |
+| `regress-out/regress-bop` 4 帧 | `bop` | 是 | 是 | `verify_bop` | PASS | `regress-bop.verify.log` |
+
+**BOP 后处理失败链路**（原“未完成”，现已有证据）：`.artifacts/next-20261023/gtfail/summary.json`——任务副本中真实 GT worker 注入 `RuntimeError`，结果 `exit 1` / `status=failed` / `requested 6` / `written 6` / `saved 0` / `skipped 6` / journal 0 行 / manifest `final=false` / 12 秒结束。注入只改任务副本的 `render_scene.py`，未改源码或系统环境。
+
+## 5.2 对 `report-review.md` R1–R4 的修复
+
+| 项 | 处理 | 反例与验收 |
+|---|---|---|
+| R1 取景包围盒只取偏移中点 | 已修：`src/bproc_core/assets.py::content_bounds` 对每个目标用 `offset.minimum + extent_low` / `offset.maximum + extent_high`；锚点仍固定在原点 | 新测试 `test_content_bounds_cover_the_whole_offset_range`：偏移 X `[.2,2]` 时上界 2.05（原 1.15）；`test_content_bounds_measures_centroids_and_pins_the_render_centre` 不变 |
+| R2 无 `final=true` 的 manifest 绕过校验 | 部分修复：版本、`frames` 类型、`final` 类型现在对**每个**快照都校验，只有逐行比较在运行中豁免 | 新测试 `test_reader_rejects_a_tampered_running_manifest`（version/frames/final 字符串三例）。**残留**：检查器尚未断言 `status=completed` 必须对应 `final=true` |
+| R3 所谓 1% 边缘容差允许内部错误 | 已重写：内部像素越界立即报错；边缘像素共享 1% 预算且双向合计；有效深度 < 20 时预算为 0；容差上限为 `max(1 个深度步长, 模型深度跨度 1%)` | 新测试：`test_bop_checker_tolerates_a_small_silhouette_excursion`、`..._rejects_an_interior_depth_outlier`、`..._counts_both_directions_against_one_budget`、`..._does_not_exempt_a_single_observed_depth`；真实 `real-bop` 仍 PASS |
+| R4 journal 写失败仍计入 saved | 已修：`src/bproc_runtime/run.py` 新增 `committed` 计数，`record_frame` 成功后才递增；RGB 用 `saved=committed`，BOP 在 finalize 成功后用 `saved=committed`，失败为 0 | 新测试 `test_frame_metadata_failure_is_not_counted_as_saved`：`failed / written 1 / saved 0` |
+
+## 5.3 `report-review.md` 证据范围更正的落实情况
+
+| 复核意见 | 处理 |
+|---|---|
+| 1 近/远/毫米专项写成 BOP | 已改为 `verify_rgb_masks`，并补 §5.1 格式对照 |
+| 2 近远用例是等比例缩放 | **未做**：仍是 .1 m@.5 m、1 m@5 m、1 mm@5 mm；同物体双距离用例待补 |
+| 3 信号脚本缺文件检查为空、SIGINT 被覆盖 | **未做**：脚本仍先删同名目录；需四组独立目录重跑 |
+| 4 240 帧无深度图 | 已更正为实际产物（720 张 PNG，无深度） |
+| 5 失败日志索引不准 | 已改为指向 `gtfail/`，并把三次无效注入标为作废 |
+| 6 `*.verify.log` 不齐 | 已按用例生成 8 份原始检查器日志（见 §5.1） |
+| 7 版本/日期/API 名对齐 | 已把 HEAD 表述改为“`4f75430` 之后的复核修复提交”，未再声称用户确认过容差 |
+
+---
+
 ## 6. 未完成 / 风险
 
-1. **BOP 后处理失败的真实链路（未完成）**。三次注入都没有制造自然失败：坏掉的 `bop_toolkit_lib` 副本被 `run_job.py` 重设的 `PYTHONPATH` 绕过；破坏深度 PNG 不影响 BlenderProc 的 GT 计算；渲染中途删除 `models/*.ply` 仍 `completed`。目前只有单测 `test_bop_postprocess_failure_is_not_saved` 覆盖"不虚计 saved"。**不以单测声称通过。**
-2. **接受率 24.6% 偏低**。240 帧需要 977 次尝试（每帧约 4 次）。需判断这是"遮挡窗口 + 目标全可见"联合约束的必然结果，还是采样策略需要调整；调整前不宜扩大规模。
+已关闭：BOP 后处理失败的真实链路（证据见 §5.1 `gtfail/`）。
+
+1. **R2 残留**：reader 已校验每个快照的版本、`frames` 类型与 `final` 类型，但检查器尚未断言 `status=completed` 必须对应 `final=true` 的最终快照。
+2. **接受率 24.6% 偏低**。240 帧需要 977 次尝试（每帧约 4 次）：遮挡 396、目标不可见 341。需先按 scene/view/角度拆分拒绝原因，再决定是否调整提案分布；调整前不宜扩大规模。
 3. **train/val 未切分**。60 个 scene 具备切分条件，但尚未实际划分。
-4. **检查器容差已调整**。`check_bop.py` 允许可见掩码 1% 的像素越界（轮廓边缘），并有"整体偏移必须报错"的反例测试；这是修正误报，不是放宽标准，但需在下游确认可接受。
-5. **HDRI 可选**已按用户要求实现（未选时中性灰 0.05 世界背景，`world_metadata` 记录 `neutral`），与早期"必须有环境图"的校验不同。
+4. **检查器容差已重写**（R3）：内部像素越界立即报错；只有轮廓像素共享 1% 预算、双向合计，有效深度 < 20 时无预算。真实 `real-bop` 仍 PASS，仍需下游确认这一轮廓容差符合预期。
+5. **专项覆盖仍缺**：同物体 `.5 m`/`5 m` 双机位用例、毫米尺度 BOP、四种信号的独立目录重跑（现脚本会先删同名目录，SIGINT 证据被 SIGTERM 覆盖）。
+6. **HDRI 可选**已按用户要求实现（未选时中性灰 0.05 世界背景，`world_metadata` 记录 `neutral`）。
 
 ---
 
 ## 7. 结论与下一步
 
-- 审计任务 1–12 与复核任务 N1–N4 全部落实，各有提交、单测与真实产物证据；N5 除"BOP 后处理失败"外齐备；N6 240 帧试生产完成。
-- **不宜直接冻结版本**。下一轮顺序：
-  1. 用可控方式让 GT 子进程真崩（例如给后处理一个必然失败的 toolkit 或注入异常），补齐失败链路证据；
-  2. 分析接受率，决定是放宽窗口还是改进采样（先看拒绝分布，不改验收口径）；
-  3. 按 scene 切分 train/val，输出分布报告；
-  4. 再扩到 2000+ 帧并冻结。
+- 审计任务 1–12、复核任务 N1–N6 全部落实；独立复核提出的 R1、R3、R4 已修复并通过反例测试，R2 修掉主要绕过路径但检查器断言仍缺；证据范围错误已按 §5.3 逐条更正。
+- **仍不宜冻结**。下一轮顺序：
+  1. 补检查器对 `completed ⇒ final=true` 的断言，补 R2 的 checker 级反例；
+  2. 补同物体近/远双机位与毫米尺度 BOP，核对单位、深度精度和原生 visibility 容差；
+  3. 四种信号用独立新任务/目录重跑，修正引用字段推导，逐帧核对 RGB/双 mask/GT；
+  4. 按 scene 切分 train/val 并出分布报告，再决定是否扩到 2000+ 帧；
+  5. 全量回归 + 已有产物检查器复跑作为冻结证据。
 - 冻结前的门槛与 `report.md` 一致：N1–N4 回归通过、N5 专项证据完整、小批量标签语义与采样分布经人工确认。

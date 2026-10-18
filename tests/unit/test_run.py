@@ -209,3 +209,16 @@ def test_fully_hidden_target_is_rejected_even_without_occluder_assets(monkeypatc
     run=runner.run_project(project(),{},backend,Writer(),recorder)
     assert (run.status,run.saved)==("partial",0)
     assert {reason for *_,reason,_ in recorder.rejections}=={"invisible_target"}
+
+
+def test_frame_metadata_failure_is_not_counted_as_saved(monkeypatch):
+    """A picture whose journal row was rejected has no traceable record, so it is not saved."""
+    stub_scene(monkeypatch)
+    monkeypatch.setattr(runner,"propose_candidate",candidate)
+    recorder=Recorder()
+    def explode(*args):
+        raise OSError("disk full")
+    recorder.record_frame=explode
+    r=runner.run_project(project(),{},Backend(),Writer(),recorder)
+    assert (r.status,r.written_frames,r.saved)==("failed",1,0)
+    assert r.skipped == r.requested

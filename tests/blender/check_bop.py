@@ -262,21 +262,27 @@ def verify_bop(root: Path) -> list[str]:
                         points_cv_mm = models[obj_id] @ rotation.T + translation_mm
                         # Native BOP visibility includes some pixels with missing
                         # observed depth; zero means unavailable, never zero meters.
-                        measured = depth_m[visible & (depth_m > 0)]
+                        measured_mask = visible & (depth_m > 0)
+                        measured = depth_m[measured_mask]
                         margin_m = max(.001, config.output.depth_scale_mm / 1000 * 2)
                         lowest = points_cv_mm[:, 2].min() / 1000 - margin_m
                         highest = points_cv_mm[:, 2].max() / 1000 + margin_m
                         if not measured.size:
                             errors.append(f"BOP {pair} object {obj_id}: no positive observed depth in visible mask")
-                        else:
-                            # The mask comes from the rasterised silhouette, so pixels on its outer
-                            # edge may sample a fraction beyond the analytic model bound. One percent
-                            # of the visible mask is allowed to differ; a unit error moves them all.
-                            allowed = max(1, int(measured.size * .01))
-                            below = int((measured < lowest).sum())
-                            above = int((measured > highest).sum())
-                            if below > allowed or above > allowed:
-                                errors.append(f"BOP {pair} object {obj_id}: PNG depth and model pose use inconsistent units")
+                            continue
+                        # Interior pixels must sit inside the posed model bounds: they are not on
+                        # the rasterised silhouette, so a unit or scaling error always shows here.
+                        # Edge pixels may sample slightly past the bound; they share one budget of
+                        # one percent of the mask, counted in both directions, and masks too small
+                        # to have an interior get no budget at all.
+                        span = max(abs(points_cv_mm[:, 2].max() - points_cv_mm[:, 2].min()) / 1000, 1e-6)
+                        tolerance = max(config.output.depth_scale_mm / 1000, span * .01)
+                        interior = _interior_mask(visible)
+                        outside = measured_mask & ((depth_m < lowest) | (depth_m > highest))
+                        beyond = measured_mask & ((depth_m < lowest - tolerance) | (depth_m > highest + tolerance))
+                        allowance = 0 if measured.size < 20 else max(1, int(measured.size * .01))
+                        if (outside & interior).any() or int(beyond.sum()) > allowance:
+                            errors.append(f"BOP {pair} object {obj_id}: PNG depth and model pose use inconsistent units")
                 gt_frame_count += 1
             except Exception as exc:
                 errors.append(f"BOP frame {row.get('frame_index', '?')}: {type(exc).__name__}: {exc}")
@@ -306,3 +312,13 @@ if __name__ == "__main__":
     diagnostics = verify_bop(parser.parse_args().dataset)
     print("\n".join(diagnostics) if diagnostics else "BOP: PASS")
     raise SystemExit(1 if diagnostics else 0)
+
+
+def _interior_mask(mask):
+    """Pixels whose four neighbours are all inside the mask, i.e. not on its outline."""
+    inner = mask.copy()
+    inner[1:, :] &= mask[:-1, :]
+    inner[:-1, :] &= mask[1:, :]
+    inner[:, 1:] &= mask[:, :-1]
+    inner[:, :-1] &= mask[:, 1:]
+    return inner

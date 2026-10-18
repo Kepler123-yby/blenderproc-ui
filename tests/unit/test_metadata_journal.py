@@ -208,3 +208,23 @@ def test_a_running_manifest_placeholder_does_not_trigger_the_journal_check(tmp_p
     instance = recorder(tmp_path, count=2)
     instance.record_frame(FrameRef(0, "rgb/000000.png", gt_obj_ids=(2,)), _candidate(), Evidence())
     assert len(read_frame_records(tmp_path / "run_metadata")) == 1   # empty placeholder is expected mid-run
+
+
+@pytest.mark.parametrize("corruption", ["version", "frames", "final_string"])
+def test_reader_rejects_a_tampered_running_manifest(tmp_path, corruption):
+    """A manifest without final=True is a running snapshot, not an unvalidated document."""
+    instance = recorder(tmp_path)
+    instance.record_frame(FrameRef(0, "rgb/0.png", gt_obj_ids=(2,)), _candidate(), Evidence())
+    manifest = tmp_path / "run_metadata" / "manifest.json"
+    data = json.loads(manifest.read_text())
+    data["final"] = False
+    if corruption == "version":
+        data["schema_version"] = 999
+    elif corruption == "frames":
+        data["frames"] = "invalid"
+    else:
+        data["final"] = "true"
+    manifest.write_text(json.dumps(data))
+
+    with pytest.raises(MetadataError):
+        read_frame_records(tmp_path / "run_metadata")

@@ -378,18 +378,67 @@ def _edit_depth(root, mutate):
         Image.fromarray(image).save(path)
 
 
-def test_bop_checker_tolerates_a_single_silhouette_outlier(valid_bop_output):
-    """One mask pixel may sample beyond the analytic model bound at the silhouette edge."""
+def _visible_mask(root):
+    return np.asarray(Image.open(root / "train_pbr/000000/mask_visib/000000_000000.png")) > 0
 
-    def push_one(image):
-        mask = np.asarray(Image.open(
-            valid_bop_output / "train_pbr/000000/mask_visib/000000_000000.png")) > 0
-        # Only a pixel that already carries depth: changing a zero pixel would alter gt_info.
+
+def test_bop_checker_tolerates_a_small_silhouette_excursion(valid_bop_output):
+    """An outline pixel may sample one depth step past the model bound, no further."""
+
+    def nudge(image):
+        mask = _visible_mask(valid_bop_output)
         y, x = np.argwhere(mask & (image > 0))[0]
-        image[y, x] = min(int(image.max()) + 500, 65535)
+        image[y, x] = image[y, x] + 1
 
-    _edit_depth(valid_bop_output, push_one)
+    _edit_depth(valid_bop_output, nudge)
     assert verify_bop(valid_bop_output) == []
+
+
+def test_bop_checker_rejects_an_interior_depth_outlier(valid_bop_output):
+    """The silhouette allowance must not cover pixels inside the mask."""
+
+    def corrupt(image):
+        mask = _visible_mask(valid_bop_output)
+        pixels = np.argwhere(mask & (image > 0))
+        y, x = pixels[len(pixels) // 2]
+        image[y, x] = 6553
+
+    _edit_depth(valid_bop_output, corrupt)
+    errors = verify_bop(valid_bop_output)
+    assert any("inconsistent units" in error for error in errors), errors
+
+
+def test_bop_checker_counts_both_directions_against_one_budget(valid_bop_output):
+    """Two outline pixels, one far and one near, exceed the shared one-percent budget."""
+
+    def corrupt(image):
+        mask = _visible_mask(valid_bop_output)
+        pixels = np.argwhere(mask & (image > 0))
+        (y, x), (y2, x2) = pixels[0], pixels[1]
+        image[y, x] = 6553
+        image[y2, x2] = 1
+
+    _edit_depth(valid_bop_output, corrupt)
+    errors = verify_bop(valid_bop_output)
+    assert any("inconsistent units" in error for error in errors), errors
+
+
+def test_bop_checker_does_not_exempt_a_single_observed_depth(valid_bop_output):
+    """A mask with one observed pixel gets no tolerance at all."""
+
+    scene = valid_bop_output / "train_pbr/000000"
+    mask = _visible_mask(valid_bop_output)
+    y, x = np.argwhere(mask)[len(np.argwhere(mask)) // 2]
+
+    def trim(image):
+        single = np.zeros_like(image)
+        single[y, x] = image[y, x] + 600
+        image[:] = single
+
+    _edit_depth(valid_bop_output, trim)
+    edit_json(scene / "scene_gt_info.json", lambda data: data["0"][0].update(px_count_valid=1))
+    errors = verify_bop(valid_bop_output)
+    assert any("inconsistent units" in error for error in errors), errors
 
 
 def test_bop_checker_rejects_a_shifted_depth_map(valid_bop_output):

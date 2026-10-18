@@ -92,3 +92,17 @@ def test_content_bounds_measures_centroids_and_pins_the_render_centre():
     bounds = content_bounds(meshes, targets, "a")
 
     np.testing.assert_allclose(bounds, [[-.1, -.1, -.1], [.1, .1, .1]], atol=1e-12)
+
+
+def test_content_bounds_cover_the_whole_offset_range():
+    """A target that may slide along X widens the framing box by its range, not its midpoint."""
+    meshes = {"a": make_mesh("a", center=(0., 0., 0.), size=.1),
+              "b": make_mesh("b", center=(0., 0., 0.), size=.1)}
+    targets = (TargetSpec(AssetSpec("a", None), "a", 2),
+               TargetSpec(AssetSpec("b", None), "b", 3,
+                          offset=Box(Range(.2, 2.), Range(-.5, .5), Range(0., 0.))))
+
+    bounds = content_bounds(meshes, targets, "a")
+
+    np.testing.assert_allclose(bounds[0], [-.05, -.55, -.05], atol=1e-12)
+    np.testing.assert_allclose(bounds[1], [2.05, .55, .05], atol=1e-12)

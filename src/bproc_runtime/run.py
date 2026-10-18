@@ -23,7 +23,7 @@ class RunTerminated(BaseException):
 
 
 def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSummary:
-    written = saved = 0
+    written = saved = committed = 0
     failures = Counter()
     interrupted = fatal = False
     exit_code = 0
@@ -115,8 +115,11 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
                         ref = writer.write(written, candidate, frame)
                         written += 1
                         recorder.record_frame(ref, candidate, evidence)
+                        # Only frames whose metadata is committed on disk may be counted as saved;
+                        # a picture without a traceable record cannot be consumed downstream.
+                        committed += 1
                         if config.output.format != "bop":
-                            saved = written
+                            saved = committed
                     finally:
                         committing = False
                     if pending_signal is not None:
@@ -138,7 +141,7 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
         try:
             writer.finalize()
             if config.output.format == "bop":
-                saved = written
+                saved = committed
         except (Exception, KeyboardInterrupt) as exc:
             fatal, exit_code = True, 1
             failures["finalize:" + type(exc).__name__] += 1

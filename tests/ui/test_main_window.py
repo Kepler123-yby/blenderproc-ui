@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from PySide6.QtCore import QItemSelectionModel
 from PySide6.QtWidgets import QWidget, QDialog
 
+from bproc_core.config import FixedCameraSpec, RegionSpec
 from bproc_ui.main_window import MainWindow
 
 
@@ -65,4 +66,20 @@ def test_large_preview_seed_is_not_truncated_and_refresh_increments(state, qtbot
     assert window.preview_seed.value() == large + 1
     assert state.config.seed == large
     qtbot.wait(220)
+    window._closing = True
+
+
+def test_preview_index_walks_scene_views_and_locks_for_pinned_cameras(state, qtbot):
+    state.update(views_per_scene=5, scene_count=40)
+    window = MainWindow(state, scene_factory=FakeScene, camera_factory=FakeCamera, restore_settings=False)
+    qtbot.addWidget(window)
+    assert window.sample_index.maximum() == 5, "a preview shows one scene, not the whole dataset"
+
+    state.update(camera_mode="fixed", regions=(), fixed_cameras=(FixedCameraSpec(key="c1"),))
+    assert window.sample_index.maximum() == 1
+    assert window.sample_index.value() == 1
+    assert not window.sample_index.isEnabled(), "a pinned camera has exactly one view"
+
+    state.update(camera_mode="random", regions=(RegionSpec(key="r1"),))
+    assert window.sample_index.maximum() == 5 and window.sample_index.isEnabled()
     window._closing = True

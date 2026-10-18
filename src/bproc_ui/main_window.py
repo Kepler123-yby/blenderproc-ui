@@ -378,7 +378,12 @@ class MainWindow(QMainWindow):
         for region in config.regions:
             self.preview_region.addItem("◌ " + region.name, region.key)
         self.preview_region.setCurrentIndex(self.preview_region.findData(self.sampling.current_region_key))
-        self.sample_index.setMaximum(config.total_shots)
+        # A preview is always one scene, so its index walks the views of that scene, not the
+        # whole dataset; a pinned camera has exactly one view.
+        pinned = config.camera_mode == "fixed"
+        self.sample_index.setMaximum(1 if pinned else max(1, config.views))
+        self.sample_index.setValue(1 if pinned else self.sample_index.value())
+        self.sample_index.setEnabled(not pinned)
         self.scene_view.set_regions(config, self.sampling.current_region_key)
         cameras = (f"{len(config.fixed_cameras)} 个固定机位" if config.camera_mode == "fixed"
                    else f"{len(config.regions)} 个随机区域 · 每场景 {config.views} 视角")

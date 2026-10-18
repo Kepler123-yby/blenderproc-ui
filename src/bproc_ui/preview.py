@@ -46,13 +46,19 @@ class PreviewController(QObject):
             self.state.set_candidate(None)
             self.status_changed.emit("导入目标并设置渲染中心，即可预览候选构图")
             return None
-        view_index = 0 if fixed is not None else min(max(0, self.sample_index), max(0, config.views - 1))
+        # The preview is "scene 0 of one camera source". Random mode must keep the project's view
+        # count: narrowing it to one made every 视角 after the first an out-of-range index.
+        views = max(1, int(config.views))
         if fixed is not None:
+            view_index = 0
+            self.sample_index = 0
             preview_config = replace(config, camera_mode="fixed", regions=(), fixed_cameras=(fixed,),
-                                     scene_count=1, seed=self.preview_seed)
-        else:
-            preview_config = replace(config, camera_mode="random", regions=(region,), fixed_cameras=(),
                                      views_per_scene=1, scene_count=1, seed=self.preview_seed)
+        else:
+            view_index = min(max(0, int(self.sample_index)), views - 1)
+            self.sample_index = view_index
+            preview_config = replace(config, camera_mode="random", regions=(region,), fixed_cameras=(),
+                                     scene_count=1, seed=self.preview_seed)
         rejection = None
         try:
             scene = sample_scene(preview_config, self.state.meshes, 0)

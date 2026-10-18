@@ -6,15 +6,16 @@ import pytest
 from bproc_core.assets import MeshData
 from bproc_core.config import *
 from bproc_core.scene import *
-from bproc_core.scene import (_covered_share, _silhouette, _silhouette_points,
+from bproc_core.scene import (_covered_share, _maskable, _polygon_area, _silhouette,
+                              _silhouette_points, _target_shapes, SILHOUETTE_GRID_SIZE,
+                              SILHOUETTE_MASK_MAX_FACES, SILHOUETTE_MASK_MAX_VERTICES,
                               SILHOUETTE_POINT_LIMIT)
+from tests.factories import BOX_FACES, box_surface, make_box
 
 
 def fixture_scene():
     box = np.array([[.09, -.01, -.01], [.11, .01, .01]])
-    vertices = bounds_corners(box)
-    faces = np.array([[0, 1, 2]])
-    meshes = {key: MeshData(key, vertices.copy(), faces, None, box.copy()) for key in ('a', 'b')}
+    meshes = {key: make_box(key, box[0], box[1]) for key in ('a', 'b')}
     targets = (TargetSpec(AssetSpec('a', Path('a.ply')), 'A', 2),
                TargetSpec(AssetSpec('b', Path('b.ply')), 'B', 7,
                           offset=Box(Range(0, 0), Range(.06, .08), Range(0, 0))))
@@ -112,7 +113,7 @@ def test_different_scenes_sample_different_arrangements():
 def occluded_fixture():
     config, meshes = fixture_scene()
     box = np.array([[-.05, -.05, -.05], [.05, .05, .05]])
-    meshes['o'] = MeshData('o', bounds_corners(box), np.array([[0, 1, 2]]), None, box)
+    meshes['o'] = make_box('o', box[0], box[1])
     config = replace(config, occluders=(AssetSpec('o', Path('o.ply')),),
                      occlusion=OcclusionSpec(none_fraction=0., ratio=Range(.1, .5), max_attempts=30,
                                              count=(2, 2), scale=Range(.4, .6)), scene_count=1)
@@ -166,7 +167,7 @@ def test_occluders_stay_between_the_camera_and_the_nearest_target_surface():
 def test_occluders_never_intersect_targets_or_each_other():
     config, meshes = occluded_fixture()
     small = np.array([[-.01, -.01, -.01], [.01, .01, .01]])
-    meshes['o'] = MeshData('o', bounds_corners(small), np.array([[0, 1, 2]]), None, small)
+    meshes['o'] = make_box('o', small[0], small[1])
     config = replace(config, occlusion=OcclusionSpec(none_fraction=0., ratio=Range(.1, .5), max_attempts=30,
                                                      count=(2, 3), scale=Range(1., 1.8)))
     accepted = [shot for shot in _shots(config, meshes, attempts=20) if isinstance(shot, SceneCandidate)]
@@ -211,7 +212,7 @@ def test_occluders_cover_random_bands_from_close_and_far_views():
 def test_a_segment_too_short_for_an_occluder_is_an_explainable_rejection():
     config, meshes = occluded_fixture()
     heavy = np.array([[-.1, -.1, -.1], [.1, .1, .1]])
-    meshes['o'] = MeshData('o', bounds_corners(heavy), np.array([[0, 1, 2]]), None, heavy)
+    meshes['o'] = make_box('o', heavy[0], heavy[1])
     config = replace(config, occlusion=OcclusionSpec(none_fraction=0., ratio=Range(.1, .5), max_attempts=30,
                                                      count=(1, 1), scale=Range(60., 60.)))
     shot = candidate(config, meshes)
@@ -242,8 +243,8 @@ def _scaled_fixture(scale):
     size, distance = .1 * scale, .5 * scale
     target_box = np.array([[-size / 2] * 3, [size / 2] * 3])
     occluder_box = np.array([[-size] * 3, [size] * 3])
-    meshes = {"a": MeshData("a", bounds_corners(target_box), np.array([[0, 1, 2]]), None, target_box),
-              "o": MeshData("o", bounds_corners(occluder_box), np.array([[0, 1, 2]]), None, occluder_box)}
+    meshes = {"a": make_box("a", target_box[0], target_box[1]),
+              "o": make_box("o", occluder_box[0], occluder_box[1])}
     config = ProjectConfig(
         targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
         occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
@@ -325,8 +326,8 @@ def _distance_fixture(distance, size=.1):
     """A 10 cm target with a 2 cm occluder seen from `distance` metres."""
     target_box = np.array([[-size / 2] * 3, [size / 2] * 3])
     occluder_box = np.array([[-size] * 3, [size] * 3])
-    meshes = {"a": MeshData("a", bounds_corners(target_box), np.array([[0, 1, 2]]), None, target_box),
-              "o": MeshData("o", bounds_corners(occluder_box), np.array([[0, 1, 2]]), None, occluder_box)}
+    meshes = {"a": make_box("a", target_box[0], target_box[1]),
+              "o": make_box("o", occluder_box[0], occluder_box[1])}
     config = ProjectConfig(
         targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
         occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
@@ -390,8 +391,8 @@ def _thin_plate_fixture(ratio):
     """
     target_box = np.array([[-.05, -.05, -.0005], [.05, .05, .0005]])
     occluder_box = np.array([[-.06, -.06, -.0006], [.06, .06, .0006]])
-    meshes = {"a": MeshData("a", bounds_corners(target_box), np.array([[0, 1, 2]]), None, target_box),
-              "o": MeshData("o", bounds_corners(occluder_box), np.array([[0, 1, 2]]), None, occluder_box)}
+    meshes = {"a": make_box("a", target_box[0], target_box[1]),
+              "o": make_box("o", occluder_box[0], occluder_box[1])}
     config = ProjectConfig(
         targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
         occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
@@ -415,18 +416,12 @@ def test_the_aim_stays_inside_the_requested_window(window):
         hull = _silhouette(bounds_corners(meshes["o"].bounds_m), placements[0].world_from_model,
                           pose, config.camera)
         shares.append(_covered_share(target, hull))
-    # A zero-width window is only reachable within rasterisation resolution (float area rounding),
-    # so allow a hair on it; non-degenerate windows must be hit exactly by the estimate.
-    slack = 1e-4 if window.minimum == window.maximum else 0.
+    # A zero-width window is only reachable within the estimator's own resolution: the share is now
+    # bisected on the shared silhouette mask, so a half-pixel boundary on a target that spans the
+    # grid moves the area share by about 2 / grid pixels. Non-degenerate windows are still hit
+    # exactly by the estimate, so they keep no slack at all.
+    slack = 2. / SILHOUETTE_GRID_SIZE if window.minimum == window.maximum else 0.
     assert all(window.minimum - slack <= share <= window.maximum + slack for share in shares), shares
-
-
-def _box_surface(lo, hi):
-    """Every face of an axis-aligned box, not just one triangle: masks and hulls must agree."""
-    vertices = bounds_corners(np.array([lo, hi], dtype=float))
-    faces = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4],
-                      [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]])
-    return vertices, faces
 
 
 def _frame_fixture(window):
@@ -438,14 +433,14 @@ def _frame_fixture(window):
              ((inner, -inner, -half_z), (outer, inner, half_z))]
     vertices, faces, offset = [], [], 0
     for low, high in parts:
-        part_vertices, part_faces = _box_surface(low, high)
+        part_vertices, part_faces = box_surface(low, high)
         vertices.append(part_vertices)
         faces.append(part_faces + offset)
         offset += len(part_vertices)
     vertices = np.vstack(vertices)
     faces = np.vstack(faces)
     bounds = np.array([vertices.min(axis=0), vertices.max(axis=0)])
-    occluder_vertices, occluder_faces = _box_surface((-.02, -.02, -.002), (.02, .02, .002))
+    occluder_vertices, occluder_faces = box_surface((-.02, -.02, -.002), (.02, .02, .002))
     occluder_bounds = np.array([occluder_vertices.min(axis=0), occluder_vertices.max(axis=0)])
     meshes = {"a": MeshData("a", vertices, faces, None, bounds),
               "o": MeshData("o", occluder_vertices, occluder_faces, None, occluder_bounds)}
@@ -493,12 +488,127 @@ def test_a_hollow_target_is_aimed_by_its_real_outline(window):
 
 
 def test_dense_mesh_silhouette_projection_stays_bounded():
-    """A million-face part must not sort every vertex for the hull fallback."""
+    """A mesh past the mask budget must not sort every vertex for the hull fallback."""
     box = np.array([[-1., -1., -1.], [1., 1., 1.]])
-    vertices = np.repeat(bounds_corners(box), 3000, axis=0)
-    mesh = MeshData("dense", vertices, np.array([[0, 1, 2]]), None, box)
+    vertices = np.repeat(bounds_corners(box), 3000, axis=0)          # 24 000 vertices > 20 000
+    faces = np.tile(BOX_FACES, (len(vertices) // 8, 1))               # 30 000 faces > 6 000
+    mesh = MeshData("dense", vertices, faces, None, box)
+    assert not _maskable(mesh), "the dense fixture must be past the mask budget to need a hull"
     points = _silhouette_points(mesh)
     assert len(points) <= SILHOUETTE_POINT_LIMIT + 8
     assert len(points) >= 8
     np.testing.assert_allclose(points.min(axis=0), box[0])
     np.testing.assert_allclose(points.max(axis=0), box[1])
+
+
+def _flat_u_mesh(key="u"):
+    """A U-shaped plate: three rectangles, six triangles, an opening a hull would fill.
+
+    Six faces is what a real low-poly production part looks like, so it must not be treated as an
+    unfinished fixture: the face count is a rasteriser cost ceiling, not a licence to invent a hull.
+    """
+    spans = [((-.05, -.05), (.05, -.03)), ((-.05, -.03), (-.03, .05)), ((.03, -.03), (.05, .05))]
+    vertices, faces = [], []
+    for (x0, y0), (x1, y1) in spans:
+        index = len(vertices)
+        vertices.extend([(x0, y0, 0.), (x1, y0, 0.), (x1, y1, 0.), (x0, y1, 0.)])
+        faces.extend([[index, index + 1, index + 2], [index, index + 2, index + 3]])
+    vertices, faces = np.array(vertices, dtype=float), np.array(faces)
+    bounds = np.array([vertices.min(axis=0), vertices.max(axis=0)])
+    return MeshData(key, vertices, faces, None, bounds)
+
+
+def _top_pose(distance=.5):
+    """One fixed top-down view, so mask and hull areas are measured on the same projection."""
+    return CameraPose(np.eye(4), np.array([0., 0., distance]), distance, 0., 0., .005, 50.)
+
+
+def _shape_counts(mesh):
+    """How ``_target_shapes`` classifies one target: hulls or masks, and on which grid."""
+    return _target_shapes([(mesh, np.eye(4))], _top_pose(), CameraSpec())
+
+
+def _hull_pixels(mesh, shapes):
+    """Convex hull of the mesh's bounds, in the area units of the shared mask grid."""
+    hull = _silhouette(bounds_corners(mesh.bounds_m), np.eye(4), _top_pose(), CameraSpec())
+    return _polygon_area(hull) * shapes.grid.pixels_per_px ** 2
+
+
+def _u_fixture(window):
+    """The six-face U target with an occluder and a top-down view, like the frame fixture."""
+    mesh = _flat_u_mesh("a")
+    occluder = make_box("o", (-.02, -.02, -.002), (.02, .02, .002))
+    meshes = {"a": mesh, "o": occluder}
+    config = ProjectConfig(
+        targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
+        occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
+        regions=(RegionSpec(radius_m=Range(.5, .5), azimuth=Azimuth(0, 0, False),
+                            elevation_deg=Range(90, 90)),),
+        occlusion=OcclusionSpec(none_fraction=1., ratio=window, count=(1, 1),
+                                scale=Range(1., 1.)))
+    pose = CameraPose(np.eye(4), np.array([0., 0., .5]), .5, 0., 0., .005, 50.)
+    return config, meshes, pose
+
+
+def test_a_six_face_u_target_is_rasterised_by_its_real_outline():
+    """The reviewer's counterexample: six faces, a real opening, a hull that hides it."""
+    mesh = _flat_u_mesh()
+    shapes = _shape_counts(mesh)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1), (len(shapes.hulls), len(shapes.masks))
+    share = float(shapes.masks[0].sum()) / _hull_pixels(mesh, shapes)
+    assert .4 < share < .75, f"U covers {share:.2%} of its hull; the rasteriser lost the opening"
+
+
+def test_a_single_triangle_target_is_rasterised_from_its_own_surface():
+    """Three vertices and one face are a real surface, so the mask must show half a square, not a hull."""
+    square = np.array([[-.05, -.05, 0.], [.05, -.05, 0.], [.05, .05, 0.], [-.05, .05, 0.]])
+    bounds = np.array([[-.05, -.05, 0.], [.05, .05, 0.]])
+    triangle = MeshData("t", square[:3].copy(), np.array([[0, 1, 2]]), None, bounds)
+    plate = MeshData("p", square, np.array([[0, 1, 2], [0, 2, 3]]), None, bounds)
+    for mesh in (triangle, plate):
+        shapes = _shape_counts(mesh)
+        assert (len(shapes.hulls), len(shapes.masks)) == (0, 1), mesh.key
+    share = (float(_shape_counts(triangle).masks[0].sum())
+             / float(_shape_counts(plate).masks[0].sum()))
+    assert .47 < share < .53, f"one triangle covers {share:.2%} of the square it is half of"
+
+
+def test_a_solid_box_target_is_masked_with_the_same_area_as_its_hull():
+    """A convex part must not lose area to the rasteriser now that every surface takes the mask path."""
+    mesh = make_box("b", (-.05, -.05, -.05), (.05, .05, .05))
+    shapes = _shape_counts(mesh)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1)
+    # Filling by pixel centres drops roughly half a boundary pixel per side, i.e. a few percent on
+    # the 256px grid; anything beyond that would mean the rasteriser missed part of the box.
+    share = float(shapes.masks[0].sum()) / _hull_pixels(mesh, shapes)
+    assert .93 < share < 1.02, f"solid box mask covers {share:.2%} of its hull"
+
+
+def test_only_meshes_beyond_the_mask_budget_fall_back_to_the_hull():
+    """The hull is a cost fallback for oversized parts, never a substitute for a low-face surface."""
+    bounds = np.array([[-.05, -.05, -.05], [.05, .05, .05]])
+    corners = bounds_corners(bounds)
+    repeated = np.tile(BOX_FACES, (SILHOUETTE_MASK_MAX_FACES // 12 + 1, 1))
+    over_faces = MeshData("faces", corners, repeated[:SILHOUETTE_MASK_MAX_FACES + 1], None, bounds)
+    over_vertices = MeshData("vertices", np.repeat(corners, SILHOUETTE_MASK_MAX_VERTICES // 8 + 1, axis=0),
+                             BOX_FACES.copy(), None, bounds)
+    no_surface = MeshData("none", corners, np.zeros((0, 3), int), None, bounds)
+    for mesh in (over_faces, over_vertices, no_surface):
+        assert not _maskable(mesh), mesh.key
+        shapes = _shape_counts(mesh)
+        assert (len(shapes.hulls), len(shapes.masks)) == (1, 0), (mesh.key, len(shapes.hulls), len(shapes.masks))
+
+
+@pytest.mark.parametrize("window", [Range(.25, .35), Range(.05, .15), Range(.8, .9)])
+def test_a_low_face_concave_target_is_aimed_by_its_real_outline(window):
+    """Aiming a six-face U by its hull over-covers; the rasterised opening keeps it in the window."""
+    config, meshes, pose = _u_fixture(window)
+    target_mask = _raster(meshes["a"], np.eye(4), pose, config.camera)
+    assert 0 < target_mask.sum() < np.prod(target_mask.shape)
+    shares = []
+    for seed in range(6):
+        placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(seed), ())
+        assert isinstance(placements, list), placements
+        occluder_mask = _raster(meshes["o"], placements[0].world_from_model, pose, config.camera)
+        shares.append(float((target_mask & occluder_mask).sum()) / float(target_mask.sum()))
+    assert all(window.minimum - .01 <= share <= window.maximum + .01 for share in shares), shares

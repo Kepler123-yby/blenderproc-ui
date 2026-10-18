@@ -1,10 +1,31 @@
 """Small canonical CAD fixtures; no downloaded assets or renderer required."""
 from dataclasses import replace
+from itertools import product
 from pathlib import Path
 import numpy as np
 
 from bproc_core.assets import MeshData
 from bproc_core.config import AssetSpec, Box, HdriSpec, OutputSpec, ProjectConfig, Range, RuntimeSpec, TargetSpec
+
+# The 12 triangles of an axis-aligned box, indexed against the ``bounds_corners`` ordering used by
+# the sampler. A one-triangle "box" is not a surface: it under-states a silhouette whenever the
+# rasteriser is asked for real geometry, so fixtures must spell out every face.
+BOX_FACES = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4],
+                      [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]])
+
+
+def box_surface(lo, hi):
+    """Corners and all 12 triangles of an axis-aligned box, in ``bounds_corners`` order."""
+    low, high = np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)
+    return np.array(list(product(*zip(low, high))), dtype=float), BOX_FACES.copy()
+
+
+def make_box(key, lo, hi, *, color=None) -> MeshData:
+    """A box with its real closed surface, not a single triangle standing in for one."""
+    vertices, faces = box_surface(lo, hi)
+    colors = None if color is None else np.tile(np.asarray(color, dtype=np.uint8), (len(vertices), 1))
+    return MeshData(key, vertices, faces, colors,
+                    np.array([np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)]))
 
 
 def make_mesh(key="mesh", *, center=(0.0, 0.0, 0.0), size=0.1, color=None) -> MeshData:

@@ -180,9 +180,10 @@ OCCLUDER_CLEARANCE_FRACTION = (0.1, 0.01)      # of the target size, and of the 
 OCCLUDER_DRAWS = 24
 
 # The aiming estimate needs the projected *shape*, not its bounding box: a hollow or U-shaped
-# part has a convex hull several times its real silhouette. Up to this many triangles the
-# silhouette is rasterised exactly on a small screen-space grid; heavier parts fall back to the
-# hull of a bounded vertex sample, which keeps a million-face preview responsive.
+# part has a convex hull several times its real silhouette. Any mesh with triangles is rasterised
+# exactly on a small screen-space grid, however few faces it has; these caps only bound the cost,
+# so heavier parts fall back to the hull of a bounded vertex sample, which keeps a million-face
+# preview responsive.
 SILHOUETTE_MASK_MAX_FACES = 6000
 SILHOUETTE_MASK_MAX_VERTICES = 20000
 SILHOUETTE_POINT_LIMIT = 4096
@@ -301,6 +302,17 @@ def _mask_covered_share(target_mask: np.ndarray, occluder_mask: np.ndarray) -> f
     return float(np.count_nonzero(target_mask & occluder_mask)) / total
 
 
+def _maskable(mesh: MeshData) -> bool:
+    """True when the rasteriser can fill this mesh's own triangles inside its budget.
+
+    The face count is a cost ceiling, never a quality gate: a six-face U-shaped part is a valid
+    production surface and its projected triangles are its real silhouette. Only a mesh with no
+    triangles at all, or one above the mask budget, falls back to the convex hull.
+    """
+    return (bool(len(mesh.faces)) and len(mesh.faces) <= SILHOUETTE_MASK_MAX_FACES
+            and len(mesh.vertices_m) <= SILHOUETTE_MASK_MAX_VERTICES)
+
+
 @dataclass(frozen=True)
 class _TargetShapes:
     """Targets as either exact masks or convex-hull fallbacks on one shared grid."""
@@ -312,10 +324,7 @@ class _TargetShapes:
 def _target_shapes(entries, pose: CameraPose, camera) -> _TargetShapes:
     hulls, masked = [], []
     for mesh, matrix in entries:
-        # Tiny fixtures describe a hull with one triangle; rasterising that triangle would
-        # under-state the shape, so only a real surface takes the mask path.
-        if (8 <= len(mesh.faces) <= SILHOUETTE_MASK_MAX_FACES
-                and len(mesh.vertices_m) <= SILHOUETTE_MASK_MAX_VERTICES):
+        if _maskable(mesh):
             masked.append((mesh, matrix))
         else:
             hull = _silhouette(_silhouette_points(mesh), matrix, pose, camera)
@@ -414,10 +423,8 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
             if hull is not None:
                 share = max(_covered_share(target, hull) for target in shapes.hulls)
         if shapes.grid is not None:
-            exact = (8 <= len(mesh.faces) <= SILHOUETTE_MASK_MAX_FACES
-                     and len(mesh.vertices_m) <= SILHOUETTE_MASK_MAX_VERTICES)
             occluder_mask = _rasterize_mask(mesh, matrix, pose, config.camera, shapes.grid,
-                                            triangles=exact)
+                                            triangles=_maskable(mesh))
             share = max([share, *(_mask_covered_share(target, occluder_mask)
                                   for target in shapes.masks)])
         return share

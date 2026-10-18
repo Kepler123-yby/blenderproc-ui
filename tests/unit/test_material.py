@@ -6,18 +6,19 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from bproc_core.assets import MeshData
 from bproc_core.config import *
 from bproc_core.scene import (
-    MaterialState, SceneState, bounds_corners, candidate_from_dict,
+    MaterialState, SceneState, candidate_from_dict,
     candidate_to_dict, propose_candidate, propose_scene,
 )
 from bproc_runtime.blender_backend import BlenderBackend
+from tests.factories import make_box
 
 
 def fixture_scene(material=None):
     box = np.array([[-.05, -.05, -.05], [.05, .05, .05]])
-    meshes = {'a': MeshData('a', bounds_corners(box), np.array([[0, 1, 2]]), None, box.copy())}
+    # A closed box surface, not one triangle: a single face would misdescribe the target silhouette.
+    meshes = {'a': make_box('a', box[0], box[1])}
     targets = (TargetSpec(AssetSpec('a', Path('a.ply')), 'A', 2),)
     config = ProjectConfig(targets=targets, anchor_key='a', hdri=HdriSpec(files=(Path('env.hdr'),)),
                            regions=(RegionSpec(radius_m=Range(1, 1), azimuth=Azimuth(0, 0, False),

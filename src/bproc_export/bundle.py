@@ -53,8 +53,8 @@ def _contains(parent: Path, child: Path) -> bool:
     return child == parent or parent in child.parents
 
 
-def export_job(config: ProjectConfig, destination: Path) -> ExportResult:
-    config = _absolute_config(config)
+def _export_problems(config: ProjectConfig) -> None:
+    """Raise when a config cannot be packaged: invalid fields or an unreadable resource."""
     errors = [e for e in validate_project(config) if e.severity == 'error']
     if errors:
         raise ConfigError('\n'.join(f'{e.field}: {e.message}' for e in errors))
@@ -63,6 +63,11 @@ def export_job(config: ProjectConfig, destination: Path) -> ExportResult:
             load_mesh(asset)
         except AssetError as exc:
             raise ConfigError(f'资源 {asset.key} 无法导出：{exc}') from exc
+
+
+def export_job(config: ProjectConfig, destination: Path) -> ExportResult:
+    config = _absolute_config(config)
+    _export_problems(config)
     # Keep the final component lexical until mkdir, so a dangling symlink remains a conflict.
     destination = Path(destination).expanduser().absolute()
     destination = destination.parent.resolve() / destination.name
@@ -116,7 +121,12 @@ def export_grouped_jobs(config, meshes, destination) -> list[ExportResult]:
     same way by :func:`bproc_core.scale_groups.split_by_scale`.
     """
     destination = Path(destination).expanduser()
+    # Grouping raises when an enabled target has not been loaded, and the pre-flight below proves
+    # every group can actually be packaged before the first job directory is created: a partially
+    # written set of jobs would look like a complete export of a smaller project.
     groups = split_by_scale(config, meshes)
+    for group in groups:
+        _export_problems(_absolute_config(group.config))
     results = []
     for group in groups:
         target = (destination if len(groups) == 1

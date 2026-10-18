@@ -15,7 +15,7 @@ from typing import Mapping
 import numpy as np
 
 from .assets import MeshData
-from .config import Box, ProjectConfig, Range, TargetSpec
+from .config import Box, ConfigError, ProjectConfig, Range, TargetSpec
 
 #: Target size ratio above which one dataset cannot honestly describe every object.
 MIXED_SCALE_FACTOR = 10.0
@@ -47,6 +47,52 @@ class ScaleGroup:
         return f"{value(self.minimum_m)}-{value(self.maximum_m)}mm"
 
 
+def _missing_mesh_keys(config: ProjectConfig, meshes: Mapping[str, MeshData]) -> list[str]:
+    """Enabled targets whose mesh was never loaded; grouping must not drop them."""
+    missing = []
+    for target in config.targets:
+        if target.enabled and target.asset.key not in meshes:
+            missing.append(target.asset.key)
+    return missing
+
+
+def _require_complete_meshes(config: ProjectConfig, meshes: Mapping[str, MeshData]) -> None:
+    """Refuse to group a project whose enabled targets are not all loaded.
+
+    Dropping an unloaded target would export a dataset that silently lacks an object the user
+    enabled, and the generated ``scene.yaml`` could not reveal the loss any more.
+    """
+    missing = _missing_mesh_keys(config, meshes)
+    if missing:
+        raise ConfigError(
+            "按尺寸分组导出缺少启用目标的网格：" + "、".join(missing)
+            + "。请等待资源载入完成或修正资源后重试。")
+
+
+def _require_exact_partition(config: ProjectConfig, groups) -> None:
+    """Every enabled target appears in exactly one group, with its own obj_id."""
+    enabled = [target for target in config.targets if target.enabled]
+    seen_keys: list[str] = []
+    seen_ids: list[int] = []
+    for group in groups:
+        for target in group.config.targets:
+            if not target.enabled:
+                continue
+            seen_keys.append(target.asset.key)
+            seen_ids.append(target.obj_id)
+    if len(seen_keys) != len(set(seen_keys)):
+        raise ConfigError("按尺寸分组结果出现重复目标：" + "、".join(sorted(seen_keys)))
+    if len(seen_ids) != len(set(seen_ids)):
+        raise ConfigError("按尺寸分组结果出现重复 obj_id：" + "、".join(str(x) for x in sorted(seen_ids)))
+    if set(seen_keys) != {target.asset.key for target in enabled}:
+        lost = sorted({target.asset.key for target in enabled} - set(seen_keys))
+        extra = sorted(set(seen_keys) - {target.asset.key for target in enabled})
+        raise ConfigError("按尺寸分组的启用目标并集不完整：缺少 " + "、".join(lost)
+                          + ("；多出 " + "、".join(extra) if extra else ""))
+    if set(seen_ids) != {target.obj_id for target in enabled}:
+        raise ConfigError("按尺寸分组的 obj_id 并集与启用目标不一致")
+
+
 def target_extents(config: ProjectConfig, meshes: Mapping[str, MeshData]) -> list[float]:
     """Largest bounding-box side per enabled target, in metres."""
     extents = []
@@ -72,11 +118,14 @@ def _clusters(entries: list[tuple[TargetSpec, float]], factor: float) -> list[li
 
 
 def _midpoint(box: Box) -> np.ndarray:
-    return np.array([(axis.minimum + axis.maximum) / 2 for axis in (box.x, box.y, box.z)])
+    # Python floats, not ``np.float64``: generated projects are written as plain YAML and a numpy
+    # scalar is not representable by the safe dumper.
+    return np.array([(axis.minimum + axis.maximum) / 2 for axis in (box.x, box.y, box.z)],
+                    dtype=float)
 
 
 def _shifted(box: Box, shift: np.ndarray) -> Box:
-    ranges = [Range(axis.minimum - delta, axis.maximum - delta)
+    ranges = [Range(float(axis.minimum - delta), float(axis.maximum - delta))
               for axis, delta in zip((box.x, box.y, box.z), shift)]
     return Box(*ranges)
 
@@ -84,7 +133,8 @@ def _shifted(box: Box, shift: np.ndarray) -> Box:
 def _config_for_group(config: ProjectConfig, group: list[tuple[TargetSpec, float]],
                       original_anchor: TargetSpec | None, *, suffix: str | None) -> ProjectConfig:
     members = {target.asset.key for target, _ in group}
-    targets = tuple(target for target in config.targets if target.asset.key in members)
+    targets = tuple(target for target in config.targets
+                    if target.enabled and target.asset.key in members)
     if original_anchor is not None and original_anchor.asset.key in members:
         anchor = next(target for target in targets if target.asset.key == original_anchor.asset.key)
     else:
@@ -118,9 +168,10 @@ def split_by_scale(config: ProjectConfig, meshes: Mapping[str, MeshData], *,
     """
     if factor <= 1:
         raise ValueError("Scale factor must be greater than one")
+    _require_complete_meshes(config, meshes)
     entries = []
     for target in config.targets:
-        if not target.enabled or target.asset.key not in meshes:
+        if not target.enabled:
             continue
         bounds = np.asarray(meshes[target.asset.key].bounds_m, dtype=float)
         extent = float((bounds[1] - bounds[0]).max())
@@ -129,12 +180,13 @@ def split_by_scale(config: ProjectConfig, meshes: Mapping[str, MeshData], *,
     if len(sized) < 2 or max(extent for _, extent in sized) / min(extent for _, extent in sized) <= factor:
         # Return the caller's object untouched: rebuilding it would drop disabled targets and any
         # fields added to the schema later.
-        targets = tuple(target for target in config.targets
-                        if target.enabled and target.asset.key in meshes)
+        targets = tuple(target for target in config.targets if target.enabled)
         extents = [extent for _, extent in sized] or [0.]
         by_key = {target.asset.key: extent for target, extent in entries}
-        return (ScaleGroup(0, targets, tuple(by_key[target.asset.key] for target in targets),
-                           min(extents), max(extents), config),)
+        groups = (ScaleGroup(0, targets, tuple(by_key[target.asset.key] for target in targets),
+                             min(extents), max(extents), config),)
+        _require_exact_partition(config, groups)
+        return groups
 
     original_anchor = next((target for target in config.targets
                             if target.enabled and target.asset.key == config.anchor_key), None)
@@ -147,4 +199,5 @@ def split_by_scale(config: ProjectConfig, meshes: Mapping[str, MeshData], *,
         extents = [extent for _, extent in cluster]
         groups.append(ScaleGroup(index, tuple(target for target, _ in cluster), tuple(extents),
                                  min(extents), max(extents), group_config))
+    _require_exact_partition(config, groups)
     return tuple(groups)

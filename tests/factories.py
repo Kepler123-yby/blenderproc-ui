@@ -55,3 +55,18 @@ def make_project(tmp_path: Path, ids=(2, 7), output_format="rgb_masks") -> Proje
                          hdri=HdriSpec(files=(hdri.resolve(),)),
                          output=OutputSpec(format=output_format, root=(tmp_path / "output").resolve()),
                          runtime=RuntimeSpec(blender_dir=blender_dir.resolve(), blenderproc_executable=executable.resolve()))
+
+
+def make_runtime(tmp_path: Path) -> RuntimeSpec:
+    """A minimal on-disk Blender/BlenderProc layout that `locate_runtime` accepts."""
+    blender = tmp_path / "blender"
+    blender.mkdir(parents=True, exist_ok=True)
+    (blender / "blender").touch()
+    python = blender / "4.2/python/bin/python3.11"
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.touch()
+    executable = tmp_path / "env/bin/blenderproc"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.touch()
+    (tmp_path / "env/lib/python3.8/site-packages/blenderproc").mkdir(parents=True, exist_ok=True)
+    return RuntimeSpec(blender_dir=blender, blenderproc_executable=executable)

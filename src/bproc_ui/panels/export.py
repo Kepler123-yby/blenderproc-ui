@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QComboBox, QPushButton,
                                QLabel, QPlainTextEdit, QFileDialog, QApplication, QCheckBox)
 
-from bproc_core.config import validate_project
+from bproc_core.config import ConfigError, validate_project
 from bproc_core.scale_groups import split_by_scale
 from bproc_export.bundle import export_grouped_jobs, export_job
 from bproc_ui.export_worker import ExportTask, new_request
@@ -342,13 +342,25 @@ class ExportPanel(QWidget):
         self.validation.style().polish(self.validation)
 
     def _export_clicked(self):
-        groups = split_by_scale(self.state.config, self.state.meshes)
-        if self.split_scales.isChecked() and len(groups) > 1:
-            started = self.start_grouped_export(self.job_path.text())
+        if self.split_scales.isChecked():
+            try:
+                groups = split_by_scale(self.state.config, self.state.meshes)
+            except ConfigError as error:
+                self._show_error(str(error))
+                return
+            if len(groups) > 1:
+                started = self.start_grouped_export(self.job_path.text())
+            else:
+                started = self.start_export(self.job_path.text())
         else:
             started = self.start_export(self.job_path.text())
         if not started and self._export_task is not None:
             self.message.emit("上一次导出还没结束")
+
+    def _unloaded_enabled_targets(self):
+        meshes = self.state.meshes
+        return [target.asset.key for target in self.state.config.targets
+                if target.enabled and target.asset.key not in meshes]
 
     def start_grouped_export(self, path) -> bool:
         """Export one job per scale group; a single group falls back to the normal path."""
@@ -358,8 +370,20 @@ class ExportPanel(QWidget):
         if errors:
             self._show_error("请先修正配置检查中列出的项目")
             return False
+        missing = self._unloaded_enabled_targets()
+        if missing:
+            # Loading can stay on the worker, but grouping an incomplete cache would silently drop
+            # an enabled target; refuse instead of exporting a smaller project.
+            self._show_error("以下启用目标的网格尚未载入，无法按尺寸分组导出："
+                             + "、".join(missing)
+                             + "\n请等待资源载入完成或修正资源后重试。")
+            return False
         meshes = dict(self.state.meshes)
-        groups = split_by_scale(self.state.config, meshes)
+        try:
+            groups = split_by_scale(self.state.config, meshes)
+        except ConfigError as error:
+            self._show_error(str(error))
+            return False
         if len(groups) <= 1:
             return self.start_export(path)
         request = new_request(self.state, path)

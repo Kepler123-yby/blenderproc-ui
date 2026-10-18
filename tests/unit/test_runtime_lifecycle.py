@@ -210,3 +210,40 @@ def test_a_conflicting_dataset_is_left_untouched(tmp_path):
     with pytest.raises(OutputConflict):
         reserve_dataset(tmp_path, "keep")
     assert json.loads((existing / "run_metadata" / "status.json").read_text())["status"] == "completed"
+
+
+def test_final_manifest_failure_matches_disk_status(tmp_path, monkeypatch):
+    """A completed status next to an unfinished manifest would make later readers trust a lie."""
+    from bproc_runtime import output as output_module
+    real = output_module.atomic_json
+
+    def flaky(path, data):
+        if Path(path).name == "manifest.json" and data.get("final") is True:
+            raise OSError("磁盘已满")
+        return real(path, data)
+
+    monkeypatch.setattr(output_module, "atomic_json", flaky)
+    dataset = reserve_dataset(tmp_path, "manifest-failure")
+    recorder = JsonRunRecorder(dataset / "run_metadata")
+    from types import SimpleNamespace
+    from bproc_core.scene import SceneState
+    state = SceneState(0, (), None, 1., 0., None, True)
+    monkeypatch.setattr(runner, "sample_scene", lambda config, meshes, index, *, on_rejection=None:
+                        SimpleNamespace(scene=state, placements=(), material=None, scene_index=index,
+                                        layout_attempt_index=0))
+    from bproc_core.camera import CameraPose
+    from bproc_core.scene import LightState, SceneCandidate
+
+    def propose(config, meshes, scene, view, attempt):
+        pose = CameraPose(np.eye(4), np.array([0., 0., .5]), .5, 0., 0., .05, 100.)
+        return SceneCandidate(scene.scene_index, view, attempt, "region-1", "a", pose, (), None, 1., 0.,
+                              LightState(np.array([0., 0., 1.]), 100., (1., 1., 1.)), True)
+
+    monkeypatch.setattr(runner, "propose_candidate", propose)
+    summary = runner.run_project(project(), {}, Backend(), Writer(), recorder)
+    payload = json.loads((dataset / "run_metadata" / "status.json").read_text())
+    assert summary.status == payload["status"] == "failed"
+    assert summary.exit_code == payload["exit_code"] == 1
+    assert payload["saved"] == 1                      # committed frames stay counted
+    assert "manifest:OSError" in payload["failures_by_reason"]
+    assert summary.failures_by_reason == payload["failures_by_reason"]

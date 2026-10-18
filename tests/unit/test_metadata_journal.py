@@ -166,3 +166,45 @@ def _candidate():
     pose = CameraPose(np.eye(4), np.array([0., 0., 1.]), 1., 0., 0., .05, 100.)
     return SceneCandidate(0, 0, 0, "region-1", "a", pose, (), None, 1., 0.,
                           LightState(np.array([0., 0., 1.]), 100., (1., 1., 1.)), False)
+
+
+def _rows_with_journal(tmp_path, count=2):
+    instance = recorder(tmp_path, count=count)
+    for index in range(count):
+        instance.record_frame(FrameRef(index, f"rgb/{index:06d}.png", gt_obj_ids=(2,)), _candidate(), Evidence())
+    instance.finish(RunSummary("completed", count, count, count, 0, {}, 0))
+    return tmp_path / "run_metadata" / "manifest.json"
+
+
+def test_reader_rejects_same_index_different_content(tmp_path):
+    manifest_path = _rows_with_journal(tmp_path)
+    original = json.loads(manifest_path.read_text())
+    for mutate in (lambda frame: frame.update(relative_rgb="rgb/wrong.png"),
+                   lambda frame: frame["candidate"].update(scene_index=999),
+                   lambda frame: frame["candidate"]["camera"].update(radius_m=9.0),
+                   lambda frame: frame.update(occlusion_ratio=0.99)):
+        manifest = json.loads(json.dumps(original))
+        mutate(manifest["frames"][0])
+        manifest_path.write_text(json.dumps(manifest))
+        with pytest.raises(MetadataError, match="第 0 帧内容不一致"):
+            read_frame_records(manifest_path.parent)
+
+
+def test_reader_rejects_unknown_manifest_version_with_journal(tmp_path):
+    manifest_path = _rows_with_journal(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = 999
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(MetadataError, match="版本不一致"):
+        read_frame_records(manifest_path.parent)
+    manifest["frames"] = "not-a-list"
+    manifest["schema_version"] = 2
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(MetadataError):
+        read_frame_records(manifest_path.parent)
+
+
+def test_a_running_manifest_placeholder_does_not_trigger_the_journal_check(tmp_path):
+    instance = recorder(tmp_path, count=2)
+    instance.record_frame(FrameRef(0, "rgb/000000.png", gt_obj_ids=(2,)), _candidate(), Evidence())
+    assert len(read_frame_records(tmp_path / "run_metadata")) == 1   # empty placeholder is expected mid-run

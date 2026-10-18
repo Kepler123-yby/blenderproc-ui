@@ -6,6 +6,7 @@ import pytest
 from bproc_core.assets import MeshData
 from bproc_core.config import *
 from bproc_core.scene import *
+from bproc_core.scene import _covered_share, _silhouette
 
 
 def fixture_scene():
@@ -360,3 +361,21 @@ def test_occluder_apparent_size_does_not_depend_on_the_distance():
         measured.append(_apparent_ratio(placements[0], meshes["o"], pose, distance, size))
     assert measured[1] == pytest.approx(measured[0], rel=.05), measured
     assert .4 <= measured[0] <= .6, measured
+
+
+def test_occluder_offset_is_aimed_at_the_occlusion_window():
+    """Placement bisects the sideways offset against the projected silhouettes.
+
+    Random offsets used to over-cover: every sampled 240-frame rejection was above the window
+    (0.51-0.97 against 0.05-0.5), so most proposals died for hiding too much. Aiming the offset at
+    the middle of the window turns the coarse estimate into a placement the renderer keeps.
+    """
+    for distance in (.5, 5.):
+        config, meshes, pose, size = _distance_fixture(distance)
+        placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(11), ())
+        assert isinstance(placements, list), placements
+        target = _silhouette(bounds_corners(meshes["a"].bounds_m), np.eye(4), pose, config.camera)
+        hull = _silhouette(bounds_corners(meshes["o"].bounds_m), placements[0].world_from_model,
+                           pose, config.camera)
+        share = _covered_share(target, hull)
+        assert config.occlusion.ratio.minimum <= share <= config.occlusion.ratio.maximum, share

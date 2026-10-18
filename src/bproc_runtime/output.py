@@ -86,11 +86,14 @@ class JsonRunRecorder:
         append_frame(self.root, row)      # one appended, fsynced line; the manifest waits for finish
         self._frames.append(row)
 
-    def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view") -> None:
+    def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view",
+                         details=None) -> None:
+        """One line per rejected proposal; measurements live next to the reason, not in a separate log."""
+        row = {"scene_index": scene_index, "view_index": view_index,
+               "attempt_index": attempt_index, "reason": reason, "phase": phase}
+        row.update(details or {})
         with (self.root / "rejections.jsonl").open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps({"scene_index": scene_index, "view_index": view_index,
-                                     "attempt_index": attempt_index, "reason": reason,
-                                     "phase": phase}, ensure_ascii=False) + "\n")
+            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     def finish(self, summary) -> None:
         """Write the final status even when begin() only got partway through.

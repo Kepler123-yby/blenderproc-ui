@@ -102,7 +102,7 @@ class Recorder:
     def record_frame(self, ref, candidate, evidence):
         self.frames.append(ref)
 
-    def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view"):
+    def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view", details=None):
         self.rejections.append((scene_index, view_index, attempt_index, reason, phase))
 
     def finish(self, summary):

@@ -40,11 +40,12 @@ class Writer:
 
 
 class Recorder:
-    def __init__(self): self.frames=[]; self.rejections=[]; self.summary=None
+    def __init__(self): self.frames=[]; self.rejections=[]; self.details=[]; self.summary=None
     def begin(self,c): pass
     def record_frame(self,ref,c,e): self.frames.append(ref)
-    def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view"):
+    def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view", details=None):
         self.rejections.append((scene_index, view_index, attempt_index, reason, phase))
+        self.details.append(details)
     def finish(self,s): self.summary=s
 
 
@@ -121,6 +122,16 @@ def test_invisible_target_retries(monkeypatch):
     b=Backend(); b.assess=lambda _:VisibilityEvidence(np.ones((1,2),bool),{2:np.zeros((1,2),bool)})
     r=runner.run_project(project(),{},b,Writer(),Recorder())
     assert r.failures_by_reason=={"invisible_target":60}
+
+
+def test_occlusion_rejection_records_the_measured_ratio(monkeypatch):
+    stub_scene(monkeypatch)
+    monkeypatch.setattr(runner,"propose_candidate",candidate)
+    b=Backend(); b.assess=lambda _: VisibilityEvidence(np.ones((1,2),bool),{2:np.array([[True,False]])})
+    recorder=Recorder()
+    r=runner.run_project(project(),{},b,Writer(),recorder)
+    assert r.failures_by_reason=={"occlusion":60}
+    assert recorder.details[0]=={"occlusion_ratio":0.5,"required":[0.0,0.0]}
 
 
 def test_empty_baseline_retries(monkeypatch):

@@ -35,9 +35,10 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
     expected_ids = {t.obj_id for t in config.targets if t.enabled}
     anchor_id = next(t.obj_id for t in config.targets if t.asset.key == config.anchor_key)
 
-    def reject(scene_index, view_index, attempt, reason, *, phase="view"):
+    def reject(scene_index, view_index, attempt, reason, *, phase="view", **details):
         failures[reason] += 1
-        recorder.record_rejection(scene_index, view_index, attempt, reason, phase=phase)
+        recorder.record_rejection(scene_index, view_index, attempt, reason, phase=phase,
+                                  details=details or None)
 
     def interrupt(signum, frame):
         nonlocal pending_signal
@@ -101,13 +102,15 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
                     if not np.any(evidence.anchor_full):
                         reject(scene_index, view_index, attempt, "empty_baseline")
                         continue
-                    if any(not np.any(mask) for mask in evidence.visible.values()):
-                        reject(scene_index, view_index, attempt, "invisible_target")
-                        continue
                     ratio = occlusion_ratio(evidence, anchor_id)
                     required = effective_occlusion_range(config, candidate.wants_unoccluded)
+                    measured = {"occlusion_ratio": ratio,
+                                "required": [required.minimum, required.maximum]}
+                    if any(not np.any(mask) for mask in evidence.visible.values()):
+                        reject(scene_index, view_index, attempt, "invisible_target", **measured)
+                        continue
                     if not occlusion_accepted(ratio, required):
-                        reject(scene_index, view_index, attempt, "occlusion")
+                        reject(scene_index, view_index, attempt, "occlusion", **measured)
                         continue
                     frame = native_call(backend.render, evidence)
                     committing = True

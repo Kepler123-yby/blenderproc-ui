@@ -65,7 +65,7 @@ class RecordingRecorder:
     def record_frame(self, ref, candidate, evidence):
         pass
 
-    def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view"):
+    def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view", details=None):
         pass
 
     def finish(self, summary):

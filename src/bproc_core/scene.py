@@ -190,6 +190,112 @@ def _boxes_overlap(a, b) -> bool:
     return bool(np.all(a[0] < b[1]) and np.all(b[0] < a[1]))
 
 
+def _convex_hull(points: np.ndarray) -> np.ndarray:
+    """2D convex hull (monotone chain); enough for a silhouette envelope."""
+    ordered = np.unique(np.round(points, 6), axis=0)
+    if len(ordered) < 3:
+        return ordered
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lower, upper = [], []
+    for point in ordered:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
+            lower.pop()
+        lower.append(point)
+    for point in ordered[::-1]:
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
+            upper.pop()
+        upper.append(point)
+    return np.array(lower[:-1] + upper[:-1])
+
+
+def _silhouette(corners_m, world_from_model, pose: CameraPose, camera):
+    """Screen-space convex hull of a mesh's vertices, or None when part of it is behind the camera."""
+    uv, valid = project_points(transform_points(corners_m, world_from_model), pose, camera)
+    if not valid.all():
+        return None
+    return _convex_hull(uv)
+
+
+def _polygon_area(polygon: np.ndarray) -> float:
+    if len(polygon) < 3:
+        return 0.0
+    x, y = polygon[:, 0], polygon[:, 1]
+    return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _clip_to_convex(subject: np.ndarray, clip: np.ndarray) -> np.ndarray:
+    """Sutherland-Hodgman: the part of ``subject`` inside the convex ``clip`` polygon."""
+    output = subject
+    for index in range(len(clip)):
+        if len(output) == 0:
+            return output
+        a, b = clip[index], clip[(index + 1) % len(clip)]
+        edge = b - a
+        inside = lambda point: edge[0] * (point[1] - a[1]) - edge[1] * (point[0] - a[0]) >= 0  # noqa: E731
+        current = list(output)
+        output = []
+        for position, point in enumerate(current):
+            previous = current[position - 1]
+            if inside(point):
+                if not inside(previous):
+                    output.append(_intersection(previous, point, a, b))
+                output.append(point)
+            elif inside(previous):
+                output.append(_intersection(previous, point, a, b))
+        output = np.array(output) if output else np.empty((0, 2))
+    return output
+
+
+def _intersection(p1, p2, a, b):
+    """Where segment ``p1-p2`` crosses the infinite line through ``a-b``."""
+    r, s = p2 - p1, b - a
+    denominator = r[0] * s[1] - r[1] * s[0]
+    if abs(denominator) < 1e-12:
+        return p2
+    t = ((a[0] - p1[0]) * s[1] - (a[1] - p1[1]) * s[0]) / denominator
+    return p1 + t * r
+
+
+def _covered_share(target_hull, occluder_hull) -> float:
+    """Share of the target silhouette hidden by the occluder, from projected convex hulls.
+
+    Hulls still over-state a concave silhouette, but they follow the mesh closely enough that a
+    hull-based aim lands inside the window where a bounding box aim over-covered by 2-3x.
+    """
+    target_area = _polygon_area(target_hull)
+    if target_area <= 0 or occluder_hull is None:
+        return 0.0
+    return _polygon_area(_clip_to_convex(occluder_hull, target_hull)) / target_area
+
+
+def _aimed_offset(base, direction, mesh, scale, target_boxes, pose, config, rng, spread):
+    """Sideways offset that should cover roughly the middle of the occlusion window.
+
+    The renderer used to reject most proposals for over-covering: a box three quarters of the
+    target's width, offset by a tenth of it, hides most of the silhouette. The offset is now
+    bisected against the projected-box estimate, which falls monotonically as the occluder moves
+    away from the target's centre. ``spread`` keeps the draw varied and bounds the search.
+    """
+    wanted = config.occlusion.ratio
+    if wanted.maximum <= 0 or not target_boxes:
+        return spread * rng.uniform(.1, .9)
+    aim = max(.02, min((wanted.minimum + wanted.maximum) / 2, wanted.maximum * .8))
+    low, high = 0., max(spread * 2.5, 1e-9)
+    for _ in range(9):
+        middle = (low + high) / 2
+        matrix = np.eye(4)
+        matrix[:3, :3] *= scale
+        matrix[:3, 3] = base + direction * middle - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
+        hull = _silhouette(bounds_corners(mesh.bounds_m), matrix, pose, config.camera)
+        estimate = 0. if hull is None else max(_covered_share(t, hull) for t in target_boxes)
+        if estimate > aim:
+            low = middle      # too much cover: move further aside
+        else:
+            high = middle
+    return (low + high) / 2
+
+
 def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], pose: CameraPose,
                         anchor_key: str, rng, targets: Sequence[Placement] = ()) -> list[Placement] | Rejection:
     """Occluders for one camera: inside its segment to the target, offset sideways so the cover is partial.
@@ -223,6 +329,11 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
     up = np.cross(right, view)
     boxes = [_world_aabb(meshes[p.asset_key].bounds_m, p.world_from_model)
              for p in targets if p.asset_key in meshes]
+    # Screen-space boxes of every target, used to aim the occluder at the requested coverage.
+    boxes_targets = [hull for hull in (_silhouette(bounds_corners(meshes[p.asset_key].bounds_m),
+                                                   p.world_from_model, pose, config.camera)
+                                      for p in targets if p.asset_key in meshes)
+                     if hull is not None]
     target_front = min((float(np.min((transform_points(bounds_corners(meshes[p.asset_key].bounds_m),
                                                      p.world_from_model) - camera) @ view))
                         for p in targets if p.asset_key in meshes), default=distance)
@@ -257,8 +368,10 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
                 return Rejection('no_occluder_room', asset.key)
             depth = min(max(depth, nearest), farthest)
             angle = rng.uniform(0., 2 * np.pi)
-            offset = apparent * rng.uniform(.1, .9) * ratio
-            center = camera + view * depth + (np.cos(angle) * right + np.sin(angle) * up) * offset
+            base = camera + view * depth
+            direction = np.cos(angle) * right + np.sin(angle) * up
+            center = base + direction * _aimed_offset(
+                base, direction, mesh, scale, boxes_targets, pose, config, rng, apparent * ratio)
             matrix = np.eye(4)
             matrix[:3, :3] *= scale
             matrix[:3, 3] = center - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)

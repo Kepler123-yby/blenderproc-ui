@@ -8,6 +8,7 @@ from typing import Protocol
 import numpy as np
 
 from bproc_core.masks import occlusion_ratio
+from bproc_core.occlusion import effective_occlusion_range, occlusion_accepted
 from bproc_core.scene import LAYOUT_RETRY_REASONS, Rejection, propose_candidate, sample_scene
 from .records import FrameRef, RunSummary
 
@@ -106,10 +107,8 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
                         reject(scene_index, view_index, attempt, "invisible_target")
                         continue
                     ratio = occlusion_ratio(evidence, anchor_id)
-                    # Without occluders nothing can cover the target, so a ratio above zero is unreachable.
-                    accepted = (ratio == 0.0 if candidate.wants_unoccluded or not config.occluders else
-                                config.occlusion.ratio.minimum <= ratio <= config.occlusion.ratio.maximum)
-                    if not accepted:
+                    required = effective_occlusion_range(config, candidate.wants_unoccluded)
+                    if not occlusion_accepted(ratio, required):
                         reject(scene_index, view_index, attempt, "occlusion")
                         continue
                     frame = native_call(backend.render, evidence)

@@ -187,7 +187,8 @@ def test_native_pass_finishes_before_signal_is_honored(monkeypatch,signum):
     assert finished==[True] and r.status=="interrupted" and r.saved==0 and r.exit_code==128+signum
 
 
-def test_missing_occluders_accepts_every_target_visibility(monkeypatch):
+def test_single_target_without_occluders_accepts_an_unoccluded_frame(monkeypatch):
+    """No occluder asset means the ratio can only be zero; that is the accepted category."""
     def propose(c,m,scene,view,attempt): return SimpleNamespace(scene_index=scene.scene_index,view_index=view,attempt_index=attempt,wants_unoccluded=False)
     stub_scene(monkeypatch)
     monkeypatch.setattr(runner,"propose_candidate",propose)
@@ -195,3 +196,16 @@ def test_missing_occluders_accepts_every_target_visibility(monkeypatch):
     run=runner.run_project(project(),{},Backend(),Writer(),recorder)
     assert (run.status,run.saved,run.skipped)==("completed",2,0)
     assert recorder.rejections==[]
+
+
+def test_fully_hidden_target_is_rejected_even_without_occluder_assets(monkeypatch):
+    """Accepting "no occluders" must not mean accepting a target nobody can see."""
+    def propose(c,m,scene,view,attempt): return SimpleNamespace(scene_index=scene.scene_index,view_index=view,attempt_index=attempt,wants_unoccluded=False)
+    stub_scene(monkeypatch)
+    monkeypatch.setattr(runner,"propose_candidate",propose)
+    backend=Backend()
+    backend.assess=lambda anchor: VisibilityEvidence(np.ones((1,2),bool),{2:np.zeros((1,2),bool)})
+    recorder=Recorder()
+    run=runner.run_project(project(),{},backend,Writer(),recorder)
+    assert (run.status,run.saved)==("partial",0)
+    assert {reason for *_,reason,_ in recorder.rejections}=={"invisible_target"}

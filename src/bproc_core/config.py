@@ -398,8 +398,10 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
         if all(isinstance(v, int) and not isinstance(v, bool) for v in occ.count) and occ.count[0] > occ.count[1]:
             issue("occlusion.count", "遮挡物数量下限不能大于上限")
     interval("occlusion.scale", occ.scale, positive=True)
-    if not config.occluders and occ.none_fraction < 1 and occ.ratio.minimum > 0:
-        issue("occluders", "未选择专门遮挡物；只能依靠其他目标满足遮挡率", "warning")
+    if occ.ratio.minimum > 0:
+        from bproc_core.occlusion import effective_occlusion_range
+        if effective_occlusion_range(config, False).maximum == 0:
+            issue("occluders", "只有一个启用目标且没有可用的专门遮挡物；遮挡比例请求无法满足，帧只能按无遮挡接收", "warning")
     integer("render.samples", config.render.samples, 1)
     if config.render.device not in ("CUDA", "OPTIX", "HIP", "ONEAPI", "METAL"):
         issue("render.device", "仅支持 GPU 后端：OPTIX、CUDA、HIP、ONEAPI、METAL；禁止 CPU 渲染")

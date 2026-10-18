@@ -183,3 +183,51 @@ def test_runtime_checker_rejects_incomplete_export_and_wrong_first_import(tmp_pa
     atomic_json(root / "launch.json", launch)
     (root / "render_scene.py").write_text("import sys\nimport blenderproc as bproc\n")
     assert verify_runtime(root, execute_probe=False)
+
+
+def natural_occlusion_output(tmp_path):
+    """A valid rgb_masks dataset where target 7 really covers a quarter of target 2."""
+    config = make_project(tmp_path / "inputs", output_format="rgb_masks")
+    config = replace(config, scene_count=1, views_per_scene=1, occluders=(),
+                     camera=resize_camera(config.camera, 64, 48),
+                     regions=(RegionSpec(radius_m=Range(.6, .6), azimuth=Azimuth(0, 0, False),
+                                         elevation_deg=Range(0, 0)),),
+                     occlusion=OcclusionSpec(none_fraction=0, ratio=Range(.1, .5)))
+    meshes = {target.asset.key: load_mesh(target.asset) for target in config.targets}
+    candidate = propose_candidate(config, meshes, propose_scene(config, meshes, 0), 0, 0)
+    assert isinstance(candidate, SceneCandidate) and not candidate.wants_unoccluded
+
+    full = {2: np.zeros((48, 64), bool), 7: np.zeros((48, 64), bool)}
+    full[2][10:18, 10:18] = True            # anchor silhouette, 8x8 = 64 px
+    full[7][10:14, 10:14] = True            # the occluding quarter, 4x4 = 16 px
+    visible = {obj_id: mask.copy() for obj_id, mask in full.items()}
+    visible[2][10:14, 10:14] = False        # 16 of 64 anchor pixels are covered
+    evidence = VisibilityEvidence(full[2], visible)
+
+    root = reserve_dataset(config.output.root, config.output.dataset_name)
+    writer = RgbMasksWriter(root, config)
+    frame = RenderedFrame(np.zeros((48, 64, 3), np.uint8), None, full, visible)
+    ref = writer.write(0, candidate, frame)
+    recorder = JsonRunRecorder(root / "run_metadata")
+    recorder.begin(config)
+    recorder.record_frame(ref, candidate, evidence)
+    recorder.finish(RunSummary("completed", 1, 1, 1, 0, {}, 0))
+    return root, config
+
+
+def test_checker_accepts_natural_occlusion_without_occluder_assets(tmp_path):
+    root, _ = natural_occlusion_output(tmp_path)
+    assert json.loads((root / "run_metadata/manifest.json").read_text())["frames"][0]["occlusion_ratio"] == .25
+    assert verify_rgb_masks(root) == []
+
+
+def test_checker_rejects_natural_occlusion_in_the_unoccluded_category(tmp_path):
+    root, _ = natural_occlusion_output(tmp_path)
+    def relabel(data):
+        frame = data["frames"][0]
+        frame.update(wants_unoccluded=True)
+        frame["candidate"] = {**frame["candidate"], "wants_unoccluded": True}
+
+    edit_json(root / "run_metadata/manifest.json", relabel)
+    errors = verify_rgb_masks(root)
+    assert any("measured center occlusion" in error for error in errors), errors

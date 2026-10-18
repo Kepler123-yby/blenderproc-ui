@@ -4,6 +4,7 @@ import json
 import numpy as np
 
 from bproc_core.assets import load_mesh
+from bproc_core.occlusion import effective_occlusion_range, occlusion_accepted
 from bproc_core.project_io import load_project
 
 
@@ -144,10 +145,13 @@ def verify_metadata(root: Path, *, require_complete=True):
                 if candidate["hdri_path"] is not None and candidate["hdri_path"] not in [str(p) for p in config.hdri.files]:
                     errors.append(f"Frame {index}: HDRI is outside configured resource list")
                 ratio = float(row["occlusion_ratio"])
+                required = effective_occlusion_range(config, bool(candidate.get("wants_unoccluded", False)))
                 if not np.isfinite(ratio) or not 0 <= ratio <= 1:
                     errors.append(f"Frame {index}: invalid measured center occlusion")
-                elif candidate["wants_unoccluded"] and ratio != 0 or not candidate["wants_unoccluded"] and not config.occlusion.ratio.minimum <= ratio <= config.occlusion.ratio.maximum:
-                    errors.append(f"Frame {index}: measured center occlusion does not satisfy requested category")
+                elif not occlusion_accepted(ratio, required):
+                    errors.append(
+                        f"Frame {index}: measured center occlusion {ratio:.3f} is outside "
+                        f"[{required.minimum:.3f}, {required.maximum:.3f}]")
             except Exception as exc:
                 errors.append(f"Frame {index}: malformed manifest record: {type(exc).__name__}: {exc}")
         return errors, config, status, records

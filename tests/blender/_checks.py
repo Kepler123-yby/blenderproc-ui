@@ -8,12 +8,26 @@ from bproc_core.occlusion import effective_occlusion_range, occlusion_accepted
 from bproc_core.project_io import load_project
 
 
+def _azimuth_equal(first: float, second: float, atol: float = 1e-7) -> bool:
+    """Azimuths are circular: -90 and 270 name the same direction."""
+    return abs((first - second + 180.0) % 360.0 - 180.0) <= atol
+
+
 def read_json(path, diagnostics):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception as exc:
         diagnostics.append(f"{path}: {type(exc).__name__}: {exc}")
         return None
+
+
+def _is_legacy_records(records) -> bool:
+    """True for datasets written before scene/view indices replaced ``request_index``."""
+    for row in records[:1]:
+        candidate = row.get("candidate") if isinstance(row, dict) else None
+        if isinstance(candidate, dict) and "scene_index" not in candidate and "request_index" in candidate:
+            return True
+    return False
 
 
 def verify_metadata(root: Path, *, require_complete=True):
@@ -32,6 +46,11 @@ def verify_metadata(root: Path, *, require_complete=True):
     if not isinstance(status, dict) or not isinstance(manifest, dict) or not isinstance(objects, list) or config is None:
         return errors or ["Metadata documents have invalid types"], config, status, []
     try:
+        # Historical datasets used ``request_index`` before scenes and views existed. That is a
+        # different format, not corrupt data, so report it once before any counter arithmetic.
+        if _is_legacy_records(manifest.get("frames")):
+            errors.append("旧 request_index 数据集格式不受支持（版本不兼容），请用当前版本重新导出")
+            return errors, config, status, manifest.get("frames")
         for name in ("requested", "written_frames", "saved", "skipped", "exit_code"):
             if isinstance(status.get(name), bool) or not isinstance(status.get(name), int):
                 raise ValueError(f"status.{name} must be an integer")
@@ -75,6 +94,7 @@ def verify_metadata(root: Path, *, require_complete=True):
         seen_views = set()
         view_counts = {}
         regions = {r.key: r for r in config.regions}
+        fixed_cameras = {c.key: c for c in config.fixed_cameras}
         for index, row in enumerate(records):
             try:
                 if row.get("frame_index") != index:
@@ -129,17 +149,42 @@ def verify_metadata(root: Path, *, require_complete=True):
                     raise ValueError("invalid camera transform")
                 if not np.allclose(matrix[:3, 3], position) or not np.allclose(matrix[:3, :3].T @ matrix[:3, :3], np.eye(3), atol=1e-6):
                     errors.append(f"Frame {index}: inconsistent camera position/rotation")
-                region = regions[candidate["region_key"]]
+                # Fixed cameras and regions may share names ("left", "right"), so the key is only
+                # meaningful inside the namespace named by camera_kind. Records written before
+                # fixed cameras existed carry no kind and can only be random.
+                kind = candidate.get("camera_kind", "random")
+                key = candidate["region_key"]
                 radius, phi, elevation = (float(camera[k]) for k in ("radius_m", "azimuth_deg", "elevation_deg"))
                 if not np.isfinite([radius, phi, elevation]).all():
                     raise ValueError("nonfinite camera spherical coordinates")
-                if not region.radius_m.minimum - 1e-7 <= radius <= region.radius_m.maximum + 1e-7 or not region.elevation_deg.minimum - 1e-7 <= elevation <= region.elevation_deg.maximum + 1e-7:
-                    errors.append(f"Frame {index}: camera outside spherical sampling ranges")
-                if not region.azimuth.full_circle:
-                    sweep = (region.azimuth.end_deg - region.azimuth.start_deg) % 360
-                    offset = (phi - region.azimuth.start_deg) % 360
-                    if min(abs(offset), abs(offset - 360)) > 1e-7 and offset > sweep + 1e-7:
-                        errors.append(f"Frame {index}: camera outside azimuth range")
+                if kind not in ("fixed", "random"):
+                    errors.append(f"Frame {index}: unknown camera kind {kind!r}")
+                elif kind != config.camera_mode:
+                    errors.append(f"Frame {index}: camera kind {kind} differs from project mode {config.camera_mode}")
+                elif kind == "fixed":
+                    pinned = fixed_cameras.get(key)
+                    if pinned is None:
+                        errors.append(f"Frame {index}: fixed camera {key!r} is not in fixed_cameras")
+                    else:
+                        for name, value, expected in (("radius", radius, pinned.radius_m),
+                                                      ("azimuth", phi, pinned.azimuth_deg),
+                                                      ("elevation", elevation, pinned.elevation_deg)):
+                            same = (_azimuth_equal(value, expected) if name == "azimuth"
+                                    else np.isclose(value, expected, atol=1e-7))
+                            if not same:
+                                errors.append(f"Frame {index}: camera {name} {value:.6g} differs from the fixed camera's {expected:.6g}")
+                else:
+                    region = regions.get(key)
+                    if region is None:
+                        errors.append(f"Frame {index}: region {key!r} is not in regions")
+                    else:
+                        if not region.radius_m.minimum - 1e-7 <= radius <= region.radius_m.maximum + 1e-7 or not region.elevation_deg.minimum - 1e-7 <= elevation <= region.elevation_deg.maximum + 1e-7:
+                            errors.append(f"Frame {index}: camera outside spherical sampling ranges")
+                        if not region.azimuth.full_circle:
+                            sweep = (region.azimuth.end_deg - region.azimuth.start_deg) % 360
+                            offset = (phi - region.azimuth.start_deg) % 360
+                            if min(abs(offset), abs(offset - 360)) > 1e-7 and offset > sweep + 1e-7:
+                                errors.append(f"Frame {index}: camera outside azimuth range")
                 if not np.isclose(np.linalg.norm(position), radius, atol=1e-7):
                     errors.append(f"Frame {index}: recorded camera radius differs from actual position")
                 if candidate["hdri_path"] is not None and candidate["hdri_path"] not in [str(p) for p in config.hdri.files]:

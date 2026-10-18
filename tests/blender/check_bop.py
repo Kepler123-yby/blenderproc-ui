@@ -1,4 +1,10 @@
-"""Standalone structural and numeric validation of a completed BOP dataset."""
+"""Standalone structural and numeric validation of a completed BOP dataset.
+
+The counters follow the native ``BopWriterUtility.calc_gt_info`` rules: ``px_count_all`` is the
+full silhouette, ``px_count_valid`` counts pixels that also have observed depth, and
+``px_count_visib`` is the visible mask. ``visib`` is therefore not bounded by ``valid`` -- native
+BOP keeps silhouette edge pixels whose depth is zero, and the legal fixtures contain them.
+"""
 from pathlib import Path
 import json
 import sys
@@ -12,54 +18,154 @@ from tests.blender._checks import verify_metadata, read_json
 from bproc_core.assets import load_mesh, mesh_diameter_m
 
 
-def _check_images_and_projection(root: Path, expected_ids=(2, 7)) -> dict:
+def _xywh(mask: np.ndarray):
+    """Inclusive BOP bounding box ``[x, y, w, h]`` of a boolean mask, or None when empty."""
+    rows, cols = np.nonzero(mask)
+    if not rows.size:
+        return None
+    return [int(cols.min()), int(rows.min()), int(cols.max() - cols.min() + 1), int(rows.max() - rows.min() + 1)]
+
+
+def _touches_border(mask: np.ndarray) -> bool:
+    return bool(mask[0].any() or mask[-1].any() or mask[:, 0].any() or mask[:, -1].any())
+
+
+def _check_gt_info(label: str, facts: dict, full: np.ndarray, visible: np.ndarray,
+                   observed: np.ndarray) -> list[str]:
+    """Re-derive every ``scene_gt_info`` field from the masks and the rendered depth."""
+    errors = []
+    all_count = int(full.sum())
+    valid = int((full & observed).sum())
+    visib = int(visible.sum())
+    for name, expected in (("px_count_all", all_count), ("px_count_valid", valid), ("px_count_visib", visib)):
+        recorded = facts.get(name)
+        if not isinstance(recorded, int) or isinstance(recorded, bool):
+            errors.append(f"{label}: {name} must be an integer")
+        elif recorded < 0 or recorded > all_count:
+            errors.append(f"{label}: {name} {recorded} must stay within [0, {all_count}]")
+        elif recorded != expected:
+            errors.append(f"{label}: {name} {recorded} differs from the masks' {expected}")
+    if all_count:
+        fraction = facts.get("visib_fract")
+        if not isinstance(fraction, (int, float)) or not np.isclose(fraction, visib / all_count, atol=1e-6):
+            errors.append(f"{label}: visib_fract {fraction} differs from px_count_visib / px_count_all")
+    expected_visib = _xywh(visible)
+    if facts.get("bbox_visib") != expected_visib:
+        errors.append(f"{label}: bbox_visib {facts.get('bbox_visib')} differs from the visible mask's {expected_visib}")
+    expected_object = _xywh(full)
+    # A silhouette clipped by the viewport border has no self-evident bbox; native BOP would
+    # need the unclipped projection, so it is only compared when the mask is fully inside.
+    if not _touches_border(full) and facts.get("bbox_obj") != expected_object:
+        errors.append(f"{label}: bbox_obj {facts.get('bbox_obj')} differs from the full mask's {expected_object}")
+    return errors
+
+
+def _check_images(root: Path, expected_ids, errors: list[str]) -> dict:
     root = Path(root)
-    model_info = json.loads((root / "models/models_info.json").read_text())
-    assert set(model_info) == {str(i) for i in expected_ids}
+    model_info = read_json(root / "models/models_info.json", errors)
+    if set(model_info) != {str(i) for i in expected_ids}:
+        errors.append(f"models_info must contain exactly the enabled targets {sorted(expected_ids)}")
     models = {}
     for obj_id in expected_ids:
-        assert (root / "models" / f"obj_{obj_id:06d}.ply").is_file()
-        assert model_info[str(obj_id)]["diameter"] > 0
-        models[obj_id] = np.asarray(trimesh.load(root / "models" / f"obj_{obj_id:06d}.ply", process=False).vertices)
+        if not (root / "models" / f"obj_{obj_id:06d}.ply").is_file():
+            errors.append(f"Object {obj_id}: canonical model file obj_{obj_id:06d}.ply is missing")
+            continue
+        try:
+            if model_info[str(obj_id)]["diameter"] <= 0:
+                errors.append(f"Object {obj_id}: models_info diameter must be positive")
+            models[obj_id] = np.asarray(trimesh.load(root / "models" / f"obj_{obj_id:06d}.ply",
+                                                    process=False).vertices)
+        except Exception as exc:
+            errors.append(f"Object {obj_id}: cannot read canonical model: {type(exc).__name__}: {exc}")
     frames = 0
     for chunk in sorted((root / "train_pbr").glob("[0-9]*")):
-        gt = json.loads((chunk / "scene_gt.json").read_text())
-        camera = json.loads((chunk / "scene_camera.json").read_text())
-        info = json.loads((chunk / "scene_gt_info.json").read_text())
-        assert set(gt) == set(camera) == set(info)
+        try:
+            gt = json.loads((chunk / "scene_gt.json").read_text())
+            camera = json.loads((chunk / "scene_camera.json").read_text())
+            info = json.loads((chunk / "scene_gt_info.json").read_text())
+        except Exception as exc:
+            errors.append(f"BOP scene {chunk.name}: unreadable metadata: {type(exc).__name__}: {exc}")
+            continue
+        if set(gt) != set(camera) or set(gt) != set(info):
+            errors.append(f"BOP scene {chunk.name}: scene_gt, scene_camera and scene_gt_info disagree on images")
         for key, poses in gt.items():
-            im_id = int(key)
-            assert [p["obj_id"] for p in poses] == list(expected_ids)
-            assert len(info[key]) == len(poses)
-            depth = np.array(Image.open(chunk / "depth" / f"{im_id:06d}.png"))
-            assert depth.ndim == 2 and np.any(depth > 0)
-            recovered_m = depth.astype(float) * camera[key]["depth_scale"] / 1000
-            assert recovered_m.max() < 100
-            rgb_paths = [* (chunk / "rgb").glob(f"{im_id:06d}.*")]
-            assert len(rgb_paths) == 1
-            assert np.asarray(Image.open(rgb_paths[0])).shape[:2] == depth.shape
-            for index, pose in enumerate(poses):
-                rotation = np.array(pose["cam_R_m2c"]).reshape(3,3)
-                np.testing.assert_allclose(rotation.T @ rotation, np.eye(3), atol=1e-5)
-                assert pose["cam_t_m2c"][2] > 0
-                full = np.asarray(Image.open(chunk / "mask" / f"{im_id:06d}_{index:06d}.png"))
-                visible = np.asarray(Image.open(chunk / "mask_visib" / f"{im_id:06d}_{index:06d}.png"))
-                assert full.shape == visible.shape == depth.shape
-                assert np.any(full) and np.any(visible)
-                assert set(np.unique(full)) <= {0,255} and set(np.unique(visible)) <= {0,255}
-                assert np.all(visible <= full)
-                # Canonical model coordinates and pose translations must use the
-                # same millimeter convention, including displaced CAD origins.
-                xyz = models[pose["obj_id"]] @ rotation.T + pose["cam_t_m2c"]
-                assert np.all(xyz[:,2] > 0)
-                K = np.array(camera[key]["cam_K"]).reshape(3,3)
-                homogeneous = xyz @ K.T
-                uv = homogeneous[:,:2] / homogeneous[:,2,None]
-                yy,xx = np.nonzero(full)
-                np.testing.assert_allclose([xx.min(),yy.min(),xx.max(),yy.max()],
-                    [uv[:,0].min(),uv[:,1].min(),uv[:,0].max(),uv[:,1].max()], atol=2.5)
-            frames += 1
+            label = f"BOP scene {chunk.name} image {key}"
+            try:
+                im_id = int(key)
+                if [p["obj_id"] for p in poses] != list(expected_ids):
+                    errors.append(f"{label}: ground-truth objects {[p['obj_id'] for p in poses]} differ from {list(expected_ids)}")
+                if len(info.get(key, ())) != len(poses):
+                    errors.append(f"{label}: scene_gt_info has {len(info.get(key, ()))} rows for {len(poses)} poses")
+                depth = np.asarray(Image.open(chunk / "depth" / f"{im_id:06d}.png"))
+                if depth.ndim != 2:
+                    errors.append(f"{label}: depth must be a single channel")
+                if not np.any(depth > 0):
+                    errors.append(f"{label}: depth contains no observed pixels")
+                recovered_m = depth.astype(float) * camera[key]["depth_scale"] / 1000
+                if recovered_m.max() >= 100:
+                    errors.append(f"{label}: depth exceeds 100 m after applying depth_scale")
+                rgb_paths = [*(chunk / "rgb").glob(f"{im_id:06d}.*")]
+                if len(rgb_paths) != 1:
+                    errors.append(f"{label}: expected exactly one RGB file, found {len(rgb_paths)}")
+                elif np.asarray(Image.open(rgb_paths[0])).shape[:2] != depth.shape:
+                    errors.append(f"{label}: RGB size differs from depth")
+                for index, pose in enumerate(poses):
+                    entry = f"{label} object {pose['obj_id']}"
+                    rotation = np.array(pose["cam_R_m2c"]).reshape(3, 3)
+                    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5):
+                        errors.append(f"{entry}: cam_R_m2c is not a rotation matrix")
+                    if not pose["cam_t_m2c"][2] > 0:
+                        errors.append(f"{entry}: object origin must be in front of the camera")
+                    full = np.asarray(Image.open(chunk / "mask" / f"{im_id:06d}_{index:06d}.png"))
+                    visible = np.asarray(Image.open(chunk / "mask_visib" / f"{im_id:06d}_{index:06d}.png"))
+                    if full.shape != visible.shape or full.shape != depth.shape:
+                        errors.append(f"{entry}: mask, mask_visib and depth differ in size")
+                        continue
+                    if not np.any(full) or not np.any(visible):
+                        errors.append(f"{entry}: masks must contain pixels")
+                    if not set(np.unique(full)) <= {0, 255} or not set(np.unique(visible)) <= {0, 255}:
+                        errors.append(f"{entry}: masks must be binary 0/255 images")
+                    if not np.all(visible <= full):
+                        errors.append(f"{entry}: visible pixels must be a subset of the full silhouette")
+                    full_bool, visible_bool = full > 0, visible > 0
+                    if index < len(info.get(key, ())):
+                        errors.extend(_check_gt_info(f"{entry} gt_info", info[key][index], full_bool,
+                                                     visible_bool, depth > 0))
+                    # Canonical model coordinates and pose translations must use the same
+                    # millimetre convention, including displaced CAD origins.
+                    if pose["obj_id"] not in models:
+                        continue
+                    xyz = models[pose["obj_id"]] @ rotation.T + pose["cam_t_m2c"]
+                    if not np.all(xyz[:, 2] > 0):
+                        errors.append(f"{entry}: canonical model vertices must lie in front of the camera")
+                    K = np.array(camera[key]["cam_K"]).reshape(3, 3)
+                    homogeneous = xyz @ K.T
+                    uv = homogeneous[:, :2] / homogeneous[:, 2, None]
+                    rows, cols = np.nonzero(full_bool)
+                    if rows.size and not np.allclose([cols.min(), rows.min(), cols.max(), rows.max()],
+                                                     [uv[:, 0].min(), uv[:, 1].min(), uv[:, 0].max(), uv[:, 1].max()],
+                                                     atol=2.5):
+                        errors.append(f"{entry}: projected canonical model does not match the full mask")
+                frames += 1
+            except Exception as exc:
+                errors.append(f"{label}: {type(exc).__name__}: {exc}")
     return {"frames": frames, "object_ids": list(expected_ids)}
+
+
+def _check_relative_rgb(root: Path, row: dict, scene: Path, image_id: int, pair, errors: list[str]) -> None:
+    relative = row.get("relative_rgb")
+    if relative is None:
+        return
+    path = Path(relative)
+    resolved = (root / path).resolve()
+    if path.is_absolute() or ".." in path.parts:
+        errors.append(f"BOP {pair}: relative_rgb {relative!r} must be a relative path inside the dataset")
+    elif root.resolve() not in resolved.parents:
+        errors.append(f"BOP {pair}: relative_rgb {relative!r} escapes the dataset")
+    elif not resolved.is_file():
+        errors.append(f"BOP {pair}: relative_rgb {relative!r} does not exist")
+    elif resolved.parent != (scene / "rgb").resolve() or resolved.stem != f"{image_id:06d}":
+        errors.append(f"BOP {pair}: relative_rgb {relative!r} does not name this scene/image's RGB")
 
 
 def verify_bop(root: Path) -> list[str]:
@@ -74,7 +180,7 @@ def verify_bop(root: Path) -> list[str]:
         targets = {t.obj_id: t for t in config.targets if t.enabled}
         expected_ids = tuple(sorted(targets))
         try:
-            stats = _check_images_and_projection(root, expected_ids)
+            stats = _check_images(root, expected_ids, errors)
             if stats["frames"] != status.get("saved"):
                 errors.append("BOP RGB/pose frame count differs from saved counter")
         except Exception as exc:
@@ -103,6 +209,12 @@ def verify_bop(root: Path) -> list[str]:
         referenced_frames = set()
         for row in records:
             try:
+                if "bop_scene_id" not in row or "bop_image_id" not in row:
+                    if "request_index" in row:
+                        errors.append(f"BOP frame {row.get('frame_index', '?')}: 旧 request_index 数据集格式不受支持，请用当前版本重新导出")
+                    else:
+                        errors.append(f"BOP frame {row.get('frame_index', '?')}: missing bop_scene_id / bop_image_id")
+                    continue
                 scene_id, image_id = row["bop_scene_id"], row["bop_image_id"]
                 if isinstance(scene_id, bool) or not isinstance(scene_id, int) or isinstance(image_id, bool) or not isinstance(image_id, int):
                     raise ValueError("BOP scene/image references must be integers")
@@ -115,6 +227,7 @@ def verify_bop(root: Path) -> list[str]:
                 gt = json.loads((scene / "scene_gt.json").read_text(encoding="utf-8"))[key]
                 camera = json.loads((scene / "scene_camera.json").read_text(encoding="utf-8"))[key]
                 info = json.loads((scene / "scene_gt_info.json").read_text(encoding="utf-8"))[key]
+                _check_relative_rgb(root, row, scene, image_id, pair, errors)
                 expected_K = [config.camera.fx, 0, config.camera.cx, 0, config.camera.fy, config.camera.cy, 0, 0, 1]
                 if not np.allclose(camera["cam_K"], expected_K, atol=1e-4):
                     errors.append(f"BOP {pair}: camera K differs from project")

@@ -9,7 +9,7 @@ from PIL import Image
 
 from bproc_core.assets import load_mesh, write_bop_models
 from bproc_core.camera import resize_camera
-from bproc_core.config import Azimuth, Box, OcclusionSpec, Range, RegionSpec
+from bproc_core.config import Azimuth, Box, FixedCameraSpec, OcclusionSpec, Range, RegionSpec
 from bproc_core.project_io import save_project
 from bproc_core.scene import SceneCandidate, propose_candidate, propose_scene
 from bproc_runtime.contracts import RenderedFrame, VisibilityEvidence
@@ -231,3 +231,130 @@ def test_checker_rejects_natural_occlusion_in_the_unoccluded_category(tmp_path):
     edit_json(root / "run_metadata/manifest.json", relabel)
     errors = verify_rgb_masks(root)
     assert any("measured center occlusion" in error for error in errors), errors
+
+
+def write_rgb_masks(root, config, candidate, masks):
+    writer = RgbMasksWriter(root, config)
+    ref = writer.write(0, candidate, RenderedFrame(np.zeros((48, 64, 3), np.uint8), None, masks, masks))
+    finish_record(config, root, candidate, ref, masks)
+
+
+def fixed_camera_output(tmp_path, camera, regions):
+    config = make_project(tmp_path / "inputs", output_format="rgb_masks")
+    config = replace(config, scene_count=1, views_per_scene=1, camera=resize_camera(config.camera, 64, 48),
+                     camera_mode="fixed", fixed_cameras=(camera,), regions=regions,
+                     occlusion=OcclusionSpec(none_fraction=1))
+    meshes = {target.asset.key: load_mesh(target.asset) for target in config.targets}
+    candidate = propose_candidate(config, meshes, propose_scene(config, meshes, 0), 0, 0)
+    assert isinstance(candidate, SceneCandidate) and candidate.camera_kind == "fixed"
+    root = reserve_dataset(config.output.root, config.output.dataset_name)
+    masks = {}
+    for obj_id, (y, x) in {2: (10, 10), 7: (28, 40)}.items():
+        masks[obj_id] = np.zeros((48, 64), dtype=bool)
+        masks[obj_id][y:y+8, x:x+8] = True
+    write_rgb_masks(root, config, candidate, masks)
+    return root, candidate
+
+
+FIXED = FixedCameraSpec(key="left", name="左侧", radius_m=.6, azimuth_deg=0., elevation_deg=0.)
+SHARED_NAME_REGION = (RegionSpec(key="left", radius_m=Range(.9, .9), azimuth=Azimuth(0, 0, False),
+                                 elevation_deg=Range(0, 0)),)
+
+
+def test_fixed_camera_records_are_checked_against_the_fixed_namespace(tmp_path):
+    root, candidate = fixed_camera_output(tmp_path, FIXED, SHARED_NAME_REGION)
+    assert candidate.region_key == "left"
+    # The region and the pinned camera share the name "left" and disagree on radius: only a
+    # namespace-aware checker can accept this dataset.
+    assert verify_rgb_masks(root) == []
+
+
+@pytest.mark.parametrize("corruption", ["angle", "kind", "missing_camera"])
+def test_fixed_camera_corruption_is_reported(tmp_path, corruption):
+    root, _ = fixed_camera_output(tmp_path, FIXED, SHARED_NAME_REGION)
+
+    def mutate(data):
+        candidate = data["frames"][0]["candidate"]
+        if corruption == "angle":
+            candidate["camera"]["azimuth_deg"] = (candidate["camera"]["azimuth_deg"] + 10) % 360
+        elif corruption == "kind":
+            candidate["camera_kind"] = "random"
+        else:
+            candidate["region_key"] = "camera-404"
+
+    edit_json(root / "run_metadata/manifest.json", mutate)
+    errors = verify_rgb_masks(root)
+    expected = {"angle": "differs from the fixed camera", "kind": "differs from project mode",
+                "missing_camera": "is not in fixed_cameras"}[corruption]
+    assert any(expected in error for error in errors), errors
+
+
+def test_records_without_a_camera_kind_fall_back_to_random(valid_rgb_masks_output):
+    root = valid_rgb_masks_output
+
+    def strip_kind(data):
+        data["frames"][0]["candidate"].pop("camera_kind", None)
+
+    edit_json(root / "run_metadata/manifest.json", strip_kind)
+    assert verify_rgb_masks(root) == [], "a record without camera_kind must validate as a random record"
+
+    def unknown_region(data):
+        data["frames"][0]["candidate"]["region_key"] = "camera-404"
+
+    edit_json(root / "run_metadata/manifest.json", unknown_region)
+    errors = verify_rgb_masks(root)
+    assert any("is not in regions" in error for error in errors), errors
+
+
+BOP_INFO_CORRUPTIONS = {
+    "negative_valid": (lambda info: info[0].update(px_count_valid=-1), "px_count_valid -1 must stay within"),
+    "valid_over_all": (lambda info: info[0].update(px_count_valid=info[0]["px_count_all"] + 5), "must stay within"),
+    "visib_over_all": (lambda info: info[0].update(px_count_visib=info[0]["px_count_all"] + 5), "must stay within"),
+    "bbox_width": (lambda info: info[0].update(bbox_obj=[info[0]["bbox_obj"][0], info[0]["bbox_obj"][1], info[0]["bbox_obj"][2] + 3, info[0]["bbox_obj"][3]]), "bbox_obj"),
+    "bbox_visib": (lambda info: info[0].update(bbox_visib=[info[0]["bbox_visib"][0] + 4, info[0]["bbox_visib"][1], info[0]["bbox_visib"][2], info[0]["bbox_visib"][3]]), "bbox_visib"),
+    "full_count": (lambda info: info[0].update(px_count_all=info[0]["px_count_all"] + 50, visib_fract=info[0]["px_count_visib"] / (info[0]["px_count_all"] + 50)), "px_count_all"),
+    "visible_count": (lambda info: info[0].update(px_count_visib=0, visib_fract=0.0), "px_count_visib 0 differs"),
+}
+
+
+@pytest.mark.parametrize("corruption", sorted(BOP_INFO_CORRUPTIONS))
+def test_bop_checker_recomputes_native_gt_info_counters(valid_bop_output, corruption):
+    mutate, needle = BOP_INFO_CORRUPTIONS[corruption]
+    edit_json(valid_bop_output / "train_pbr/000000/scene_gt_info.json", lambda data: mutate(data["0"]))
+    errors = verify_bop(valid_bop_output)
+    assert any(needle in error for error in errors), errors
+
+
+@pytest.mark.parametrize("relative, expected", [
+    ("../../../../etc/passwd", "must be a relative path inside the dataset"),
+    ("train_pbr/000000/depth/000000.png", "does not name this scene/image's RGB"),
+    ("train_pbr/000000/rgb/999999.png", "does not exist"),
+])
+def test_bop_checker_rejects_unsafe_or_wrong_rgb_references(valid_bop_output, relative, expected):
+    edit_json(valid_bop_output / "run_metadata/manifest.json",
+              lambda data: data["frames"][0].update(relative_rgb=relative))
+    errors = verify_bop(valid_bop_output)
+    assert any(expected in error for error in errors), errors
+
+
+def test_bop_checker_reports_the_legacy_reference_format_as_incompatible(valid_bop_output):
+    def legacy(data):
+        frame = data["frames"][0]
+        frame.pop("bop_scene_id")
+        frame.pop("bop_image_id")
+        frame["request_index"] = 0
+
+    edit_json(valid_bop_output / "run_metadata/manifest.json", legacy)
+    errors = verify_bop(valid_bop_output)
+    assert any("旧 request_index" in error and "版本" in error for error in errors), errors
+
+
+def test_candidate_records_using_request_index_are_reported_as_incompatible(valid_rgb_masks_output):
+    def legacy_candidate(data):
+        candidate = data["frames"][0]["candidate"]
+        candidate["request_index"] = candidate.pop("scene_index")
+        candidate.pop("view_index")
+
+    edit_json(valid_rgb_masks_output / "run_metadata/manifest.json", legacy_candidate)
+    errors = verify_rgb_masks(valid_rgb_masks_output)
+    assert errors == ["旧 request_index 数据集格式不受支持（版本不兼容），请用当前版本重新导出"], errors

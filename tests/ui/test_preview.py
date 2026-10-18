@@ -3,7 +3,7 @@ from dataclasses import replace
 from bproc_core.config import Range
 from types import SimpleNamespace
 
-from bproc_core.config import Azimuth, FixedCameraSpec, RegionSpec
+from bproc_core.config import AssetSpec, Azimuth, FixedCameraSpec, RegionSpec
 from bproc_core.scene import Rejection, propose_candidate, propose_scene, candidate_to_dict
 from bproc_core.assets import load_mesh
 from bproc_ui.preview import PreviewController

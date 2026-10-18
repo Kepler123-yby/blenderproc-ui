@@ -51,30 +51,31 @@ class _Search(QRunnable):
         from time import monotonic
 
         started = monotonic()
-        rejection = None
-        timed_out = False
+        rejection, result, timed_out, error = None, None, False, None
         try:
             scene = sample_scene(self._config, self._meshes, 0)
             if not isinstance(scene, Rejection):
                 for attempt in range(self._attempts):
                     if self._cancelled:
-                        return
+                        break
                     candidate = propose_candidate(self._config, self._meshes, scene, self._view_index, attempt)
                     if not isinstance(candidate, Rejection):
-                        self.signals.done.emit(self.token, candidate, None, False)
-                        return
+                        result = candidate
+                        break
                     rejection = candidate
                     if monotonic() - started > self._deadline_s:
                         timed_out = True
                         break
             else:
                 rejection = scene
-        except (ValueError, KeyError, TypeError) as error:
-            if not self._cancelled:
-                self.signals.done.emit(self.token, None, error, False)
-            return
-        if not self._cancelled:
-            self.signals.done.emit(self.token, None, rejection, timed_out)
+        except (ValueError, KeyError, TypeError) as exception:
+            error = exception
+        # Always report, even when cancelled: the controller needs the token back to drop the entry,
+        # and a superseded search must not leave a dangling reference to its signal object.
+        try:
+            self.signals.done.emit(self.token, result, error or rejection, timed_out)
+        except RuntimeError:
+            pass  # the controller was destroyed while this search ran
 
 
 class PreviewController(QObject):
@@ -90,6 +91,7 @@ class PreviewController(QObject):
         self.preview_seed = state.config.seed
         self._token = 0
         self._search = None
+        self._live = {}
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(100)
@@ -143,6 +145,7 @@ class PreviewController(QObject):
                          SEARCH_DEADLINE_S)
         search.signals.done.connect(self._on_done)
         self._search = search
+        self._live[self._token] = search
         self.status_changed.emit("正在计算候选构图…")
         QThreadPool.globalInstance().start(search)
         return None
@@ -153,6 +156,7 @@ class PreviewController(QObject):
             self._search = None
 
     def _on_done(self, token, result, outcome, timed_out):
+        self._live.pop(token, None)
         if token != self._token:
             return  # superseded while it ran
         self._search = None

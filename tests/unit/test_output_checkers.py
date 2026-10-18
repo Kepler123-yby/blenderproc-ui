@@ -126,12 +126,14 @@ def test_valid_rgb_masks_output(valid_rgb_masks_output):
     assert verify_rgb_masks(valid_rgb_masks_output) == []
 
 
-@pytest.mark.parametrize("corruption", ["missing", "wrong_id", "nonbinary", "outside", "ratio", "position", "status", "malformed"])
+@pytest.mark.parametrize("corruption", ["missing", "missing_image", "wrong_id", "nonbinary", "outside", "ratio", "position", "status", "malformed"])
 def test_rgb_checker_detects_semantic_corruption(valid_rgb_masks_output, corruption):
     root = valid_rgb_masks_output
     mask = root / "mask/000000_000007.png"
     if corruption == "missing":
         mask.unlink()
+    elif corruption == "missing_image":
+        next((root / "rgb").glob("000000.*")).unlink()
     elif corruption == "wrong_id":
         mask.rename(mask.with_name("000000_000001.png"))
     elif corruption == "nonbinary":

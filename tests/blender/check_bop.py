@@ -173,10 +173,10 @@ def _check_relative_rgb(root: Path, row: dict, scene: Path, image_id: int, pair,
         errors.append(f"BOP {pair}: relative_rgb {relative!r} does not name this scene/image's RGB")
 
 
-def verify_bop(root: Path) -> list[str]:
+def verify_bop(root: Path, *, require_complete: bool = True) -> list[str]:
     """Validate native BOP structure, geometry, units and run provenance."""
     root = Path(root)
-    errors, config, status, records = verify_metadata(root)
+    errors, config, status, records = verify_metadata(root, require_complete=require_complete)
     if config is None:
         return errors
     try:

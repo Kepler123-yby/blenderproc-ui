@@ -10,8 +10,8 @@ if __package__ in (None, ""):
 from tests.blender._checks import verify_metadata
 
 
-def verify_rgb_masks(root: Path) -> list[str]:
-    errors, config, status, records = verify_metadata(root)
+def verify_rgb_masks(root: Path, *, require_complete: bool = True) -> list[str]:
+    errors, config, status, records = verify_metadata(root, require_complete=require_complete)
     root = Path(root)
     if config is None:
         return errors

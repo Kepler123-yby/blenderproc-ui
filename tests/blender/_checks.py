@@ -30,6 +30,27 @@ def _is_legacy_records(records) -> bool:
     return False
 
 
+def missing_images(root, records, limit=5):
+    """Relative image paths that the journal promises but the dataset does not contain.
+
+    A run is rendered dataset's usefulness, so a manifest that survives while its images do not
+    is a delivery bug, not a missing optional file: the check is part of the completeness verdict.
+    """
+    root = Path(root)
+    missing = []
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        index = row.get("frame_index")
+        for key in ("relative_rgb", "relative_mask", "relative_depth"):
+            relative = row.get(key)
+            if relative and not (root / relative).is_file():
+                missing.append(f"帧 {index} 缺少 {key} 文件 {relative}")
+                if len(missing) >= limit:
+                    return missing
+    return missing
+
+
 def verify_metadata(root: Path, *, require_complete=True):
     """Return diagnostics and parsed records; malformed files are diagnostics."""
     errors = []
@@ -97,6 +118,7 @@ def verify_metadata(root: Path, *, require_complete=True):
             raise ValueError("Frame records must be a list")
         if len(records) != written:
             errors.append("Frame record count differs from written_frames")
+        errors.extend(missing_images(root, records))
         if manifest.get("seed") != config.seed:
             errors.append("Manifest seed differs from project snapshot")
         targets = {t.obj_id: t for t in config.targets if t.enabled}

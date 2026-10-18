@@ -317,3 +317,46 @@ def test_the_clearance_follows_the_scene_not_a_fixed_centimetre():
     assert millimetre < .0015, f"gap {millimetre:.6f} m is still centimetre-sized for a 1 mm fixture"
     assert centimetre < .0065, "the 10 cm fixture must use its relative clearance, not a huge one"
     assert centimetre > 5 * millimetre, f"clearance did not scale with the scene ({centimetre:.4f} vs {millimetre:.4f})"
+
+
+def _distance_fixture(distance, size=.1):
+    """A 10 cm target with a 2 cm occluder seen from `distance` metres."""
+    target_box = np.array([[-size / 2] * 3, [size / 2] * 3])
+    occluder_box = np.array([[-size] * 3, [size] * 3])
+    meshes = {"a": MeshData("a", bounds_corners(target_box), np.array([[0, 1, 2]]), None, target_box),
+              "o": MeshData("o", bounds_corners(occluder_box), np.array([[0, 1, 2]]), None, occluder_box)}
+    config = ProjectConfig(
+        targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
+        occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
+        regions=(RegionSpec(radius_m=Range(distance, distance)),),
+        occlusion=OcclusionSpec(none_fraction=1., ratio=Range(.1, .5), count=(1, 1),
+                                scale=Range(.4, .6)))
+    pose = CameraPose(np.eye(4), np.array([0., 0., distance]), distance, 0., 0.,
+                      .01 * distance, 100. * distance)
+    return config, meshes, pose, size
+
+
+def _apparent_ratio(placement, mesh, pose, distance, size):
+    """How wide the occluder looks next to the target, in target-widths, as the camera sees it."""
+    field = np.ptp(mesh.bounds_m, axis=0)
+    scale = float(np.linalg.norm(placement.world_from_model[:3, 0]))
+    camera = np.asarray(pose.position_m)
+    view = -camera / np.linalg.norm(camera)
+    depth = float((placement.world_from_model[:3, 3] - camera) @ view)
+    return float(field.max() * scale / depth * distance / size)
+
+
+def test_occluder_apparent_size_does_not_depend_on_the_distance():
+    """A box three times closer projects three times wider, so its metres must shrink to compensate.
+
+    Without this, a 5 m view of a 10 cm target showed 66.7 % occlusion against a 10-50 % plan while
+    the 0.5 m view of the same target showed 23.4 %.
+    """
+    measured = []
+    for distance in (.5, 5.):
+        config, meshes, pose, size = _distance_fixture(distance)
+        placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(7), ())
+        assert isinstance(placements, list), placements
+        measured.append(_apparent_ratio(placements[0], meshes["o"], pose, distance, size))
+    assert measured[1] == pytest.approx(measured[0], rel=.05), measured
+    assert .4 <= measured[0] <= .6, measured

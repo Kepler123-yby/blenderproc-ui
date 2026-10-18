@@ -199,6 +199,12 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
     this camera: past the near clip plane, in front of the nearest target surface, and separated from
     every target and from the other occluders by a conservative AABB test. No room left is reported as
     a rejection instead of looping or drifting behind the camera.
+
+    ``occlusion.scale`` describes how large the occluder *looks* next to the target, because that is
+    what decides the coverage the dataset shows. Its physical size follows from the depth actually
+    drawn: an occluder halfway to a target needs half the metres to look the same size. Sampling
+    metres first and placing them at any depth made a 5 m view 20-30 % over-covered, since the same
+    box three times closer to the lens projects three times wider.
     """
     anchor = meshes[anchor_key]
     center_size = float(np.max(np.ptp(anchor.bounds_m, axis=0)))
@@ -228,22 +234,31 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
         max_side = float(extent.max())
         if max_side <= 0:
             return Rejection('invalid_mesh', asset.key)
-        size = center_size * rng.uniform(config.occlusion.scale.minimum, config.occlusion.scale.maximum)
-        scale = size / max_side
-        # Half the box as seen along the view ray; the diagonal would over-reserve depth.
-        half_along_view = float((extent * scale / 2) @ np.abs(view))
+        apparent = center_size * rng.uniform(config.occlusion.scale.minimum,
+                                             config.occlusion.scale.maximum)
+        # Half the box as seen along the view ray; the diagonal would over-reserve depth. The upper
+        # bound uses the occluder at the target's depth, which must still fit in the segment.
         clearance = min(OCCLUDER_CLEARANCE_FRACTION[0] * center_size,
                         OCCLUDER_CLEARANCE_FRACTION[1] * distance)
         tolerance = 1e-6 * distance        # float slack that scales with the scene, not with metres
-        nearest = float(pose.clip_near_m) + clearance + half_along_view
-        farthest = target_front - clearance - half_along_view
-        if farthest <= nearest + tolerance:
+        half_at_target = float((np.asarray([apparent / max_side]) * extent / 2) @ np.abs(view))
+        if target_front - clearance - half_at_target <= float(pose.clip_near_m) + clearance + half_at_target + tolerance:
             return Rejection('no_occluder_room', asset.key)
+        low = float(pose.clip_near_m) + clearance
+        high = target_front - clearance
         for _ in range(OCCLUDER_DRAWS):
+            depth = float(rng.uniform(low, high))
+            ratio = depth / distance       # perspective: apparent size = physical size * distance / depth
+            scale = apparent * ratio / max_side
+            half_along_view = float((extent * scale / 2) @ np.abs(view))
+            nearest = float(pose.clip_near_m) + clearance + half_along_view
+            farthest = target_front - clearance - half_along_view
+            if farthest <= nearest + tolerance:
+                return Rejection('no_occluder_room', asset.key)
+            depth = min(max(depth, nearest), farthest)
             angle = rng.uniform(0., 2 * np.pi)
-            offset = size * rng.uniform(.1, .9)
-            center = (camera + view * rng.uniform(nearest, farthest)
-                      + (np.cos(angle) * right + np.sin(angle) * up) * offset)
+            offset = apparent * rng.uniform(.1, .9) * ratio
+            center = camera + view * depth + (np.cos(angle) * right + np.sin(angle) * up) * offset
             matrix = np.eye(4)
             matrix[:3, :3] *= scale
             matrix[:3, 3] = center - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)

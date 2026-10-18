@@ -139,7 +139,7 @@ class ExportPanel(QWidget):
         self.preview_command = QPlainTextEdit()
         self.preview_command.setReadOnly(True)
         self.preview_command.setMaximumHeight(100)
-        self.preview_command.setPlaceholderText("4 张试渲染会使用独立输出目录")
+        self.preview_command.setPlaceholderText("1 个场景的试渲染会使用独立输出目录")
         form.addRow("少量试渲染", self.preview_command)
         copy_preview = QPushButton("复制试渲染命令")
         copy_preview.clicked.connect(lambda: self._copy(self.preview_command.toPlainText()))

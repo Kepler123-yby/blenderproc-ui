@@ -79,3 +79,22 @@ def test_point_cloud_cannot_be_exported(project, tmp_path):
     with pytest.raises(ConfigError, match='无法导出'):
         export_job(project, tmp_path / 'pointcloud-job')
     assert not (tmp_path / 'pointcloud-job').exists()
+
+
+def test_build_command_can_limit_scenes_instead_of_frames(tmp_path):
+    from bproc_export.commands import build_command
+    command = build_command(tmp_path / 'job', 'bop', num_scenes=1)
+    assert '--num-scenes 1' in command and '--num-samples' not in command
+
+
+def test_build_command_refuses_two_counting_options(tmp_path):
+    from bproc_export.commands import build_command
+    with pytest.raises(ValueError, match='只能二选一'):
+        build_command(tmp_path / 'job', 'bop', num_samples=4, num_scenes=1)
+
+
+def test_the_preview_command_renders_one_scene(project, tmp_path):
+    from bproc_export.bundle import export_job
+    result = export_job(replace(project, scene_count=3, views_per_scene=2), tmp_path / 'job')
+    assert '--num-scenes 1' in result.preview_command
+    assert '--num-samples' not in result.preview_command

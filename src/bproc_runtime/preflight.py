@@ -27,8 +27,16 @@ def apply_overrides(config, args):
         config = replace(config, output=replace(config.output, format=args.format))
     if args.output is not None:
         config = replace(config, output=replace(config.output, root=Path(args.output).expanduser().resolve()))
-    if args.num_samples is not None:
-        config = config.with_total_shots(args.num_samples)  # total frames, not scenes
+    num_scenes = getattr(args, 'num_scenes', None)
+    num_samples = getattr(args, 'num_samples', None)
+    if num_scenes is not None and num_samples is not None:
+        raise ValueError('--num-scenes 与 --num-samples 只能二选一；前者按场景数、后者按张数截断')
+    if num_scenes is not None:
+        if num_scenes < 0:
+            raise ValueError('--num-scenes 必须是非负整数')
+        config = replace(config, scene_count=num_scenes)     # scenes, each keeping its views
+    elif num_samples is not None:
+        config = config.with_total_shots(num_samples)        # total frames, not scenes
     return config
 
 
@@ -88,7 +96,9 @@ def main(argv=None):
     parser.add_argument('--launch', type=Path, required=True)
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--format', choices=['rgb_masks', 'bop'])
-    parser.add_argument('--num-samples', type=int)
+    counting = parser.add_mutually_exclusive_group()
+    counting.add_argument('--num-samples', type=int, help='只渲染前 N 张（按视角截断）')
+    counting.add_argument('--num-scenes', type=int, help='只渲染前 N 个场景（每场景视角数不变）')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
     try:

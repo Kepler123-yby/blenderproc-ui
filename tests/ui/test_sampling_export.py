@@ -62,7 +62,7 @@ def test_output_switch_exports_selected_snapshot(state, qtbot, tmp_path, monkeyp
     argv = shlex.split(result.command)
     assert "--config" in argv
     assert argv[argv.index("--config") + 1] == str(result.directory / "scene.yaml")
-    assert "--num-samples 4" in result.preview_command
+    assert "--num-scenes 1" in result.preview_command
 
 
 def test_export_reports_incomplete_draft_without_creating_output(state, qtbot, tmp_path):

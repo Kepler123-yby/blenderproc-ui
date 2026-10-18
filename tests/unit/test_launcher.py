@@ -87,3 +87,40 @@ def test_preflight_rejects_resource_changed_to_point_cloud(tmp_path, monkeypatch
     monkeypatch.setattr('bproc_runtime.preflight.probe', lambda locator, config: [])
     assert main(['--launch', str(locator), '--config', str(project_path)]) == 1
     assert '没有可渲染的面' in capsys.readouterr().err
+
+
+def test_num_scenes_limits_scenes_and_keeps_every_view(tmp_path):
+    import argparse
+    base = replace(ProjectConfig(), scene_count=4, views_per_scene=2)
+    args = argparse.Namespace(format=None, output=tmp_path, num_samples=None, num_scenes=2)
+    config = apply_overrides(base, args)
+    assert config.scene_count == 2 and config.views_per_scene == 2 and config.total_shots == 4
+
+
+def test_num_samples_rounds_up_to_whole_scenes(tmp_path):
+    import argparse
+    base = replace(ProjectConfig(), scene_count=4, views_per_scene=2)
+    args = argparse.Namespace(format=None, output=tmp_path, num_samples=1, num_scenes=None)
+    config = apply_overrides(base, args)
+    assert config.total_shots == 2 and config.scene_count == 1
+
+
+def test_both_counting_options_are_rejected_by_the_override_layer(tmp_path):
+    import argparse
+    base = replace(ProjectConfig(), scene_count=4, views_per_scene=2)
+    args = argparse.Namespace(format=None, output=tmp_path, num_samples=3, num_scenes=2)
+    with pytest.raises(ValueError, match='只能二选一'):
+        apply_overrides(base, args)
+
+
+def test_a_negative_scene_count_is_rejected(tmp_path):
+    import argparse
+    args = argparse.Namespace(format=None, output=tmp_path, num_samples=None, num_scenes=-1)
+    with pytest.raises(ValueError, match='非负整数'):
+        apply_overrides(ProjectConfig(), args)
+
+
+def test_the_cli_refuses_both_counting_flags():
+    from bproc_runtime import cli
+    with pytest.raises(SystemExit):
+        cli.main(['--config', 'x.yaml', '--num-samples', '4', '--num-scenes', '1'])

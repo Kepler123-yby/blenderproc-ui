@@ -22,7 +22,10 @@ def main(argv=None) -> int:
     parser.add_argument("--format", choices=["rgb_masks", "bop"], required=True)
     parser.add_argument("--output-root", type=Path, help="结果父目录，默认为任务目录旁的 results/")
     parser.add_argument("--dataset-name", help="数据集名称，默认为 demo-<格式>")
-    parser.add_argument("--num-samples", type=int, help="覆盖场景数量")
+    counting = parser.add_mutually_exclusive_group()
+    counting.add_argument("--num-samples", type=int,
+                          help="只渲染前 N 张；按视角取整，例如 1/4/5 张在 3 视角时实际是 3/3/6 张")
+    counting.add_argument("--num-scenes", type=int, help="只渲染前 N 个场景，每个场景的视角数不变")
     parser.add_argument("--device", help="覆盖 Cycles 后端，例如 OPTIX / CUDA")
     parser.add_argument("--run", action="store_true", help="导出后立即执行任务命令")
     arguments = parser.parse_args(argv)
@@ -41,21 +44,30 @@ def main(argv=None) -> int:
     if arguments.device:
         render = replace(render, device=arguments.device)
     config = replace(project, output=output, render=render)
-    problems = validate_project(config)
-    if problems:
-        for problem in problems:
-            print(f"配置错误：{problem}", file=sys.stderr)
+    if arguments.num_scenes is not None:
+        if arguments.num_scenes < 0:
+            parser.error("--num-scenes 必须是非负整数")
+        config = replace(config, scene_count=arguments.num_scenes)
+    elif arguments.num_samples is not None:
+        config = config.with_total_shots(arguments.num_samples)   # frames, rounded up to a scene
+    issues = validate_project(config)
+    errors = [issue for issue in issues if issue.severity == "error"]
+    for issue in issues:
+        if issue.severity != "error":
+            print(f"配置提醒：{issue.field}：{issue.message}", file=sys.stderr)
+    if errors:
+        for issue in errors:
+            print(f"配置错误：{issue.field}：{issue.message}", file=sys.stderr)
         return 1
+    print(f"渲染规模：{config.scene_count} 个场景 × {config.views_per_scene} 视角 = {config.total_shots} 张", flush=True)
     result = export_job(config, destination)
     print(f"任务目录：{result.directory}")
     print(f"运行命令：{result.command}")
     if not arguments.run:
         return 0
-    command = shlex.split(result.command)
-    if arguments.num_samples is not None:
-        command += ["--num-samples", str(arguments.num_samples)]
+    # The snapshot already carries the counting overrides, so --run equals the printed command.
     print("开始渲染…", flush=True)
-    return subprocess.call(command)
+    return subprocess.call(shlex.split(result.command))
 
 
 if __name__ == "__main__":

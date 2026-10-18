@@ -91,7 +91,7 @@ def check_failures(project: Path, destination: Path, python: Path) -> dict:
                      azimuth=Azimuth(0,0,False), elevation_deg=Range(15,15))
     camera = replace(original.camera,width=128,height=96,fx=114.48228,fy=114.714086,cx=65.05222,cy=48.409798)
     tiny = replace(original, targets=(target,), anchor_key="tiny", regions=(region,),camera=camera,
-                   occluders=(),num_samples=1,render=replace(original.render,samples=2),
+                   occluders=(),scene_count=1,views_per_scene=1,render=replace(original.render,samples=2),
                    occlusion=replace(original.occlusion,none_fraction=1,count=(0,0)),
                    output=replace(original.output,format="bop",root=destination/"results",dataset_name="close-bop"))
     job = export_job(tiny,destination/"close-job")
@@ -109,7 +109,7 @@ def check_failures(project: Path, destination: Path, python: Path) -> dict:
 
     targets = list(original.targets)
     targets[1] = replace(targets[1],offset=Box(Range(0,0),Range(0,0),Range(0,0)))
-    impossible = replace(original,targets=tuple(targets),num_samples=1,
+    impossible = replace(original,targets=tuple(targets),scene_count=1,views_per_scene=1,
         output=replace(original.output,root=destination/"results",dataset_name="impossible"))
     job = export_job(impossible,destination/"impossible-job")
     code = _run(job,python,destination/"impossible.log")
@@ -125,7 +125,7 @@ def check_failures(project: Path, destination: Path, python: Path) -> dict:
 
     # Requests stay plentiful after one frame so the signal targets a live run.
     for sig, name in ((signal.SIGINT,"sigint"),(signal.SIGTERM,"sigterm")):
-        config = replace(original,num_samples=1000,occluders=(),
+        config = replace(original,scene_count=250,views_per_scene=4,occluders=(),
             render=replace(original.render,samples=8),
             occlusion=replace(original.occlusion,none_fraction=1,count=(0,0)),
             output=replace(original.output,root=destination/"results",dataset_name=name))
@@ -148,7 +148,7 @@ def check_smoke(project: Path, destination: Path, python: Path) -> dict:
     original = load_project(project)
     summary = {}
     for output_format in ("rgb_masks", "bop"):
-        config = replace(original,num_samples=4,
+        config = replace(original,scene_count=1,views_per_scene=4,
             output=replace(original.output,format=output_format,root=destination/"results",
                            dataset_name="final-"+output_format))
         job = export_job(config,destination/("final-"+output_format+"-job"))

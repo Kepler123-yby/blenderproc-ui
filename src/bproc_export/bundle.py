@@ -90,7 +90,8 @@ def export_job(config: ProjectConfig, destination: Path) -> ExportResult:
         save_project(config, stage / 'scene.yaml')
         (stage / 'README.txt').write_text(
             '终端运行 run_job.py；资源路径是绝对路径，请保留原资源。\n'
-            '先运行 --check-only 检查离线环境；--num-samples 4 --output <新父目录> 可试渲染。\n'
+            '先运行 --check-only 检查离线环境；--num-scenes 1 --output <新父目录> 可试渲染一个场景。\n'
+            f'本任务共 {config.scene_count} 个场景 × {config.views_per_scene} 视角 = {config.total_shots} 张。\n'
             '科学参数可直接修改 scene.yaml；变更 Blender/BlenderProc 路径后请重新导出。\n', encoding='utf-8')
         for child in stage.iterdir():
             os.replace(child, destination / child.name)
@@ -102,5 +103,5 @@ def export_job(config: ProjectConfig, destination: Path) -> ExportResult:
         (destination / 'EXPORT_INCOMPLETE.txt').write_text('导出未完成，请使用新的任务目录重新导出。\n', encoding='utf-8')
         raise
     return ExportResult(destination, build_command(destination, config.runtime.conda_env),
-                        build_command(destination, config.runtime.conda_env, num_samples=4,
+                        build_command(destination, config.runtime.conda_env, num_scenes=1,
                                       output=config.output.root / 'preview'))

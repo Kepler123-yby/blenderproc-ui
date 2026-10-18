@@ -27,7 +27,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='生成同场景多目标数据集')
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--format', choices=['rgb_masks', 'bop'])
-    parser.add_argument('--num-samples', type=int)
+    counting = parser.add_mutually_exclusive_group()
+    counting.add_argument('--num-samples', type=int, help='只渲染前 N 张（按视角截断）')
+    counting.add_argument('--num-scenes', type=int, help='只渲染前 N 个场景（每场景视角数不变）')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
     try:

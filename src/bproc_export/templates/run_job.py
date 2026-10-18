@@ -36,7 +36,9 @@ def main(argv=None):
     root = Path(__file__).resolve().parent
     parser.add_argument('--config', type=Path, default=root / 'scene.yaml')
     parser.add_argument('--format', choices=['rgb_masks', 'bop'])
-    parser.add_argument('--num-samples', type=int)
+    counting = parser.add_mutually_exclusive_group()
+    counting.add_argument('--num-samples', type=int, help='只渲染前 N 张')
+    counting.add_argument('--num-scenes', type=int, help='只渲染前 N 个场景')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--check-only', action='store_true')
     args = parser.parse_args(argv)
@@ -45,7 +47,7 @@ def main(argv=None):
         if locator.get('schema_version') != 1 or locator.get('ready') is not True:
             raise ValueError('任务导出未完成或启动格式不受支持')
         forwarded = ['--config', str(args.config.resolve())]
-        for key in ('format', 'num_samples', 'output'):
+        for key in ('format', 'num_samples', 'num_scenes', 'output'):
             value = getattr(args, key)
             if value is not None:
                 forwarded.extend(['--' + key.replace('_', '-'), str(value)])

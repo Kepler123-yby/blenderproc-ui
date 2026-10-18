@@ -9,3 +9,5 @@ build/
 dist/
 .blender-view/
 jobs/
+/report-pi.md
+/report-review.md

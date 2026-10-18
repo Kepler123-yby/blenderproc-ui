@@ -264,10 +264,19 @@ def verify_bop(root: Path) -> list[str]:
                         # observed depth; zero means unavailable, never zero meters.
                         measured = depth_m[visible & (depth_m > 0)]
                         margin_m = max(.001, config.output.depth_scale_mm / 1000 * 2)
+                        lowest = points_cv_mm[:, 2].min() / 1000 - margin_m
+                        highest = points_cv_mm[:, 2].max() / 1000 + margin_m
                         if not measured.size:
                             errors.append(f"BOP {pair} object {obj_id}: no positive observed depth in visible mask")
-                        elif measured.min() < points_cv_mm[:, 2].min() / 1000 - margin_m or measured.max() > points_cv_mm[:, 2].max() / 1000 + margin_m:
-                            errors.append(f"BOP {pair} object {obj_id}: PNG depth and model pose use inconsistent units")
+                        else:
+                            # The mask comes from the rasterised silhouette, so pixels on its outer
+                            # edge may sample a fraction beyond the analytic model bound. One percent
+                            # of the visible mask is allowed to differ; a unit error moves them all.
+                            allowed = max(1, int(measured.size * .01))
+                            below = int((measured < lowest).sum())
+                            above = int((measured > highest).sum())
+                            if below > allowed or above > allowed:
+                                errors.append(f"BOP {pair} object {obj_id}: PNG depth and model pose use inconsistent units")
                 gt_frame_count += 1
             except Exception as exc:
                 errors.append(f"BOP frame {row.get('frame_index', '?')}: {type(exc).__name__}: {exc}")

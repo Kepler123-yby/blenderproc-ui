@@ -14,7 +14,7 @@
 
 交接日期：**2026-10-18**。审查基线：`aebd537a27baf730cfea437d0d433a4035690fba`。项目：`/home/kepler/rm_2027/blenderproc-ui`。
 
-**本次交付仅为文档。以下修复均未实施，复选框是接手者的待办，不代表已经通过。** 后续若 HEAD 已变化，先检查差异，避免重复修改。历史测试结果不能当作修改后的回归结果。
+**状态说明：** 本文前半部分是首次交接时的计划，原任务复选框保留历史状态；后面的 DeepSeek 执行记录说明了已经完成的实现。**下一步以文末“当前版本复核与下一步指示”为准**，其中列出了本次独立复核新发现的问题，不应再把早先的“全部落实”理解为最终验收完成。
 
 给 DeepSeek 的起步顺序：先读本文和 `git diff`，跑一次基线；优先完成任务 1–3，再按依赖逐批执行。每完成一项，补上测试结果、实际证据路径和提交编号。不要同时重做界面风格或扩展新输出格式。
 
@@ -474,3 +474,167 @@ begin 中间故障由单元测试或独立子进程精确注入，避免靠“�
 本报告已对照当前源码、原始审查证据和测试接口进行自查：布局/预览/遮挡/检查器/UI/生命周期/性能均有任务和验收归属；拟新增接口与现有接口已区分；BOP 原生零深度边缘与截断语义单独注明。
 
 **执行结果（2026-10-22）**：任务 1–12 全部落实，全量 388 passed，GPU 真实渲染与真实桌面验证见 `docs/validation.md` 的"本轮修复的验收"。报告中"暂不并入本轮"的建议仍未实施，保持原样；`jobs/` 下早期导出的旧运行时目录是历史产物，不是当前源码。
+
+## 当前版本复核与下一步指示
+
+复核基线：`a86f99965661f22e96ef42a071985aee86e441d9`。本节是对上述执行记录的后续复核，不改写已有历史证据。本次只更新文档并进行验证，**未修改产品代码，未重新执行 GPU 渲染**。
+
+独立验证结果：unit/Qt **388 passed，12.17 秒**；对 DeepSeek 已生成的 cores RGB、固定 RGB、suggested-layout-fixed、随机 BOP 四组产物重新运行当前检查器，均 PASS。布局和元数据的新增反例记录在 [本次复核 summary.json](.artifacts/next-step-review-2fmchsos/summary.json)。
+
+**结论：主要流程及多项修复有效，但尚不能冻结为完整验收版本。下一步顺序是：修复下列四项 → 补专项端到端证据 → 200–500 帧真实资源试生产。暂缓界面重做和新增功能。**
+
+### N1 / P1：建议布局与实际摆放仍存在 CAD 原点语义冲突
+
+**现象与影响：** 两个边长 0.1m 的立方体，原始顶点包围盒中心分别为 `(0,0,0)` 和 `(0.11,0,0)`，第一个为中心目标。当前建议第二目标 X≈`[0,0.1]`；用生产 `sample_scene()`、每场景 30 次布局预算，**250/250 场景仍然 collision**。已有测试只覆盖了原点偏移恰好增加间距的情况。
+
+**原因：** `assets.py:239–263` 用原始 CAD bounds 的 low/high 推算 offset；`scene.py:113–121` 却把包围盒中心移动到 offset。`content_bounds()` 同样按 offset+原始 bounds 推算，可能使相机距离随无关的 CAD 原点偏移而变化。
+
+**修改文件：** `src/bproc_core/assets.py`、`src/bproc_ui/panels/sampling.py`；测试 `tests/unit/test_layout_suggestions.py`、`tests/unit/test_assets.py`。
+
+- [ ] 保持原始网格与 BOP 坐标不变，仅在布局/覆盖计算中使用 `bounds - bounds.mean(axis=0)`。offset 的含义统一为包围盒中心位置，不能改运行时来掩盖建议器的语义错误。
+- [ ] `content_bounds(meshes, targets, anchor_key=None)` 增加可选中心参数；生产调用传入实际 anchor_key，中心目标按 0 计算，忽略其未生效的 authored offset。同步更新 suggest_layout 和 SamplingPanel 的调用。
+- [ ] 新增 `test_layout_is_invariant_to_cad_origin`：将同一形状的原始坐标平移到 `(0,0,0)`、`(.11,0,0)`、`(10,-4,2)`，建议间距与相机距离应不变；网格原点仍保留。覆盖任意目标作为中心。
+- [ ] 新增 `test_offset_cad_origin_layout_survives_all_scene_attempts`：上述反例的 250 个场景均可产生无穿插 SceneState；用生产 placement_bounds 判断，不只检查建议器自己推算的边界。
+- [ ] 修正现有 CAD 测试中“offset+原始 bounds”等错误断言，再跑布局、采样、资源面板和相机距离测试。提交与证据独立保存。
+
+**通过标准：** 上述 250/250 场景可行；仅改变模型局部原点不改变中心间距、取景距离或最终几何；随后按真正的 suggest_layout 结果重新导出并做 GPU 小样本。
+
+### N2 / P2：固定 1cm 遮挡间隙破坏毫米模型支持
+
+**已复现：** 0.1m 目标、0.5m 固定相机、一个比例 `.4–.6` 的遮挡物，30/30 次得到候选；目标、遮挡物与机位同时缩小 100 倍后，即 1mm 目标、5mm 相机，**30/30 次 no_occluder_room**。原因是 `scene.py:176,229–232` 固定在段两端各留 0.01m。
+
+**修改文件：** `src/bproc_core/scene.py`；测试 `tests/unit/test_scene_candidates.py`。
+
+- [ ] 将间隙改为目标尺寸/有效相机段的相对量，避免固定厘米下限。建议起点为 `min(.1 * center_size, .01 * distance)`，只叠加与尺度成比例的浮点容差；这是后续实施建议值，需要用几何约束验证。
+- [ ] 新增 `test_occluder_clearance_scales_with_scene`，以尺度 1 和 .01、相同 seed 测试；两者都应得到合法候选，所有角点在 near 与目标前表面之间，保持 AABB 不穿插。
+- [ ] 保留“确实没有空间时有界拒绝”的测试，不能为了让毫米夹具通过而删除裁剪/穿插检查。补毫米目标实际 GPU 遮挡样本。
+
+**通过标准：** 上述两个尺度均产生合法候选；原 `.5m/5m` 机位测试继续通过；不把所有 no_occluder_room 都无条件接受。
+
+### N3 / P1：最终 manifest 写失败时，磁盘仍可能显示 completed
+
+**已复现：** 一个已写入帧的最小任务，仅在写最终 manifest 时注入 OSError、允许 status 正常写入。run_project 返回 `failed/1`，但磁盘 status 为 `completed/0`，recorder.finished=True。读取 status 的后续工具会得到错误成功状态。
+
+**修改文件：** `src/bproc_runtime/output.py:94–115`、`run.py:170–177`，必要时 `cli.py`；测试 `tests/unit/test_runtime_lifecycle.py`、`tests/unit/test_run.py`。
+
+- [ ] 新增 `test_final_manifest_failure_matches_disk_status`：使用真实 JsonRunRecorder，仅对 `manifest.json` 的 final 写入注入失败；不能只用一个不写磁盘的 fake recorder 测返回码。
+- [ ] 统一返回 summary 与落盘 status 的终态。最终 manifest 失败时必须写 `failed/1` 和具体失败原因，保留已经成功提交的帧计数；不能先写 completed、随后只改内存中的返回对象。
+- [ ] 核对 CLI 不会因 finished=True 跳过必要的失败状态保护。保留信号恢复与 finalize/close 最多一次的约束。
+- [ ] 覆盖 RGB/BOP、manifest 最终写失败和 status 自身不可写两种情况。后者明确报告无法落盘，不声称磁盘状态已修正。
+
+**通过标准：** 能写 status 的情况下，返回值、终端摘要和磁盘 status 的 status/exit_code/失败原因一致；正常 completed、partial、SIGINT/SIGTERM 行为不退化。
+
+### N4 / P2：journal 与 manifest 仅比较帧号，内容和版本仍会漏检
+
+**已复现：** 保持 frame_index=0，但把最终 manifest 中 relative_rgb 改为 `rgb/wrong.png`、candidate.scene_index 改为 999，reader 仍接受；存在 journal 时将 manifest.schema_version 改为 999 也被接受。当前 `_require_consistent()` 只比较帧数和 frame_index。
+
+**修改文件：** `src/bproc_runtime/metadata.py:47–67,110–118`；测试 `tests/unit/test_metadata_journal.py`、`tests/unit/test_output_checkers.py`。
+
+- [ ] 新增 `test_reader_rejects_same_index_different_content`：分别修改文件引用、scene/view、相机或模型位姿，最终 manifest 与 journal 不一致必须报 MetadataError，并指出帧号。
+- [ ] 对新格式完整 row 做结构化一致性比较，不因 frame_index 相同就接受；保留旧版 manifest 兼容和运行中初始空 manifest 的现有行为。
+- [ ] 新增 `test_reader_rejects_unknown_manifest_version_with_journal`：未知版本在有/无 journal 时都应报错；校验 manifest 的 frames/final 等字段类型。
+- [ ] 跑 metadata、运行时生命周期、world metadata、输出检查器及全量测试。
+
+**通过标准：** 上述两类篡改均被拒绝；合法 schema 2 journal/manifest、旧无版本 manifest、显式尾行恢复仍按约定工作。
+
+### N5：补齐端到端证据，并校正文档描述
+
+完成 N1–N4 后，重新导出当前 runtime 到**全新目录**，执行以下专项；既有 GPU 成功结果可保留为回归对照，不能替代修复后的运行。
+
+| 专项 | 要求保存的证据与验收 |
+|---|---|
+| 建议布局 | 真正调用修复后的 suggest_layout 并应用返回范围；原点偏移夹具与演示资源各至少 1 场景；GPU 完成且 checker PASS |
+| 近远机位/毫米尺度 | `.5m/5m` 各至少 1 个满足设定遮挡窗口的实际 RGB/双 mask；另有 1mm 目标夹具，保存候选角点深度与遮挡率 |
+| 信号链路 | 当前 runtime 的 RGB、BOP 分别跑 SIGINT 与 SIGTERM；退出 130/143，status interrupted，journal 可读；BOP 后处理未完成不能虚计 saved |
+| BOP 后处理失败 | 独立测试任务中让后处理子进程失败或超时，保留真实进程链路日志；status failed、非零退出、saved 不能声称全部成功。不修改系统环境和既有任务 |
+| 大模型导出 | 使用真实约 50 万面模型，记录模型大小/面数、耗时、Qt 心跳、当前 HEAD 和导出目录；阻塞 fake 的单测保留，但不代替真实大模型测量 |
+| 最终回归 | 全量 unit/Qt 原始输出、四组产物检查器原始输出、GPU/硬件 EGL 日志、配置快照、退出码与 HEAD |
+
+需要校正的记录：
+
+- 本轮 `*.check.log` 是离线预检日志，不是检查器输出。本次已独立确认四组 checker PASS，下一次请另存 `*.verify.log`。
+- `suggested-layout-fixed` 的实际 YAML 是 64×48、保留 HDRI、none_fraction=1；目标偏移仍是演示配置的 Y 方向范围，不是计划中新的 X 方向建议区间。因此这份 6/6 证明该配置能渲染，不能作为“修复后恢复建议范围”的专项证据。
+- `gui-manifest.json` 的异步记录是 0.05 秒、1 次心跳；报告中的约 487k 面、1.5 秒、95 次心跳未找到对应原始证据。当前 `test_export_worker.py` 为 7 例，不能把 fake 测试写成真实大模型测量。
+- 元数据性能有独立证据：`.artifacts/metadata-bench/bench.json` 的 100/200/400 条累计写入为 256121/512121/1024121 字节，支持线性改进，无需推倒重做。
+- 章节日期写 2026-10-22，而本轮产物 status 时间为 2026-10-18。接手者应按实际日志核对日期、版本和证据归属，避免混用旧 runtime 的中断测试。
+- 执行表中的提交对应关系也应核对：如 `1180434` 实为预览修复，`b678994` 实为遮挡规则，`afb57bb` 才是沿相机段放遮挡物；“已实现”与“已端到端验收”分开标记。
+
+### N6：通过上述门槛后，进行小批量试生产
+
+使用实际目标 PLY、遮挡物及 Haven HDRI，在 GPU 上先生成 **200–500 帧**，输出仍为 BOP 或 RGB+双掩码。先保存人工确认过的项目 YAML，再运行；本阶段不新增随机策略或模型旋转功能。
+
+统计并保存：每目标可见像素/画面占比、中心遮挡率、相机 r/φ/α 分布、每类拒绝次数及接受率、每张耗时、峰值显存。按 scene 划分训练/验证集，抽看不同角度/尺度/遮挡/背景下的 RGB 和双 mask。目标是否过小、始终居中、背景是否单一应依据这批真实分布判断，不预先虚设全部场景通用阈值。
+
+**阶段出口：** N1–N4 回归通过，N5 专项证据完整，小批量标签语义和采样分布经检查后，才冻结版本并扩大渲染规模。新特性单独立项，避免与验收修复交叉。
+
+| 新任务 | 当前状态 | 接手后记录 |
+|---|---|---|
+| N1 CAD 原点与建议布局 | 已复现，未修复 | 提交、250 场景结果、GPU 用例 |
+| N2 尺度相关遮挡间隙 | 已复现，未修复 | 缩放回归、毫米 GPU 用例 |
+| N3 最终状态一致性 | 已复现，未修复 | 返回/磁盘终态对照、故障注入 |
+| N4 元数据完整性 | 已复现，未修复 | 内容/版本反例与兼容正例 |
+| N5 专项验收与文档校正 | 待执行 | 当前 runtime 的原始日志与配置 |
+| N6 小批量试生产 | 等待 N1–N5 | 统计、样图、接受率与资源消耗 |
+
+---
+
+## N1–N6 执行结果（2026-10-18，HEAD `12890ba` 起）
+
+改动落在四个修复提交上：`110ab08`/`6c2d862`（N1 建议布局与 CAD 原点）、`fcd53a3`（N2 尺度相关遮挡）、`1d9ab97`（N3 终态一致性）、`831093a`/`12890ba`（N4 元数据完整性）。本轮另修了检查器对轮廓边缘过严的一处误报，见 N5 最后一条。全量 **403 passed**（原始输出 `.artifacts/next-20261023/pytest-full.log`）。
+
+### N1 CAD 原点与建议布局 — 已修复
+
+- `suggest_layout` 改为返回每个目标的可行偏移区间，不再从原始 CAD bounds 的 low/high 反推；offset 统一表示"包围盒中心位置"，`content_bounds(..., anchor_key=None)` 允许按中心目标计算取景范围。
+- 夹具：两个 0.1 m 立方体，第二个原始顶点中心在 x=0.11。修复后建议 `right.x ∈ [0.11, 0.21]`、距离 `[0.526, 0.710]`；GPU 4/4 帧保存，`verify_rgb_masks` PASS（`.artifacts/next-20261023/layout-suggestion.json`、`layout-run.log`）。
+- 250 场景预算通过：`test_offset_cad_origin_layout_survives_all_scene_attempts`；原点不变性：`test_layout_is_invariant_to_cad_origin`（平移 `(0,0,0)`、`(.11,0,0)`、`(10,-4,2)` 后间距与距离不变）。
+
+### N2 尺度相关遮挡间隙 — 已修复
+
+- 遮挡物深度上界改用遮挡盒在视线上的投影半高，下界为 `clip_near + reserve`；间隙按场景尺度（目标尺寸的比例）而非固定厘米。
+- 三组真实 GPU 产物（`occlusion-summary.json`）：`near-500mm` 6/6、`far-5m` 6/6、`millimetre` 4/4；遮挡比全部落在 `[0.1, 0.5]` 窗口内（`near`/`far` 为 `0.233/0.455/0.179/0.237/0.279/0.327`，`millimetre` 为前四个），遮挡物角点全部在目标前方且越过近裁剪面，`verify_rgb_masks` 均 PASS。
+- 同一相对配置在 0.5 m、5 m、1 mm 三个尺度给出同一组遮挡比，说明度量本身与尺度无关。
+
+### N3 最终状态一致性 — 已修复
+
+- `run_project` 在 final manifest 写失败时返回 `failed/1` 并把同一终态落到磁盘；status 无法写入时明确报告"无法落盘"，不声称已修正。
+- `test_final_manifest_failure_matches_disk_status` 用真实 `JsonRunRecorder` 注入一次性 OSError，断言返回值、磁盘 status、`exit_code` 与失败原因一致；正常 completed/partial 不退化。
+
+### N4 元数据完整性 — 已修复
+
+- reader 不再只比较帧号：`_require_consistent()` 逐字段比较 journal 与 manifest 的行内容（文件引用、scene/view、相机、位姿）；未知 `schema_version` 在有/无 journal 时都报错；旧版无版本 manifest 与运行中空 manifest 保持兼容。
+- 反例：`test_reader_rejects_same_index_different_content`（同 frame_index 改 `relative_rgb` / `scene_index` / 相机）、`test_reader_rejects_unknown_manifest_version_with_journal`。
+
+### N5 专项证据
+
+| 专项 | 产物与日志 | 结果 |
+|---|---|---|
+| 建议布局（原点偏移夹具） | `layout-suggestion.json`、`layout-run.log` | 4/4 保存，checker PASS |
+| 建议布局（真实 `cores.ply`） | `real-pilot.yaml`（由 `suggest_layout` 生成）、`real-pilot.log` | 240/240 保存，checker PASS |
+| 近/远机位与毫米尺度 | `occlusion-summary.json`、`occlusion-fixture/` | 6/6、6/6、4/4，遮挡比在窗口内 |
+| BOP 真实资源 | `real-bop.yaml`、`real-bop.log`、`real-bop.verify.log` | 6/6 保存，`verify_bop` PASS |
+| 信号链路 | `signal-evidence.jsonl`、`signal_evidence.sh` | 见下 |
+| 大模型导出 | `heavy-export.json`、`n4_big_export.py` | 996,000 面带 2.79 s、390 次心跳 |
+| 最终回归 | `pytest-full.log`、`real-pilot.verify.log`、`real-bop.verify.log` | 403 passed |
+
+信号矩阵（240 帧任务，第 2 帧后发送信号）：`stress-rgb`/`stress-bop` × SIGINT/SIGTERM 四组均为 `exit 130/143`、`status=interrupted`、`requested 240`、`saved 2`、`skipped 238`、journal 2 行、manifest 2 行、manifest 引用的文件 0 缺失、journal 末行可解析，BOP 的 `gt`/`gt_info` 与已保存帧一致（未虚计）。
+
+**需要更正的既有记录**（按 N5 要求逐条核对）：
+
+- 旧的 `*.check.log` 是离线预检日志。本轮检查器输出另存为 `real-pilot.verify.log`、`real-bop.verify.log`。
+- 执行表中的提交对应关系错了两个：`1180434` 实为预览可达性修复，`b678994` 实为遮挡规则共享，沿相机段放遮挡物是 `afb57bb`。
+- 报告中"约 487k 面、1.5 秒、95 次心跳"没有对应原始证据。本轮用 `n4_big_export.py` 重测：327,680 面 1.04 s/140 心跳、996,000 面 2.79 s/390 心跳、1,310,720 面 3.63 s/504 心跳（HEAD 见该 JSON 的 `head` 字段，导出目录 `heavy-job`）。
+- 本轮所有 status 时间为 2026-10-18，与章节日期一致；上一轮的 `2026-10-22` 记录来自旧 runtime，不混用。
+
+**仍未完成的一项（不声称通过）**：BOP 后处理失败的真实进程链路。三次尝试都没有制造出自然失败——坏掉的 `bop_toolkit_lib` 副本被 `run_job.py` 重设的 `PYTHONPATH` 绕过；破坏深度 PNG 不影响 GT 计算；渲染中途删除 `models/*.ply` 仍 `completed`。目前只有单测覆盖（`tests/unit/test_run.py::test_bop_postprocess_failure_is_not_saved`）。真实链路需要一次可控的 GT 崩溃（例如注入到 BlenderProc 后处理调用），列为下一轮首项。
+
+**检查器误报修正**：修复后的 BOP 任务在 1 mm 边长的边缘像素上被判定"深度与位姿单位不一致"。逐像素射线反投影显示 5,300/5,383 个可见像素与模型表面误差 p95 为 0.05 mm，仅 7 个轮廓像素越界。`tests/blender/check_bop.py` 改为允许可见掩码 1% 的像素越界（单位错误会让全部像素越界），并新增 `test_bop_checker_tolerates_a_single_silhouette_outlier`、`test_bop_checker_rejects_a_shifted_depth_map`。
+
+### N6 小批量试生产 — 240 帧
+
+- 项目 `real-pilot.yaml`：目标 `/home/kepler/文档/cores.ply`（1,837 面）、0.2 m 立方体遮挡物、`studio.hdr`、`suggest_layout` 给出的距离 `0.291–0.393 m`、32 samples、60 场景 × 4 视图。
+- 结果：`completed`、240/240 保存、0 跳过、`exit 0`、427 s（1.78 s/帧）、峰值显存 2,940 MiB，`verify_rgb_masks` PASS。
+- 分布（`pilot-stats.json`）：遮挡比 0.000–0.493（中位 0.264）；半径 0.291–0.390 m；方位 1.3°–359.2°；仰角 10.2°–64.9°；目标像素占比 4.5%–16.4%（中位 8.5%）。
+- 接受率 240/977 = **24.6%**，拒绝 `occlusion` 396、`invisible_target` 341。目标没有过小、也没有始终居中，但接受率偏低，下一轮应先判断这是"窗口+全可见"联合约束的必然结果，还是采样策略需要调整。
+- 训练/验证按 scene 划分（60 个 scene）尚未实际切分，属扩大规模前的一步。
+
+**结论**：N1–N4 修复与 N5 除"BOP 后处理失败真实链路"外的专项证据齐备，N6 240 帧试生产完成。可以进入下一轮，但不宜直接冻结版本：先补 GT 崩溃链路，再决定是否调整接受率。

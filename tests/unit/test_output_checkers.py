@@ -369,3 +369,34 @@ def test_candidate_records_using_request_index_are_reported_as_incompatible(vali
     edit_frames(valid_rgb_masks_output, legacy_candidate)
     errors = verify_rgb_masks(valid_rgb_masks_output)
     assert errors == ["旧 request_index 数据集格式不受支持（版本不兼容），请用当前版本重新导出"], errors
+
+
+def _edit_depth(root, mutate):
+    for path in sorted((root / "train_pbr/000000/depth").glob("*.png")):
+        image = np.asarray(Image.open(path)).copy()
+        mutate(image)
+        Image.fromarray(image).save(path)
+
+
+def test_bop_checker_tolerates_a_single_silhouette_outlier(valid_bop_output):
+    """One mask pixel may sample beyond the analytic model bound at the silhouette edge."""
+
+    def push_one(image):
+        mask = np.asarray(Image.open(
+            valid_bop_output / "train_pbr/000000/mask_visib/000000_000000.png")) > 0
+        # Only a pixel that already carries depth: changing a zero pixel would alter gt_info.
+        y, x = np.argwhere(mask & (image > 0))[0]
+        image[y, x] = min(int(image.max()) + 500, 65535)
+
+    _edit_depth(valid_bop_output, push_one)
+    assert verify_bop(valid_bop_output) == []
+
+
+def test_bop_checker_rejects_a_shifted_depth_map(valid_bop_output):
+    def shift(image):
+        positive = image > 0
+        image[positive] = np.clip(image[positive].astype(np.int64) + 500, 1, 65535)
+
+    _edit_depth(valid_bop_output, shift)
+    errors = verify_bop(valid_bop_output)
+    assert any("inconsistent units" in error for error in errors), errors

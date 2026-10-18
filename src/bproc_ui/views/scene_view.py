@@ -9,7 +9,8 @@ from vispy import app, scene
 from vispy.visuals.transforms import MatrixTransform
 
 from bproc_core.camera import sample_camera
-from bproc_core.scene import bounds_corners, transform_points
+from bproc_core.config import hex_to_rgb
+from bproc_core.scene import bounds_corners, placement_bounds, transform_points
 
 
 
@@ -23,6 +24,34 @@ def _clear(nodes):
     for node in nodes:
         node.parent = None
     nodes.clear()
+
+
+def placed_content_bounds(candidate, meshes):
+    """World bounds of every placed target and occluder, or None when nothing is placed.
+
+    Sampling spheres, camera markers and helper grids are deliberately excluded: the viewport
+    frames the geometry the renderer will actually see.
+    """
+    if candidate is None:
+        return None
+    bounds = []
+    for placement in candidate.placements:
+        if placement.asset_key not in meshes:
+            continue
+        box = np.asarray(placement_bounds(placement, meshes), dtype=float)
+        if box.shape == (2, 3) and np.isfinite(box).all():
+            bounds.append(box)
+    if not bounds:
+        return None
+    return np.array([np.min([b[0] for b in bounds], axis=0), np.max([b[1] for b in bounds], axis=0)])
+
+
+def target_preview_rgba(config):
+    """Base colour shared by both viewports; None means keep the imported vertex colours."""
+    material = getattr(config, "material", None)
+    if material is None or getattr(material, "color", "original") != "solid":
+        return None
+    return (*hex_to_rgb(material.base_color), 1.)
 
 
 def _box_lines(bounds):
@@ -122,6 +151,7 @@ class SceneView(QWidget):
         self._last_keys = ()
         self._config = None
         self._helper_radius = None
+        self._fit_bounds = None
         self._hud, self._grid_scale = [], None
         self._grid(1)
 
@@ -165,12 +195,7 @@ class SceneView(QWidget):
         self._hud.append(origin)
 
     def _target_rgba(self):
-        from bproc_core.config import hex_to_rgb
-        config = getattr(self, "_config", None)
-        material = getattr(config, "material", None)
-        if material is None or getattr(material, "color", "original") != "solid":
-            return None
-        return (*hex_to_rgb(material.base_color), 1.)
+        return target_preview_rgba(getattr(self, "_config", None))
 
     def set_selection(self, key):
         self._selected_key = key
@@ -182,40 +207,48 @@ class SceneView(QWidget):
         self._objects = draw_placements(self.view.scene, candidate, meshes, self._selected_key, True,
                                         self._target_rgba())
         keys = tuple((p.asset_key, p.role) for p in candidate.placements) if candidate is not None else ()
-        radius = self._content_radius()
-        # Meshes can arrive after the first candidate, so rescale when the geometry appears too.
-        rescaled = self._helper_radius is None or abs(radius - self._helper_radius) > .2 * max(radius, self._helper_radius)
-        if keys != self._last_keys or (radius > 0 and rescaled):
-            self._last_keys = keys
+        bounds = placed_content_bounds(candidate, meshes)
+        # Re-frame only when the geometry really changed: occluders move on every view, and
+        # resetting the observer camera then would fight the user's own navigation.
+        refit = keys != self._last_keys or self._helper_radius is None
+        if bounds is not None and self._helper_radius:
+            # Compare with the geometry that was framed, never with the observer camera: the user
+            # is allowed to navigate away without the next refresh yanking the view back.
+            center = (bounds[0] + bounds[1]) / 2
+            scale = float(np.linalg.norm(bounds[1] - bounds[0])) / 2
+            if self._fit_bounds is not None:
+                moved = float(np.linalg.norm(center - self._fit_bounds[0]))
+                refit = refit or moved > .25 * self._helper_radius
+            refit = refit or abs(scale - self._helper_radius) > .25 * max(scale, self._helper_radius)
+        self._last_keys = keys
+        if refit:
             self.fit_scene()
         self.canvas.update()
 
     def fit_scene(self):
-        # Frame the imported geometry; a helper grid sized by camera distance would dwarf a
-        # millimetre-scale or centimetre-scale model.
-        radius = self._content_radius()
-        if radius <= 0 and self._candidate is not None:
-            radius = self._candidate.camera.radius_m
-        if radius <= 0:
-            radius = 1.
-        self.view.camera.center = (0, 0, 0)
+        # Frame the union of the placed geometry; helpers are sized from that same box so a
+        # centimetre-scale model is not dwarfed by a metre-scale grid.
+        bounds = placed_content_bounds(self._candidate, self._meshes)
+        if bounds is None:
+            center = np.zeros(3)
+            radius = self._candidate.camera.radius_m if self._candidate is not None else 0.
+            radius = radius if radius > 0 else 1.
+        else:
+            center = (bounds[0] + bounds[1]) / 2
+            radius = float(np.linalg.norm(bounds[1] - bounds[0])) / 2
+            radius = radius if radius > 0 else .5
+        self.view.camera.center = tuple(float(v) for v in center)
         self.view.camera.scale_factor = max(radius * 2.5, .02)
         self._helper_radius = radius
+        self._fit_bounds = (np.asarray(center, dtype=float), radius)
         self._grid(radius)
 
     def _content_radius(self):
         """Half diagonal of the placed geometry, in metres."""
-        if self._candidate is None:
+        bounds = placed_content_bounds(self._candidate, self._meshes)
+        if bounds is None:
             return 0.
-        radius = 0.
-        for placement in self._candidate.placements:
-            mesh = self._meshes.get(placement.asset_key)
-            bounds = None if mesh is None else np.asarray(mesh.bounds_m, dtype=float)
-            if bounds is None or bounds.shape != (2, 3) or not np.isfinite(bounds).all():
-                continue
-            corners = transform_points(bounds_corners(bounds), np.asarray(placement.world_from_model))
-            radius = max(radius, float(np.linalg.norm(np.ptp(corners, axis=0))) / 2)
-        return radius
+        return float(np.linalg.norm(bounds[1] - bounds[0])) / 2
 
     def set_regions(self, config, selected_key=None):
         previous = self._config

@@ -14,8 +14,9 @@ class FakeScene(QWidget):
     def set_selection(self, key):
         self.selected = key
 
-    def set_scene(self, candidate, meshes):
+    def set_scene(self, candidate, meshes, target_rgba=None):
         self.candidate = candidate
+        self.target_rgba = target_rgba
 
     def set_regions(self, config, selected_key=None):
         self.regions = config.regions
@@ -28,8 +29,9 @@ class FakeCamera(QDialog):
     def show_preview(self):
         self.show()
 
-    def set_scene(self, candidate, meshes):
+    def set_scene(self, candidate, meshes, target_rgba=None):
         self.candidate = candidate
+        self.target_rgba = target_rgba
 
     def set_camera(self, camera, pose):
         self.camera = camera

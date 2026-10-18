@@ -8,6 +8,7 @@ for this integration check: it must exercise real OpenGL canvas contexts.
 import argparse
 from dataclasses import replace
 import importlib.metadata
+import numpy as np
 import json
 import os
 from pathlib import Path
@@ -79,6 +80,31 @@ def main():
                 raise RuntimeError("Observer camera navigation changed scientific settings")
             observer.azimuth = original_azimuth
             evidence["observer_navigation_preserves_config"] = True
+            from bproc_ui.views.scene_view import placed_content_bounds
+            bounds = placed_content_bounds(state.candidate, state.meshes)
+            observer.center = (9., 9., 9.)
+            window.scene_view.fit_scene()
+            app.processEvents()
+            expected_center = [float(v) for v in (bounds[0] + bounds[1]) / 2]
+            if not np.allclose(observer.center, expected_center, atol=1e-6):
+                raise RuntimeError(f"Home did not frame the placed content: {observer.center} != {expected_center}")
+            evidence["home_frames_union_center"] = expected_center
+            original_material = state.config.material
+            state.update(material=replace(original_material, color="solid", base_color="#ff0000"))
+            app.processEvents()
+            scene_image = window.scene_view.canvas.render()
+            camera_image = window.camera_preview.canvas.render()
+            def red_pixels(image):
+                return int(np.count_nonzero((image[..., 0] > 140) & (image[..., 1] < 90) & (image[..., 2] < 90)))
+            scene_red, camera_red = red_pixels(scene_image), red_pixels(camera_image)
+            if min(scene_red, camera_red) < 50:
+                raise RuntimeError(f"solid base colour did not reach both viewports: scene={scene_red} camera={camera_red}")
+            evidence["solid_colour_pixels"] = {"scene": scene_red, "camera": camera_red}
+            write_png(str(destination / "scene-solid-red.png"), scene_image)
+            write_png(str(destination / "camera-solid-red.png"), camera_image)
+            evidence["screenshots"].extend(["scene-solid-red.png", "camera-solid-red.png"])
+            state.update(material=original_material)
+            app.processEvents()
             canvas = window.camera_preview.canvas
             window.camera_preview.close()
             window.camera_preview.show_preview()

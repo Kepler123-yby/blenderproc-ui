@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, Q
 from bproc_core.config import new_project
 from bproc_ui.widgets import editor_header, scrollable, integer, SeedEditor
 from bproc_ui.preview import PreviewController
-from bproc_ui.views.scene_view import SceneView
+from bproc_ui.views.scene_view import SceneView, target_preview_rgba
 from bproc_ui.views.camera_view import CameraPreview
 from bproc_ui.panels.resources import ResourcesPanel
 from bproc_ui.panels.sampling import SamplingPanel
@@ -313,7 +313,8 @@ class MainWindow(QMainWindow):
         self.scene_view.set_scene(candidate, self.state.meshes)
         self.scene_view.set_selection(self.state.edited_target_key)
         self.scene_view.set_candidates([candidate] if candidate else [])
-        self.camera_preview.set_scene(candidate, self.state.meshes)
+        self.camera_preview.set_scene(candidate, self.state.meshes,
+                                      target_preview_rgba(self.state.config))
         if candidate:
             self.camera_preview.set_camera(self.state.config.camera, candidate.camera)
             anchor = next(t for t in self.state.config.targets if t.asset.key == candidate.anchor_key)

@@ -216,6 +216,11 @@ def suggest_layout(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]
     band always keeps ``LAYOUT_GAP_FRACTION`` of the largest target clear of the previous one, so
     no sample can produce overlapping AABBs whatever the Y/Z jitter does.
 
+    Bands are expressed in *model centroid* positions, because that is what the renderer moves to
+    the sampled offset (``centre - bounds.mean``). Measuring a raw CAD origin instead shifted a
+    whole band by the file's local origin, which made two 10 cm cubes overlap in all 250 scenes
+    when one of them was authored at x = 0.11.
+
     Returns a mapping for the enabled targets only; disabled targets keep their authored offsets.
     """
     enabled = [target for target in targets if target.enabled]
@@ -237,8 +242,9 @@ def suggest_layout(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]
     jitter_y = largest * .15
 
     def span(key):
-        """X extent of a model as (low, high): CAD origins are not always at the centre."""
-        return float(bounds[key][0][0]), float(bounds[key][1][0])
+        """X extent of a model around its own centroid: CAD origins are not always at the centre."""
+        size = float(np.ptp(bounds[key][:, 0]))
+        return -size / 2, size / 2
 
     anchor_low, anchor_high = span(enabled[anchor_index].asset.key)
     # The render centre is the reference point every other target is placed around; a jittered
@@ -262,25 +268,34 @@ def suggest_layout(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]
             boxes[target.asset.key] = Box(Range(near, near + width), jitter, depth)
             right_edge = near + width + high + gap
     placed = tuple(replace(target, offset=boxes[target.asset.key]) for target in enabled)
-    return boxes, framing_band(content_bounds(meshes, placed), camera)
+    return boxes, framing_band(content_bounds(meshes, placed, anchor_key), camera)
 
 
-def content_bounds(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]) -> np.ndarray | None:
+def content_bounds(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec],
+                   anchor_key: str | None = None) -> np.ndarray | None:
     """World box every enabled target can occupy, i.e. what the camera has to keep in frame.
 
-    Each target is placed at the far corner of its own offset range, so the union covers any
-    sample the sampler can draw. ``None`` when no enabled target has a loaded mesh.
+    Offsets position a model's bounding-box *centre* (the renderer subtracts the centroid), so the
+    model extent is measured from that same centroid. A CAD origin that sits far from the geometry
+    therefore no longer inflates the box, and the render centre is pinned to the world origin: its
+    authored offset never takes effect, so it must not widen the framing.
+    ``None`` when no enabled target has a loaded mesh.
     """
     low, high = np.full(3, np.inf), np.full(3, -np.inf)
     for target in targets:
         mesh = meshes.get(target.asset.key)
         if not target.enabled or mesh is None:
             continue
-        # CAD origins are not always at the centre, so each side adds its own model extent.
-        near = np.array([target.offset.x.minimum, target.offset.y.minimum, target.offset.z.minimum])
-        far = np.array([target.offset.x.maximum, target.offset.y.maximum, target.offset.z.maximum])
-        low = np.minimum(low, near + mesh.bounds_m[0])
-        high = np.maximum(high, far + mesh.bounds_m[1])
+        if anchor_key is not None and target.asset.key == anchor_key:
+            centre = np.zeros(3)
+        else:
+            centre = np.array([(target.offset.x.minimum + target.offset.x.maximum) / 2,
+                               (target.offset.y.minimum + target.offset.y.maximum) / 2,
+                               (target.offset.z.minimum + target.offset.z.maximum) / 2])
+        extent = np.asarray(mesh.bounds_m, dtype=float)
+        extent = extent - extent.mean(axis=0)
+        low = np.minimum(low, centre + extent[0])
+        high = np.maximum(high, centre + extent[1])
     if not np.isfinite(low).all() or not (high > low).all():
         return None
     return np.stack((low, high))

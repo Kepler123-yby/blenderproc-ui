@@ -6,7 +6,7 @@ import pytest
 
 from bproc_core.assets import content_bounds, suggest_layout
 from bproc_core.config import AssetSpec, Box, CameraSpec, HdriSpec, ProjectConfig, Range, RegionSpec, TargetSpec
-from bproc_core.scene import SceneState, placement_bounds, propose_scene
+from bproc_core.scene import SceneState, placement_bounds, propose_scene, sample_scene
 from tests.factories import make_mesh
 
 STILL = Box(Range(0., 0.), Range(0., 0.), Range(0., 0.))
@@ -24,6 +24,7 @@ def _targets(specs, offsets=None):
 
 def _config(targets, radius, anchor):
     return ProjectConfig(targets=targets, anchor_key=anchor, occluders=(), hdri=HdriSpec(),
+                         scene_count=250, layout_max_attempts=30,
                          regions=(RegionSpec(radius_m=radius),))
 
 
@@ -42,7 +43,7 @@ def test_suggest_layout_has_disjoint_target_ranges(tmp_path):
     assert boxes["right"].x.minimum > 0, "the second target needs its own side of the centre"
     assert boxes["right"].y.minimum < 0 < boxes["right"].y.maximum
     near_edge = boxes["right"].x.minimum - .1 / 2
-    assert near_edge - .1 / 2 >= .1 * .1 - 1e-9, "at least 10% of the largest target must stay clear"
+    assert near_edge >= .1 / 2 + .1 * .1 - 1e-9, "at least 10% of the largest target must stay clear"
 
     config = _config(tuple(replace(target, offset=boxes[target.asset.key]) for target in targets), radius, "left")
     assert radius.minimum > 0
@@ -58,7 +59,8 @@ def test_suggest_layout_keeps_gap_for_the_largest_target():
     targets = _targets([("big", 1), ("small", 2)])
     boxes, _ = suggest_layout(meshes, targets, "big", CameraSpec())
     small = boxes["small"]
-    assert small.x.minimum - .01 - .1 >= .2 * .1 - 1e-9
+    # small's centroid moves to at least (big's half size + gap + small's half size)
+    assert small.x.minimum - .01 >= .1 + .2 * .1 - 1e-9
     # A 10x smaller neighbour still gets a usable, non-degenerate band.
     assert small.x.maximum - small.x.minimum >= .02
 
@@ -117,16 +119,15 @@ def _intersects(first, second):
 
 
 def test_suggest_layout_respects_cad_origins_that_are_not_centred():
-    """A model whose origin sits on its corner must not be treated as centred on it."""
+    """Bands describe where a model's centroid goes, so a corner origin cannot shift them."""
     meshes = {"corner": make_mesh("corner", center=(.05, 0, 0), size=.1),
               "offset": make_mesh("offset", center=(-.03, .02, 0), size=.1)}
     targets = _targets([("corner", 1), ("offset", 2)])
     boxes, radius = suggest_layout(meshes, targets, "corner", CameraSpec())
 
-    anchor_right = meshes["corner"].bounds_m[1][0]
+    half = float(np.ptp(meshes["offset"].bounds_m[:, 0])) / 2
     free = boxes["offset"]
-    tightest_left = free.x.minimum + meshes["offset"].bounds_m[0][0]
-    assert tightest_left >= anchor_right + .1 * .1 - 1e-9, "the tight end of the band keeps the gap"
+    assert free.x.minimum - half >= .05 + .1 * .1 - 1e-9, "the near face keeps the gap clear"
     assert free.x.maximum > free.x.minimum
 
     config = _config(tuple(replace(target, offset=boxes[target.asset.key]) for target in targets), radius, "corner")
@@ -135,6 +136,40 @@ def test_suggest_layout_respects_cad_origins_that_are_not_centred():
         assert isinstance(scene, SceneState), f"scene {scene_index} rejected: {getattr(scene, 'reason', '')}"
         first, second = (placement_bounds(placement, meshes) for placement in scene.placements)
         assert not _intersects(first, second), f"scene {scene_index} overlaps"
+
+
+@pytest.mark.parametrize("origin", [(0., 0., 0.), (.11, 0., 0.), (10., -4., 2.)])
+def test_layout_is_invariant_to_cad_origin(origin):
+    """Where a PLY's local origin sits must not change the suggestion or the framing distance."""
+    meshes = {"a": make_mesh("a", center=origin, size=.1), "b": make_mesh("b", center=origin, size=.1)}
+    targets = _targets([("a", 1), ("b", 2)])
+    boxes, radius = suggest_layout(meshes, targets, "a", CameraSpec())
+
+    assert boxes["b"].x.minimum == pytest.approx(.11), "centroid band must not move with the origin"
+    assert boxes["b"].x.maximum == pytest.approx(.21)
+    assert boxes["b"].y.minimum == pytest.approx(-.015)
+    assert radius.minimum == pytest.approx(expected_radius())
+
+
+def expected_radius():
+    meshes = {"a": make_mesh("a", size=.1), "b": make_mesh("b", size=.1)}
+    return suggest_layout(meshes, _targets([("a", 1), ("b", 2)]), "a", CameraSpec())[1].minimum
+
+
+def test_offset_cad_origin_layout_survives_all_scene_attempts():
+    """The reported counterexample: origins at 0 and .11 put 250/250 scenes into collision."""
+    meshes = {"a": make_mesh("a", center=(0., 0., 0.), size=.1),
+              "b": make_mesh("b", center=(.11, 0., 0.), size=.1)}
+    targets = _targets([("a", 1), ("b", 2)])
+    boxes, radius = suggest_layout(meshes, targets, "a", CameraSpec())
+    placed = tuple(replace(target, offset=boxes[target.asset.key]) for target in targets)
+    config = replace(_config(placed, radius, "a"), layout_max_attempts=30)
+
+    for scene_index in range(250):
+        scene = sample_scene(config, meshes, scene_index)
+        assert isinstance(scene, SceneState), f"scene {scene_index}: {getattr(scene, 'reason', '')}"
+        first, second = (placement_bounds(placement, meshes) for placement in scene.placements)
+        assert not _intersects(first, second), f"scene {scene_index} produced overlapping targets"
 
 
 def test_suggest_layout_leaves_meshes_and_ids_untouched():

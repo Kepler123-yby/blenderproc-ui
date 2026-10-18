@@ -1,6 +1,7 @@
 from dataclasses import replace
 from pathlib import Path
 import numpy as np
+import pytest
 
 from bproc_core.assets import MeshData
 from bproc_core.config import *
@@ -232,3 +233,87 @@ def test_a_retry_moves_the_occluder_to_search_for_the_ratio_window():
         assert isinstance(shot, SceneCandidate), shot
         centers.append(np.round(shot.placements[-1].world_from_model[:3, 3], 6).tolist())
     assert len({tuple(center) for center in centers}) >= 5
+
+
+def _scaled_fixture(scale):
+    """Target, occluder and camera shrunk together; only the clearance used to stay in centimetres."""
+    size, distance = .1 * scale, .5 * scale
+    target_box = np.array([[-size / 2] * 3, [size / 2] * 3])
+    occluder_box = np.array([[-size] * 3, [size] * 3])
+    meshes = {"a": MeshData("a", bounds_corners(target_box), np.array([[0, 1, 2]]), None, target_box),
+              "o": MeshData("o", bounds_corners(occluder_box), np.array([[0, 1, 2]]), None, occluder_box)}
+    config = ProjectConfig(
+        targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
+        occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
+        regions=(RegionSpec(radius_m=Range(distance, distance)),),
+        occlusion=OcclusionSpec(none_fraction=1., ratio=Range(.1, .5), count=(1, 1),
+                                scale=Range(.4, .6)))
+    pose = CameraPose(np.eye(4), np.array([0., 0., distance]), distance, 0., 0.,
+                      .01 * scale, 100. * scale)
+    return config, meshes, pose, occluder_box
+
+
+@pytest.mark.parametrize("scale", [1., .01])
+def test_occluder_clearance_scales_with_scene(scale):
+    """1 mm target + 5 mm camera used to end in no_occluder_room for all 30 attempts."""
+    config, meshes, pose, occluder_box = _scaled_fixture(scale)
+    placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(7), ())
+
+    assert isinstance(placements, list) and len(placements) == 1, placements
+    camera = np.asarray(pose.position_m)
+    view = -camera / np.linalg.norm(camera)
+    corners = transform_points(bounds_corners(occluder_box), placements[0].world_from_model)
+    depths = (corners - camera) @ view
+    assert float(depths.min()) > float(pose.clip_near_m)
+    target_front = float(np.linalg.norm(camera)) - .05 * scale
+    assert float(depths.max()) < target_front, "an occluder must stay in front of the target"
+    target_low, target_high = -.05 * scale, .05 * scale
+    low, high = corners.min(axis=0), corners.max(axis=0)
+    assert not (low[0] < target_high and high[0] > target_low
+                and low[1] < target_high and high[1] > target_low
+                and low[2] < target_high and high[2] > target_low), "the occluder may not intersect the target"
+
+
+class _FarthestRng:
+    """Draws the largest allowed value everywhere, so a placement lands at `farthest`."""
+
+    def integers(self, low, high=None, **kwargs):
+        return (high if high is not None else low) - 1
+
+    def uniform(self, low=0.0, high=1.0, **kwargs):
+        return high
+
+
+def _front_gap_when_farthest(scale):
+    """Gap between the far corner and the target's near face for the deepest legal placement."""
+    config, meshes, pose, occluder_box = _scaled_fixture(scale)
+    camera = np.asarray(pose.position_m)
+    view = -camera / np.linalg.norm(camera)
+    target_front = float(np.linalg.norm(camera)) - .05 * scale
+    placements = occluder_placements(config, meshes, pose, "a", _FarthestRng(), ())
+    assert isinstance(placements, list), placements
+    corners = transform_points(bounds_corners(occluder_box), placements[0].world_from_model)
+    return target_front - float(np.max((corners - camera) @ view))
+
+
+def test_an_occluder_never_crosses_the_target_front_face():
+    for scale in (1., .01):
+        config, meshes, pose, occluder_box = _scaled_fixture(scale)
+        camera = np.asarray(pose.position_m)
+        view = -camera / np.linalg.norm(camera)
+        target_front = float(np.linalg.norm(camera)) - .05 * scale
+        for seed in range(30):
+            placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(seed), ())
+            assert isinstance(placements, list), placements
+            corners = transform_points(bounds_corners(occluder_box), placements[0].world_from_model)
+            gap = target_front - float(np.max((corners - camera) @ view))
+            assert gap > 0, (scale, seed, gap)
+
+
+def test_the_clearance_follows_the_scene_not_a_fixed_centimetre():
+    """The gap at the deepest legal placement shrinks with the scene instead of staying in centimetres."""
+    millimetre = _front_gap_when_farthest(.01)
+    centimetre = _front_gap_when_farthest(1.)
+    assert millimetre < .0015, f"gap {millimetre:.6f} m is still centimetre-sized for a 1 mm fixture"
+    assert centimetre < .0065, "the 10 cm fixture must use its relative clearance, not a huge one"
+    assert centimetre > 5 * millimetre, f"clearance did not scale with the scene ({centimetre:.4f} vs {millimetre:.4f})"

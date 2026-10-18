@@ -173,7 +173,9 @@ def sample_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_in
     return result
 
 
-OCCLUDER_CLEARANCE_M = 0.01
+# Clearance is a fraction of the scene, never a fixed centimetre: a 1 mm fixture with a fixed
+# 1 cm gap had no room left between the near plane and the target in any of 30 draws.
+OCCLUDER_CLEARANCE_FRACTION = (0.1, 0.01)      # of the target size, and of the camera distance
 OCCLUDER_DRAWS = 24
 
 
@@ -205,6 +207,9 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
     if distance <= 0:
         return Rejection('invalid_pivot', anchor_key)
     view = -camera / distance
+    if not targets:
+        # No placements were handed in: the anchor itself still bounds how far an occluder may go.
+        targets = (Placement(anchor_key, None, None, np.eye(4), "target"),)
     right = np.cross(view, np.array([0., 0., 1.]))
     if np.linalg.norm(right) < 1e-6:
         right = np.array([1., 0., 0.])
@@ -225,10 +230,14 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
             return Rejection('invalid_mesh', asset.key)
         size = center_size * rng.uniform(config.occlusion.scale.minimum, config.occlusion.scale.maximum)
         scale = size / max_side
-        half_diagonal = float(np.linalg.norm(extent * scale / 2))
-        nearest = float(pose.clip_near_m) + OCCLUDER_CLEARANCE_M + half_diagonal
-        farthest = target_front - OCCLUDER_CLEARANCE_M - half_diagonal
-        if farthest <= nearest:
+        # Half the box as seen along the view ray; the diagonal would over-reserve depth.
+        half_along_view = float((extent * scale / 2) @ np.abs(view))
+        clearance = min(OCCLUDER_CLEARANCE_FRACTION[0] * center_size,
+                        OCCLUDER_CLEARANCE_FRACTION[1] * distance)
+        tolerance = 1e-6 * distance        # float slack that scales with the scene, not with metres
+        nearest = float(pose.clip_near_m) + clearance + half_along_view
+        farthest = target_front - clearance - half_along_view
+        if farthest <= nearest + tolerance:
             return Rejection('no_occluder_room', asset.key)
         for _ in range(OCCLUDER_DRAWS):
             angle = rng.uniform(0., 2 * np.pi)

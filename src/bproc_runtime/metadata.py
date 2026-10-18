@@ -54,6 +54,10 @@ def read_frame_records(metadata_dir: Path, *, allow_incomplete_tail: bool = Fals
         # Only the final manifest must agree with the journal; while a run is going the manifest
         # is still the empty placeholder written by begin().
         if manifest is not None and manifest.get("final") is True:
+            version = manifest.get("schema_version", 0)
+            if version != SCHEMA_VERSION:
+                raise MetadataError(
+                    f"manifest.json 与 frames.jsonl 版本不一致：manifest={version}, journal={SCHEMA_VERSION}")
             _require_consistent(frames, manifest["frames"])
         return frames
     if manifest is None:
@@ -64,6 +68,8 @@ def read_frame_records(metadata_dir: Path, *, allow_incomplete_tail: bool = Fals
     version = manifest.get("schema_version", 0)
     if version not in (0, 1):
         raise MetadataError(f"未知的 manifest 版本：{version}")
+    if "final" in manifest and not isinstance(manifest["final"], bool):
+        raise MetadataError("manifest.json 的 final 不是布尔值")
     return frames
 
 
@@ -113,6 +119,17 @@ def _require_consistent(journal: list[dict], manifest: list) -> None:
     if len(journal) != len(manifest):
         raise MetadataError(
             f"manifest.json 与 frames.jsonl 帧数不一致（manifest={len(manifest)}, journal={len(journal)}）")
-    for position, (left, right) in enumerate(zip(journal, manifest)):
-        if not isinstance(right, dict) or left.get("frame_index") != right.get("frame_index"):
-            raise MetadataError(f"manifest.json 与 frames.jsonl 第 {position} 帧的文件名/帧号不一致")
+    for position, (journal_row, manifest_row) in enumerate(zip(journal, manifest)):
+        if not isinstance(manifest_row, dict):
+            raise MetadataError(f"manifest.json 第 {position} 帧不是对象")
+        if _canonical(journal_row) != _canonical(manifest_row):
+            index = journal_row.get("frame_index", position)
+            fields = sorted(set(journal_row) | set(manifest_row))
+            different = [name for name in fields if journal_row.get(name) != manifest_row.get(name)]
+            raise MetadataError(
+                f"manifest.json 与 frames.jsonl 第 {index} 帧内容不一致"
+                f"（字段：{'、'.join(different) or '未知'}）")
+
+
+def _canonical(row: dict) -> str:
+    return json.dumps(row, sort_keys=True, ensure_ascii=False, allow_nan=False)

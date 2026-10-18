@@ -171,7 +171,12 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
     except Exception as error:
         # The dataset is already reserved, so a failure here must still be visible.
         print(f"写入最终状态失败：{type(error).__name__}: {error}", flush=True)
-        if not fatal:
+        written_summary = getattr(recorder, "last_summary", None)
+        if written_summary is not None:
+            # Whatever the recorder managed to write is the truth now (e.g. a failed manifest
+            # already marked the run failed); returning a different status would desync callers.
+            summary = written_summary
+        elif not fatal:
             summary = RunSummary("failed", config.total_shots, written, saved,
                                  config.total_shots - saved,
                                  {**summary.failures_by_reason, "status:" + type(error).__name__: 1}, 1)

@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from bproc_core.assets import AssetError, load_mesh, mesh_diameter_m, suggest_layout, write_bop_models
+from bproc_core.assets import (AssetError, content_bounds, load_mesh, mesh_diameter_m, suggest_layout,
+                               write_bop_models)
 from bproc_core.config import AssetSpec, Box, CameraSpec, Range, TargetSpec
 from tests.factories import make_mesh, write_mesh
 
@@ -77,3 +78,17 @@ def test_size_suggestions_stay_close_for_millimetre_models(tmp_path):
     _, radius = suggest_layout({"tiny": tiny}, [target], "tiny", CameraSpec())
     assert radius.minimum < .01
     assert radius.maximum / radius.minimum == pytest.approx(1.35)
+
+
+def test_content_bounds_measures_centroids_and_pins_the_render_centre():
+    """CAD origins and the anchor's authored offset must not widen what the camera has to frame."""
+    meshes = {"a": make_mesh("a", center=(5., 0., 0.), size=.1),
+              "b": make_mesh("b", center=(.11, 0., 0.), size=.2)}
+    targets = (TargetSpec(AssetSpec("a", None), "a", 2,
+                          offset=Box(Range(9., 9.), Range(0., 0.), Range(0., 0.))),
+               TargetSpec(AssetSpec("b", None), "b", 3,
+                          offset=Box(Range(0., 0.), Range(0., 0.), Range(0., 0.))))
+
+    bounds = content_bounds(meshes, targets, "a")
+
+    np.testing.assert_allclose(bounds, [[-.1, -.1, -.1], [.1, .1, .1]], atol=1e-12)

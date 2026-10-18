@@ -269,7 +269,8 @@ class SamplingPanel(QWidget):
         ``content_bounds`` already accounts for the offsets and the target sizes, so reuse the
         same rule instead of inventing a second distance rule that disagrees with the wizard.
         """
-        bounds = content_bounds(self.state.meshes, self.state.config.targets)
+        bounds = content_bounds(self.state.meshes, self.state.config.targets,
+                                self.state.config.anchor_key)
         if bounds is None:
             return None
         config = self.state.config

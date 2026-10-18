@@ -1,11 +1,11 @@
 """Exclusive output reservation and append-only run metadata."""
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
 import os
 from pathlib import Path
 import tempfile
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 
 from bproc_core.masks import occlusion_ratio
@@ -56,6 +56,7 @@ class JsonRunRecorder:
         self._seed = None
         self.begun = False
         self.finished = False
+        self.last_summary = None
 
     def begin(self, config) -> None:
         from bproc_core.config import world_metadata
@@ -104,12 +105,19 @@ class JsonRunRecorder:
                             manifest_payload(self._seed, self._world, self._frames, final=True))
             except Exception as error:      # the status below must still be written
                 manifest_error = error
+        if manifest_error is not None:
+            # An incomplete manifest must never sit next to a "completed" status: downstream
+            # readers trust status.json, so the failure has to be part of what gets written.
+            summary = replace(summary, status="failed", exit_code=1,
+                              failures_by_reason={**summary.failures_by_reason,
+                                                  "manifest:" + type(manifest_error).__name__: 1})
         payload = {**asdict(summary), "finished_at": datetime.now(timezone.utc).isoformat()}
         if self._started is not None:
             payload["started_at"] = self._started
         if self._world is not None:
             payload["world"] = self._world
         atomic_json(self.root / "status.json", payload)
+        self.last_summary = summary      # only after it is on disk; callers mirror this state
         self.finished = True
         if manifest_error is not None:
             raise manifest_error

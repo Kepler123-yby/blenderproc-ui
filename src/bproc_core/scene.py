@@ -179,6 +179,15 @@ def sample_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_in
 OCCLUDER_CLEARANCE_FRACTION = (0.1, 0.01)      # of the target size, and of the camera distance
 OCCLUDER_DRAWS = 24
 
+# The sideways offset is found by a bounded coarse scan over the target's whole projected span and
+# a local bisection on the best window crossing. A single bisection from the target's centre is
+# invalid for the shapes this sampler now measures: a hollow frame is empty at the hole's centre
+# and a small occluder only starts covering at the rim, so coverage rises before it falls again.
+OFFSET_SCAN_MIN_SAMPLES = 32      # equal coarse probes across the target's whole projected span
+OFFSET_SCAN_MAX_SAMPLES = 64      # cap: a target far wider than the occluder does not need more
+OFFSET_SCAN_MAX_REFINEMENTS = 8   # bisection steps inside one crossing bracket
+OFFSET_SCAN_MAX_BRACKETS = 3      # crossing brackets refined per aim; the rest are only measured
+
 # The aiming estimate needs the projected *shape*, not its bounding box: a hollow or U-shaped
 # part has a convex hull several times its real silhouette. Any mesh with triangles is rasterised
 # exactly on a small screen-space grid, however few faces it has; these caps only bound the cost,
@@ -396,13 +405,48 @@ def _covered_share(target_hull, occluder_hull) -> float:
     return _polygon_area(_clip_to_convex(occluder_hull, target_hull)) / target_area
 
 
-def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, config, rng, spread):
+def _offset_span(base, direction, mesh, scale, points, pose):
+    """Interval of sideways offsets at which the occluder can still touch a target.
+
+    The occluder moves at its own depth, so a target point's bearing is converted into the offset
+    that puts the occluder on the same ray with the camera's ``depth / point_depth`` factor: an
+    occluder halfway to the lens needs half the sideways shift for the same screen position. The
+    interval spans every target, which is what lets a small occluder inside a large hole reach the
+    rim instead of stopping after ``2.5 * spread`` near the hole's centre. The occluder's own
+    half-width widens the interval so a rim exactly at the edge is still sampled.
+    """
+    if points is None or not len(points):
+        return None
+    camera = np.asarray(pose.position_m, dtype=float)
+    to_base = np.asarray(base, dtype=float) - camera
+    depth = float(np.linalg.norm(to_base))
+    if depth <= 0:
+        return None
+    view = to_base / depth
+    points = np.asarray(points, dtype=float)
+    ray_depth = (points - camera) @ view
+    if np.any(ray_depth <= depth * 1e-6):
+        return None        # a point at (or behind) the lens has no finite aim on this ray
+    perpendicular = points - camera - ray_depth[:, None] * view
+    along = (perpendicular @ direction) * (depth / ray_depth)
+    half = float((np.ptp(mesh.bounds_m, axis=0) * scale / 2) @ np.abs(direction))
+    low, high = float(along.min()) - half, float(along.max()) + half
+    return (low, high, half) if high - low > 0 else None
+
+
+def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, config, rng, spread,
+                  target_points=None):
     """Sideways offset that should cover roughly the middle of the occlusion window.
 
     The renderer used to reject most proposals for over-covering: a box three quarters of the
-    target's width, offset by a tenth of it, hides most of the silhouette. The offset is now
-    bisected against the projected *mesh* silhouette, which falls monotonically as the occluder
-    moves away from the target's centre. ``spread`` keeps the draw varied and bounds the search.
+    target's width, offset by a tenth of it, hides most of the silhouette. Coverage is measured
+    against the projected *mesh* silhouette, but it does not fall monotonically from the target's
+    centre: a hollow frame is empty in the hole, so a small occluder has to travel to the rim
+    before it covers anything. The search therefore scans the target's whole projected span
+    (``_offset_span``), keeps the crossing of the user's window that brackets the aim most
+    tightly, and bisects only inside that bracket. Every proposal has a fixed probe budget; when
+    no offset can reach the window the best measured candidate is returned and the render's own
+    pixel acceptance rejects it, rather than the sampler looping or inventing coverage.
     """
     wanted = config.occlusion.ratio
     if wanted.maximum <= 0 or (not shapes.hulls and shapes.grid is None):
@@ -411,7 +455,6 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
     # 72 %, and a 0-1 % window must not be aimed at 2 %. Clamping after the midpoint keeps the
     # target valid for any interval, including a fixed ratio where minimum == maximum.
     aim = min(max((wanted.minimum + wanted.maximum) / 2, wanted.minimum), wanted.maximum)
-    low, high = 0., max(spread * 2.5, 1e-9)
 
     def estimate(offset):
         matrix = np.eye(4)
@@ -429,22 +472,47 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
                                   for target in shapes.masks)])
         return share
 
-    for _ in range(10):
-        middle = (low + high) / 2
-        if estimate(middle) > aim:
-            low = middle      # too much cover: move further aside
-        else:
-            high = middle
-    # Bisection alone is only accurate to its step; a linear refinement against the bracket's own
-    # estimates lands within a fraction of a percent, which tight windows (80-90 %, fixed ratios)
-    # need. Three extra evaluations, three candidates, keep the closest.
-    low_share, high_share = estimate(low), estimate(high)
-    candidates = [(abs(low_share - aim), low), (abs(high_share - aim), high)]
-    if low_share != high_share:
-        guess = low + (low_share - aim) * (high - low) / (low_share - high_share)
-        guess = min(max(guess, min(low, high)), max(low, high))
-        candidates.append((abs(estimate(guess) - aim), guess))
-    return min(candidates)[1]
+    span = _offset_span(base, direction, mesh, scale, target_points, pose)
+    if span is None:
+        # No target geometry to derive a span from: keep the old conservative bound.
+        low, high, half = 0., max(spread * 2.5, 1e-9), 0.
+    else:
+        low, high, half = span
+    width = high - low
+    # Four probes per occluder width (``half`` is its half-width) so a narrow crossing is not
+    # stepped over, but never fewer than OFFSET_SCAN_MIN_SAMPLES equal intervals: the window of a
+    # small occluder can be a fraction of its own width, and a large hollow target's span is what
+    # the old ``half`` spacing crossed with a handful of points.
+    step = min(half / 2 if half > 0 else width, width / OFFSET_SCAN_MIN_SAMPLES)
+    samples = int(np.clip(np.ceil(width / step) if step > 0 else OFFSET_SCAN_MIN_SAMPLES,
+                          OFFSET_SCAN_MIN_SAMPLES, OFFSET_SCAN_MAX_SAMPLES))
+    measured = [(float(estimate(offset)), float(offset))
+                for offset in np.linspace(low, high, samples + 1)]
+    best_share, best_offset = min(measured, key=lambda item: abs(item[0] - aim))
+
+    # Coverage may cross the aim several times (a hollow target crossed at either rim) or jump over
+    # the window between two coarse probes. Every sign change brackets a crossing; the ones whose
+    # ends sit closest to the aim are refined, and the best measured offset wins. A plateau of equal
+    # estimates never counts as a crossing, so an unreachable window is not invented here.
+    brackets = [(measured[index], measured[index + 1]) for index in range(len(measured) - 1)
+                if (measured[index][0] - aim) * (measured[index + 1][0] - aim) < 0]
+    brackets.sort(key=lambda pair: max(abs(pair[0][0] - aim), abs(pair[1][0] - aim)))
+    # The bracket is refined to a thousandth of the probed span, which is far below both the camera
+    # pixel and the grid pixel; the fixed step count keeps the probe budget bounded.
+    tolerance = width * 1e-3
+    for (left_share, left), (_, right) in brackets[:OFFSET_SCAN_MAX_BRACKETS]:
+        for _ in range(OFFSET_SCAN_MAX_REFINEMENTS):
+            if right - left <= tolerance:
+                break
+            middle = (left + right) / 2
+            middle_share = estimate(middle)
+            if abs(middle_share - aim) < abs(best_share - aim):
+                best_share, best_offset = middle_share, middle
+            if (middle_share - aim) * (left_share - aim) <= 0:
+                right = middle
+            else:
+                left, left_share = middle, middle_share
+    return best_offset
 
 
 def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], pose: CameraPose,
@@ -484,6 +552,10 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
     target_entries = [(meshes[p.asset_key], p.world_from_model)
                       for p in targets if p.asset_key in meshes]
     target_shapes = _target_shapes(target_entries, pose, config.camera)
+    # World corners bound where the occluder may have to travel: the offset search scans this span
+    # so hollow targets are reachable at their rim, not only near their centre.
+    target_points = (np.vstack([transform_points(bounds_corners(mesh.bounds_m), matrix)
+                                for mesh, matrix in target_entries]) if target_entries else None)
     target_front = min((float(np.min((transform_points(bounds_corners(meshes[p.asset_key].bounds_m),
                                                      p.world_from_model) - camera) @ view))
                         for p in targets if p.asset_key in meshes), default=distance)
@@ -521,7 +593,8 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
             base = camera + view * depth
             direction = np.cos(angle) * right + np.sin(angle) * up
             center = base + direction * _aimed_offset(
-                base, direction, mesh, scale, target_shapes, pose, config, rng, apparent * ratio)
+                base, direction, mesh, scale, target_shapes, pose, config, rng, apparent * ratio,
+                target_points)
             matrix = np.eye(4)
             matrix[:3, :3] *= scale
             matrix[:3, 3] = center - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)

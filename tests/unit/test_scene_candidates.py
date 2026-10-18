@@ -599,6 +599,121 @@ def test_only_meshes_beyond_the_mask_budget_fall_back_to_the_hull():
         assert (len(shapes.hulls), len(shapes.masks)) == (1, 0), (mesh.key, len(shapes.hulls), len(shapes.masks))
 
 
+def _pixel_shares(config, meshes, pose, seeds=range(30)):
+    """Full-resolution pixel share of the target hidden by the first occluder, per seed.
+
+    This is the measure the renderer's own acceptance uses, not the sampler's estimate: the fine
+    shared grid can be twice the camera's resolution, so a window is only reachable if the coarse
+    image the dataset would ship shows the requested share.
+    """
+    target_mask = _raster(meshes["a"], np.eye(4), pose, config.camera)
+    assert 0 < target_mask.sum() < np.prod(target_mask.shape)
+    shares = []
+    for seed in seeds:
+        placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(seed), ())
+        assert isinstance(placements, list), (seed, placements)
+        occluder_mask = _raster(meshes["o"], placements[0].world_from_model, pose, config.camera)
+        shares.append(float((target_mask & occluder_mask).sum()) / float(target_mask.sum()))
+    return shares
+
+
+def test_a_small_occluder_on_a_hollow_frame_is_aimed_at_its_rim():
+    """A 1 %-sized occluder only covers anything at a 48-face frame's rim, not in its hole.
+
+    The reviewer's counterexample aimed 16 of 30 seeds into the window: the occluder's own half
+    width set the scan step, so a 0.5-1 % band next to the hole's edge was stepped over. The whole
+    projected span is now probed at a fixed minimum density and the crossing is bisected, so every
+    seed lands inside the window instead of on either shoulder of it.
+    """
+    config, meshes, pose = _frame_fixture(Range(.005, .01))
+    config = replace(config, occlusion=replace(config.occlusion, none_fraction=0.,
+                                               scale=Range(.1, .1)))
+    shares = _pixel_shares(config, meshes, pose)
+    assert len(shares) == 30
+    assert all(.005 <= share <= .01 for share in shares), shares
+    # Reaching the window at all proves the hole's centre was not treated as the whole target: a
+    # 4 cm occluder aimed there hides 0 %.
+    assert min(shares) > .005 and max(shares) < .01
+
+
+@pytest.mark.parametrize("window", [Range(.25, .35)])
+def test_a_narrow_high_window_on_a_six_face_u_target_holds_for_every_seed(window):
+    """A 25-35 % window on the low-face U must not drop to 21 of 30 seeds again.
+
+    The U's opening makes the coverage rise steeply, so a coarse scan spaced by the occluder's own
+    width stepped from 0 % straight past the window and kept the nearest shoulder sample.
+    """
+    config, meshes, pose = _u_fixture(window)
+    shapes = _target_shapes([(meshes["a"], np.eye(4))], pose, config.camera)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1), (len(shapes.hulls), len(shapes.masks))
+    shares = _pixel_shares(config, meshes, pose)
+    assert len(shares) == 30
+    assert all(window.minimum <= share <= window.maximum for share in shares), shares
+
+
+def _solid_box_fixture(window, occluder_side):
+    """A plain solid part: a 100 x 100 x 10 mm block and a smaller occluder box, top view."""
+    meshes = {"a": make_box("a", (-.05, -.05, -.005), (.05, .05, .005)),
+              "o": make_box("o", (-occluder_side / 2, -occluder_side / 2, -.002),
+                            (occluder_side / 2, occluder_side / 2, .002))}
+    config = ProjectConfig(
+        targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
+        occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
+        regions=(RegionSpec(radius_m=Range(.5, .5), azimuth=Azimuth(0, 0, False),
+                            elevation_deg=Range(90, 90)),),
+        occlusion=OcclusionSpec(none_fraction=1., ratio=window, count=(1, 1),
+                                scale=Range(1., 1.)))
+    pose = CameraPose(np.eye(4), np.array([0., 0., .5]), .5, 0., 0., .005, 50.)
+    return config, meshes, pose
+
+
+@pytest.mark.parametrize("window, occluder_side", [(Range(.05, .15), .04), (Range(.8, .9), .12)])
+def test_an_ordinary_solid_part_keeps_its_low_and_high_windows(window, occluder_side):
+    """The scan change must not disturb an ordinary solid target at either end of the range."""
+    config, meshes, pose = _solid_box_fixture(window, occluder_side)
+    shares = _pixel_shares(config, meshes, pose)
+    assert len(shares) == 30
+    assert all(window.minimum <= share <= window.maximum for share in shares), shares
+
+
+def _eccentric_hole_fixture(window):
+    """The same frame with its 30 x 30 mm opening away from the middle of the plate."""
+    outer, half_z = .05, .005
+    (x0, y0), (x1, y1) = (-.01, -.03), (.02, .0)
+    parts = [((-outer, -outer, -half_z), (outer, y0, half_z)),
+             ((-outer, y1, -half_z), (outer, outer, half_z)),
+             ((-outer, y0, -half_z), (x0, y1, half_z)),
+             ((x1, y0, -half_z), (outer, y1, half_z))]
+    vertices, faces, offset = [], [], 0
+    for low, high in parts:
+        part_vertices, part_faces = box_surface(low, high)
+        vertices.append(part_vertices)
+        faces.append(part_faces + offset)
+        offset += len(part_vertices)
+    vertices, faces = np.vstack(vertices), np.vstack(faces)
+    meshes = {"a": MeshData("a", vertices, faces, None,
+                            np.array([vertices.min(axis=0), vertices.max(axis=0)])),
+              "o": make_box("o", (-.02, -.02, -.002), (.02, .02, .002))}
+    config = ProjectConfig(
+        targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
+        occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
+        regions=(RegionSpec(radius_m=Range(.5, .5), azimuth=Azimuth(0, 0, False),
+                            elevation_deg=Range(90, 90)),),
+        occlusion=OcclusionSpec(none_fraction=1., ratio=window, count=(1, 1),
+                                scale=Range(1., 1.)))
+    pose = CameraPose(np.eye(4), np.array([0., 0., .5]), .5, 0., 0., .005, 50.)
+    return config, meshes, pose
+
+
+@pytest.mark.parametrize("window", [Range(.05, .15), Range(.25, .35)])
+def test_an_eccentric_hole_is_aimed_by_its_own_rims(window):
+    """An opening away from the middle is why the scan is over the span, not around the centre."""
+    config, meshes, pose = _eccentric_hole_fixture(window)
+    shares = _pixel_shares(config, meshes, pose)
+    assert len(shares) == 30
+    assert all(window.minimum <= share <= window.maximum for share in shares), shares
+
+
 @pytest.mark.parametrize("window", [Range(.25, .35), Range(.05, .15), Range(.8, .9)])
 def test_a_low_face_concave_target_is_aimed_by_its_real_outline(window):
     """Aiming a six-face U by its hull over-covers; the rasterised opening keeps it in the window."""

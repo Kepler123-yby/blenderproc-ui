@@ -9,6 +9,7 @@ import numpy as np
 
 from bproc_core.masks import occlusion_ratio
 from bproc_core.occlusion import effective_occlusion_range, occlusion_accepted
+from bproc_core.scale_groups import MIXED_SCALE_FACTOR, target_extents
 from bproc_core.scene import LAYOUT_RETRY_REASONS, Rejection, propose_candidate, sample_scene
 from .records import FrameRef, RunSummary
 
@@ -20,21 +21,6 @@ class FrameWriter(Protocol):
 
 class RunTerminated(BaseException):
     pass
-
-
-#: Target size ratio above which one dataset cannot honestly describe every object.
-MIXED_SCALE_FACTOR = 10.0
-
-
-def target_extents(config, meshes) -> list[float]:
-    """Largest bounding-box side per enabled target, in metres."""
-    extents = []
-    for target in config.targets:
-        if not target.enabled or target.asset.key not in meshes:
-            continue
-        bounds = np.asarray(meshes[target.asset.key].bounds_m, dtype=float)
-        extents.append(float((bounds[1] - bounds[0]).max()))
-    return extents
 
 
 def warn_mixed_scale(config, meshes, recorder) -> float:
@@ -54,10 +40,10 @@ def warn_mixed_scale(config, meshes, recorder) -> float:
     if config.occlusion.ratio.minimum > 0:
         recorder.warn("mixed_scale_occlusion",
                       f"启用目标尺寸相差 {ratio:.0f}×，同一个遮挡比例窗口〔{config.occlusion.ratio.minimum:g}–"
-                      f"{config.occlusion.ratio.maximum:g}〕无法同时适配最大与最小目标；先按尺度分组分别生成")
+                      f"{config.occlusion.ratio.maximum:g}〕无法同时适配最大与最小目标；先按尺度分组分别生成（tools/export_by_scale.py）")
     recorder.warn("mixed_scale_tolerance",
                   f"启用目标尺寸相差 {ratio:.0f}×，BOP GT 深度容差按最小目标取值（更严），"
-                  "大目标标注同样使用该容差；如需各自容差请按尺度拆分数据集")
+                  "大目标标注同样使用该容差；如需各自容差请用 tools/export_by_scale.py 拆分数据集")
     return ratio
 
 

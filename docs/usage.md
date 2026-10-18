@@ -109,6 +109,18 @@ conda run --no-capture-output -n bop python /任务目录/run_job.py
 
 `--output` 是父目录，最终路径为 `<父目录>/<dataset_name>`。试渲染和完整任务必须采用不同最终目录。`--format rgb_masks|bop` 可以临时切换格式，并重新检查所需依赖。UI 仅复制命令，不执行渲染。
 
+启用目标的最长边相差超过 10× 时，一个数据集只能有一份 BOP GT 深度容差和一份遮挡比例窗口，无法同时服务最小与最大目标。用分组入口按尺寸拆分：
+
+```bash
+# 先看分组，不写任务目录
+.venv/bin/python tools/export_by_scale.py project.yaml .artifacts/render_job --dry-run
+
+# 导出：普通项目仍是一个任务；混尺度项目生成 render_job-size-1、render_job-size-2 …
+.venv/bin/python tools/export_by_scale.py project.yaml .artifacts/render_job
+```
+
+每组只保留该尺度段的目标，数据集名同步加 `-size-N` 后缀，任务之间互不覆盖。相机、灯光、深度编码和绝对米制参数保持原配置，不会自动缩放；如果某组不含原渲染中心，该组最大目标会成为新中心，其余目标偏移按新中心的名义偏移平移，保持相对布局。需要更近的取景时，导出后分别编辑各组 `scene.yaml` 的机位范围。
+
 两个计数选项互斥，都从启动器透传到预检与渲染：
 
 - `--num-scenes N` 只渲染前 N 个场景，每个场景的视角数不变；试渲染默认用它（`--num-scenes 1`）。

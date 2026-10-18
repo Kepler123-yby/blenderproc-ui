@@ -9,6 +9,7 @@ import shutil
 from bproc_core.config import ConfigError, ProjectConfig, validate_project
 from bproc_core.assets import load_mesh, AssetError
 from bproc_core.project_io import save_project
+from bproc_core.scale_groups import split_by_scale
 from .commands import build_command
 
 
@@ -105,3 +106,20 @@ def export_job(config: ProjectConfig, destination: Path) -> ExportResult:
     return ExportResult(destination, build_command(destination, config.runtime.conda_env),
                         build_command(destination, config.runtime.conda_env, num_scenes=1,
                                       output=config.output.root / 'preview'))
+
+
+def export_grouped_jobs(config, meshes, destination) -> list[ExportResult]:
+    """Export one job per target-size class; ordinary projects still produce exactly one job.
+
+    Jobs are written next to the requested directory (``<name>-size-1``, ``<name>-size-2``, ...)
+    so the caller's "new job directory" convention is preserved. Dataset names are suffixed the
+    same way by :func:`bproc_core.scale_groups.split_by_scale`.
+    """
+    destination = Path(destination).expanduser()
+    groups = split_by_scale(config, meshes)
+    results = []
+    for group in groups:
+        target = (destination if len(groups) == 1
+                  else destination.with_name(f"{destination.name}-size-{group.index + 1}"))
+        results.append(export_job(group.config, target))
+    return results

@@ -48,7 +48,7 @@
 | 9 | 未开始/部分初始化时无终结状态 | `1d9ab97` | `run_project` 单独报告 `not_started`，`finish` 兜底，CLI 只终结一次 | `test_runtime_lifecycle.py`；真实 SIGINT 130 / SIGTERM 143 |
 | 10 | 元数据二次方增长 | `831093a` | `frames.jsonl` 追加 + `manifest.json` 仅 finish 写，reader 交叉校验 | 100/200/400 帧 256 KB/512 KB/1 MB 线性 |
 | 11 | 导出阻塞 UI、结果可能属于旧项目 | `ea5dba3` | 工作线程导出；命令仅在配置+路径+revision 仍是当前时显示 | 996,000 面模型 2.79 s、390 次心跳（约 140/s） |
-| 12 | 旧参数/文档/证据不一致 | `1899222` | `--num-scenes` 与 `--num-samples` 互斥、警告不阻断、`docs/acceptance-2026-10-22.md` | 四个任务全部用新参数预检通过 |
+| 12 | 旧参数/文档/证据不一致 | `1899222` | `--num-scenes` 与 `--num-samples` 互斥、警告不阻断、§"本轮修复的验收"写入 `docs/validation.md` | 四个任务全部用新参数预检通过 |
 
 ---
 

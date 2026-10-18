@@ -27,7 +27,6 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
     failures = Counter()
     interrupted = fatal = False
     exit_code = 0
-    began = False
     old_handlers = {}
     committing = False
     rendering = False
@@ -72,7 +71,6 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
             old_handlers[signum] = signal.signal(signum, interrupt)
     try:
         recorder.begin(config)
-        began = True
         native_call(backend.prepare, config, meshes)
         for scene_index in range(config.scene_count):
             def layout_rejected(layout_attempt_index, rejection, scene_index=scene_index):
@@ -169,8 +167,14 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
     summary = RunSummary(status, config.total_shots, written, saved,
                          config.total_shots - saved, dict(failures), exit_code)
     try:
-        if began:
-            recorder.finish(summary)
+        recorder.finish(summary)
+    except Exception as error:
+        # The dataset is already reserved, so a failure here must still be visible.
+        print(f"写入最终状态失败：{type(error).__name__}: {error}", flush=True)
+        if not fatal:
+            summary = RunSummary("failed", config.total_shots, written, saved,
+                                 config.total_shots - saved,
+                                 {**summary.failures_by_reason, "status:" + type(error).__name__: 1}, 1)
     finally:
         for signum, previous in old_handlers.items():
             # Blender may have installed a C handler which Python represents as

@@ -52,6 +52,8 @@ class JsonRunRecorder:
         self._frames = []
         self._started = None
         self._world = None
+        self.begun = False
+        self.finished = False
 
     def begin(self, config) -> None:
         from bproc_core.config import world_metadata
@@ -69,6 +71,7 @@ class JsonRunRecorder:
              "source": str(t.asset.path), "unit": t.asset.unit}
             for t in config.targets if t.enabled])
         atomic_json(self.root / "manifest.json", self._manifest())
+        self.begun = True
 
     def _manifest(self) -> dict:
         return {"seed": self._config.seed, "world": self._world, "frames": self._frames}
@@ -80,6 +83,7 @@ class JsonRunRecorder:
                "occlusion_ratio": occlusion_ratio(evidence, anchor), "seed": self._config.seed}
         self._frames.append(row)
         atomic_json(self.root / "manifest.json", self._manifest())
+        self.begun = True
 
     def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view") -> None:
         with (self.root / "rejections.jsonl").open("a", encoding="utf-8") as stream:
@@ -88,6 +92,25 @@ class JsonRunRecorder:
                                      "phase": phase}, ensure_ascii=False) + "\n")
 
     def finish(self, summary) -> None:
-        atomic_json(self.root / "status.json", {**asdict(summary), "world": self._world,
-                    "started_at": self._started,
-                    "finished_at": datetime.now(timezone.utc).isoformat()})
+        """Write the final status even when begin() only got partway through.
+
+        The dataset directory is already ours at this point, so leaving a stale "running"
+        marker would be worse than writing a status with unknown start time or world.
+        """
+        payload = {**asdict(summary), "finished_at": datetime.now(timezone.utc).isoformat()}
+        if self._started is not None:
+            payload["started_at"] = self._started
+        if self._world is not None:
+            payload["world"] = self._world
+        atomic_json(self.root / "status.json", payload)
+        self.finished = True
+
+
+def write_terminal_status(dataset: Path, status: str, failures=None, exit_code: int = 1,
+                          detail: str = "") -> None:
+    """Record a terminal status for a dataset whose run never reached run_project."""
+    payload = {"status": status, "exit_code": int(exit_code), "failures": dict(failures or {}),
+               "finished_at": datetime.now(timezone.utc).isoformat()}
+    if detail:
+        payload["detail"] = detail
+    atomic_json(Path(dataset) / "run_metadata" / "status.json", payload)

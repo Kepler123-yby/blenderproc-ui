@@ -52,6 +52,24 @@ def _initialize_report(width, height, meshes, near, far, ready):
         ready.put(f"{type(exc).__name__}: {exc}")
 
 
+def gt_delta(config, meshes) -> float:
+    """Depth tolerance for GT visibility, in metres.
+
+    BlenderProc defaults to 15 mm, which is fine for 10-30 cm objects but swallows whole
+    millimetre scenes: everything within 15 mm of the model counts as the object, so occluders
+    end up inside ``mask_visib``. Scale the tolerance with the largest enabled target and never
+    let it fall below two depth steps.
+    """
+    extent = 0.0
+    for target in config.targets:
+        if not target.enabled or target.asset.key not in meshes:
+            continue
+        bounds = meshes[target.asset.key].bounds_m
+        extent = max(extent, float((bounds[1] - bounds[0]).max()))
+    step = float(getattr(config.output, "depth_scale_mm", .1)) / 1000
+    return float(min(.015, max(2 * step, .05 * extent)))
+
+
 def finalize_bop(dataset_dir: Path, config, meshes, *, near_m=1e-6, far_m=1000.0) -> None:
     import trimesh
     if config.runtime.toolkit_path is not None:
@@ -75,10 +93,11 @@ def finalize_bop(dataset_dir: Path, config, meshes, *, near_m=1e-6, far_m=1000.0
             raise RuntimeError("EGL BOP worker did not initialize within 45 seconds") from exc
         if error:
             raise RuntimeError("EGL BOP worker initialization failed: " + error)
+        delta = gt_delta(config, meshes)
         utility.calc_gt_masks(pool=pool, chunk_dirs=chunks, starting_frame_id=0,
-                              annotation_scale=1000.0, delta=0.015)
+                              annotation_scale=1000.0, delta=delta)
         utility.calc_gt_info(pool=pool, chunk_dirs=chunks, starting_frame_id=0,
-                             annotation_scale=1000.0, delta=0.015)
+                             annotation_scale=1000.0, delta=delta)
         pool.close()
         pool.join()
     except BaseException:

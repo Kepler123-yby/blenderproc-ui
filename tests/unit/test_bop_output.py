@@ -6,6 +6,7 @@ import sys
 import os
 import signal
 import subprocess
+import tempfile
 import textwrap
 import numpy as np
 import pytest
@@ -102,3 +103,25 @@ def test_forked_initializer_timeout_worker_remains_terminable():
         stdout, stderr = child.communicate()
         pytest.fail('Pool worker ignored termination after initializer timeout: ' + stderr)
     assert child.returncode == 0 and 'clean shutdown' in stdout, stderr
+
+
+def test_gt_delta_scales_with_the_target_so_millimetre_scenes_stay_visible():
+    """A 15 mm default would make every millimetre pixel visible; the tolerance must follow size."""
+    from dataclasses import replace
+    from pathlib import Path
+
+    import numpy as np
+
+    from bproc_core.assets import MeshData
+    from bproc_runtime.bop_postprocess import gt_delta
+    from tests.factories import make_project
+
+    def mesh(extent):
+        corners = np.array([[x, y, z] for x in (0, extent) for y in (0, extent) for z in (0, extent)])
+        return MeshData("k", corners, np.zeros((0, 3), int), None, corners)
+
+    config = make_project(Path(tempfile.mkdtemp()))
+    target = config.targets[0]
+    project = replace(config, targets=(target,), occluders=())
+    assert gt_delta(project, {target.asset.key: mesh(.001)}) < .0005
+    assert gt_delta(project, {target.asset.key: mesh(.3)}) == pytest.approx(.015)

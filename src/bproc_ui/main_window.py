@@ -484,6 +484,8 @@ class MainWindow(QMainWindow):
                 self.settings.setValue("geometry", self.saveGeometry())
                 for key, splitter in (("horizontal", self.horizontal), ("vertical", self.vertical), ("right", self.right)):
                     self.settings.setValue(key, splitter.saveState())
+            # A search still in flight must not write a candidate into state after the editor is gone.
+            self.preview.close()
             self.camera_preview.hide()
             event.accept()
         else:

@@ -27,6 +27,9 @@ class ProjectState(QObject):
         # Bumped whenever the project behind the editor changes; background work compares it to
         # decide whether a finished result still describes what the user is looking at.
         self.context_revision = 0
+        # Geometry identity: loading, replacing or dropping meshes must invalidate results that
+        # were computed against the previous meshes even when the config stayed the same.
+        self.mesh_revision = 0
 
     def _touch_context(self):
         self.context_revision += 1
@@ -50,6 +53,7 @@ class ProjectState(QObject):
             self.edited_target_key = config.targets[0].asset.key if config.targets else None
         self.candidate = None
         self._touch_context()
+        self.mesh_revision += 1
         self._set_dirty(False)
         self.project_changed.emit()
         self.selection_changed.emit(self.edited_target_key)
@@ -84,6 +88,7 @@ class ProjectState(QObject):
         self._set_dirty(True)
         self.project_changed.emit()
         if stale:
+            self.mesh_revision += 1
             self.meshes_changed.emit()
         if not keep_candidate:
             self.candidate_changed.emit(None)
@@ -105,6 +110,7 @@ class ProjectState(QObject):
         if self.candidate is not None:
             self.candidate = None
             self.candidate_changed.emit(None)
+        self.mesh_revision += 1
         self.meshes_changed.emit()
 
     def set_candidate(self, candidate):

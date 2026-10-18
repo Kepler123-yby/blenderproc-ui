@@ -92,6 +92,8 @@ class PreviewController(QObject):
         self._token = 0
         self._search = None
         self._live = {}
+        self._request_context = None
+        self._closed = False
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(100)
@@ -100,13 +102,45 @@ class PreviewController(QObject):
         state.meshes_changed.connect(self.schedule)
 
     def schedule(self):
+        """Debounce the *new* search, but invalidate the old result immediately.
+
+        A debounce that only delays the next computation would leave the previous request's token
+        current, so a worker finishing inside the debounce window could still write a candidate
+        for the project the user just left.
+        """
+        if self._closed:
+            return  # a destroyed editor must not schedule work for project state it no longer shows
+        self._invalidate()
         self._timer.start()
 
     def waiting(self):
         """True while a search is in flight; the panels keep the previous candidate meanwhile."""
         return self._search is not None
 
+    def close(self):
+        """Stop accepting results; a destroyed editor must never write into project state.
+
+        Closing also has to stop the *future* work, not just the current result: the controller
+        stays connected to the state object, so a later edit would otherwise debounce into a new
+        search and let its empty-project path write ``set_candidate(None)``.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._timer.stop()
+        self._invalidate()
+
+    def _invalidate(self):
+        """Bump the token and cancel the in-flight search; older results are dropped on arrival."""
+        self._token += 1
+        if self._search is not None:
+            self._search.cancel()
+            self._search = None
+        self._request_context = None
+
     def refresh(self, region_key=None, sample_index=None, preview_seed=None):
+        if self._closed:
+            return None  # closed: no search, and no status or candidate write-back
         if region_key is not None:
             self.region_key = region_key
         if sample_index is not None:
@@ -121,7 +155,7 @@ class PreviewController(QObject):
             region = None if fixed else (config.regions[0] if config.regions else None)
             self.region_key = fixed.key if fixed else region.key if region else None
         if fixed is None and region is None or not config.targets:
-            self._cancel()
+            self._invalidate()
             self.state.set_candidate(None)
             self.status_changed.emit("导入目标并设置渲染中心，即可预览候选构图")
             return None
@@ -139,26 +173,28 @@ class PreviewController(QObject):
             preview_config = replace(config, camera_mode="random", regions=(region,), fixed_cameras=(),
                                      scene_count=1, seed=self.preview_seed)
         attempts = min(config.occlusion.max_attempts, 30)
-        self._cancel()
-        self._token += 1
-        search = _Search(self._token, preview_config, dict(self.state.meshes), view_index, attempts,
+        self._invalidate()
+        token = self._token
+        self._request_context = (self.state.context_revision, self.state.mesh_revision)
+        search = _Search(token, preview_config, dict(self.state.meshes), view_index, attempts,
                          SEARCH_DEADLINE_S)
         search.signals.done.connect(self._on_done)
         self._search = search
-        self._live[self._token] = search
+        self._live[token] = search
         self.status_changed.emit("正在计算候选构图…")
         QThreadPool.globalInstance().start(search)
         return None
 
-    def _cancel(self):
-        if self._search is not None:
-            self._search.cancel()
-            self._search = None
+    def _context_is_current(self):
+        return self._request_context == (self.state.context_revision, self.state.mesh_revision)
 
     def _on_done(self, token, result, outcome, timed_out):
         self._live.pop(token, None)
-        if token != self._token:
-            return  # superseded while it ran
+        if self._closed or token != self._token:
+            return  # closed, superseded or invalidated while it ran
+        if not self._context_is_current():
+            self._search = None
+            return  # the project or its meshes changed without a new search yet
         self._search = None
         if isinstance(outcome, Exception):
             self.state.set_candidate(None)

@@ -62,7 +62,9 @@ def read_frame_records(metadata_dir: Path, *, allow_incomplete_tail: bool = Fals
             rows = manifest.get("frames")
             if not isinstance(rows, list):
                 raise MetadataError("manifest.json 的 frames 不是列表")
-            final = manifest.get("final", False)
+            if "final" not in manifest:
+                raise MetadataError("manifest.json 缺少 final 字段（schema 2 要求显式写出）")
+            final = manifest.get("final")
             if not isinstance(final, bool):
                 raise MetadataError("manifest.json 的 final 不是布尔值")
             if final:

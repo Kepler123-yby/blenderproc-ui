@@ -2,7 +2,10 @@
 from dataclasses import replace
 from pathlib import Path
 import json
+import os
 import shutil
+import subprocess
+import sys
 import numpy as np
 import pytest
 from PIL import Image
@@ -17,9 +20,16 @@ from bproc_runtime.output import JsonRunRecorder, atomic_json, reserve_dataset
 from bproc_runtime.records import FrameRef, RunSummary
 from bproc_runtime.rgb_masks import RgbMasksWriter
 from tests.blender.check_rgb_masks import verify_rgb_masks
-from tests.blender.check_bop import verify_bop
+from tests.blender.check_bop import _depth_problems, _interior_mask, verify_bop
 from tests.blender.verify_runtime import verify_runtime
 from tests.factories import make_project
+
+
+def _depth_problem(errors):
+    """True when any diagnostic explains a depth/pose disagreement."""
+    markers = ("inconsistent units", "deviates by more than", "inside the mask lies outside")
+    return any(marker in error for error in errors for marker in markers)
+
 
 
 def fixture_scene(tmp_path, output_format):
@@ -405,7 +415,7 @@ def test_bop_checker_rejects_an_interior_depth_outlier(valid_bop_output):
 
     _edit_depth(valid_bop_output, corrupt)
     errors = verify_bop(valid_bop_output)
-    assert any("inconsistent units" in error for error in errors), errors
+    assert _depth_problem(errors), errors
 
 
 def test_bop_checker_counts_both_directions_against_one_budget(valid_bop_output):
@@ -420,7 +430,7 @@ def test_bop_checker_counts_both_directions_against_one_budget(valid_bop_output)
 
     _edit_depth(valid_bop_output, corrupt)
     errors = verify_bop(valid_bop_output)
-    assert any("inconsistent units" in error for error in errors), errors
+    assert _depth_problem(errors), errors
 
 
 def test_bop_checker_does_not_exempt_a_single_observed_depth(valid_bop_output):
@@ -438,7 +448,7 @@ def test_bop_checker_does_not_exempt_a_single_observed_depth(valid_bop_output):
     _edit_depth(valid_bop_output, trim)
     edit_json(scene / "scene_gt_info.json", lambda data: data["0"][0].update(px_count_valid=1))
     errors = verify_bop(valid_bop_output)
-    assert any("inconsistent units" in error for error in errors), errors
+    assert _depth_problem(errors), errors
 
 
 def test_bop_checker_rejects_a_shifted_depth_map(valid_bop_output):
@@ -448,4 +458,79 @@ def test_bop_checker_rejects_a_shifted_depth_map(valid_bop_output):
 
     _edit_depth(valid_bop_output, shift)
     errors = verify_bop(valid_bop_output)
-    assert any("inconsistent units" in error for error in errors), errors
+    assert _depth_problem(errors), errors
+
+
+def test_depth_rule_rejects_one_large_outline_error_on_a_big_mask():
+    """A pixel past the rasteriser amplitude is never covered by the one-percent budget."""
+    mask = np.ones((120, 160), bool)
+    interior = _interior_mask(mask)
+    depth = np.full((120, 160), .4)
+    depth[0, 0] = 6.5  # outside the model band and past the amplitude limit
+    problems = _depth_problems(depth, mask, interior, .35, .45, .01)
+    assert "amplitude" in problems
+
+
+def test_depth_rule_spends_one_budget_for_many_mild_outline_errors():
+    """Outline excursions inside the amplitude limit still add up against one percent."""
+    mask = np.zeros((10, 10), bool)
+    mask[2:8, 2:8] = True          # 36 observed pixels -> allowance of 1
+    interior = _interior_mask(mask)
+    depth = np.full((10, 10), .4)
+    depth[2, 2] = .345
+    depth[2, 7] = .345
+    problems = _depth_problems(depth, mask, interior, .35, .45, .01)
+    assert "budget" in problems
+
+
+def test_bop_checker_cli_entry_point_reports_pass_and_failure(valid_bop_output):
+    """The script entry point must work without importing the module first."""
+    repo = Path(__file__).resolve().parents[2]
+    script = repo / "tests" / "blender" / "check_bop.py"
+    env = {**os.environ, "PYTHONPATH": str(repo / "src")}
+
+    def run(root):
+        return subprocess.run([sys.executable, str(script), str(root)], capture_output=True,
+                              text=True, env=env)
+
+    good = run(valid_bop_output)
+    assert good.returncode == 0, good.stdout + good.stderr
+    assert "BOP: PASS" in good.stdout
+    assert "NameError" not in good.stderr
+
+    def shift(image):
+        positive = image > 0
+        image[positive] = np.clip(image[positive].astype(np.int64) + 500, 1, 65535)
+
+    _edit_depth(valid_bop_output, shift)
+    bad = run(valid_bop_output)
+    assert bad.returncode == 1
+    assert "NameError" not in bad.stderr
+    assert "PASS" not in bad.stdout
+
+
+def test_checkers_refuse_a_completed_run_without_a_final_manifest(valid_rgb_masks_output):
+    """A completed dataset must ship a schema 2 manifest with final=true and matching rows."""
+    manifest = valid_rgb_masks_output / "run_metadata" / "manifest.json"
+    original = json.loads(manifest.read_text())
+
+    def rewrite(mutate):
+        data = json.loads(json.dumps(original))
+        mutate(data)
+        manifest.write_text(json.dumps(data))
+
+    cases = {
+        "final=False": lambda data: data.update(final=False),
+        "final=False with no frames": lambda data: data.update(final=False, frames=[]),
+        "missing final": lambda data: data.pop("final", None),
+        "wrong first row": lambda data: data["frames"][0].update(scene_index=99),
+    }
+    for name, mutate in cases.items():
+        rewrite(mutate)
+        diagnostics = verify_rgb_masks(valid_rgb_masks_output)
+        assert diagnostics, name
+        assert any("final" in error or "不一致" in error or "最终快照" in error or "scene_index" in error
+                   for error in diagnostics), (name, diagnostics)
+
+    manifest.write_text(json.dumps(original))
+    assert verify_rgb_masks(valid_rgb_masks_output) == []

@@ -51,6 +51,10 @@ def verify_metadata(root: Path, *, require_complete=True):
         config = None
     if not isinstance(status, dict) or not isinstance(manifest, dict) or not isinstance(objects, list) or config is None:
         return errors or ["Metadata documents have invalid types"], config, status, []
+    from bproc_runtime.metadata import SCHEMA_VERSION
+    if status.get("status") == "completed" and (manifest.get("schema_version") != SCHEMA_VERSION
+                                                or manifest.get("final") is not True):
+        errors.append("status=completed 但 manifest 不是最终快照（schema 2 且 final=true）")
     try:
         # Historical datasets used ``request_index`` before scenes and views existed. That is a
         # different format, not corrupt data, so report it once before any counter arithmetic.

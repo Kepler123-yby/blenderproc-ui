@@ -263,26 +263,27 @@ def verify_bop(root: Path) -> list[str]:
                         # Native BOP visibility includes some pixels with missing
                         # observed depth; zero means unavailable, never zero meters.
                         measured_mask = visible & (depth_m > 0)
-                        measured = depth_m[measured_mask]
-                        margin_m = max(.001, config.output.depth_scale_mm / 1000 * 2)
-                        lowest = points_cv_mm[:, 2].min() / 1000 - margin_m
-                        highest = points_cv_mm[:, 2].max() / 1000 + margin_m
-                        if not measured.size:
+                        if not measured_mask.any():
                             errors.append(f"BOP {pair} object {obj_id}: no positive observed depth in visible mask")
                             continue
-                        # Interior pixels must sit inside the posed model bounds: they are not on
-                        # the rasterised silhouette, so a unit or scaling error always shows here.
-                        # Edge pixels may sample slightly past the bound; they share one budget of
-                        # one percent of the mask, counted in both directions, and masks too small
-                        # to have an interior get no budget at all.
+                        # The rasteriser samples the model surface, so a band of two depth steps
+                        # around the posed range is physically explainable; anything past that
+                        # still has to fit the silhouette budget, and past the amplitude limit it
+                        # is a unit or scaling error regardless of how few pixels are involved.
+                        step_m = float(getattr(config.output, "depth_scale_mm", 100)) / 1000
                         span = max(abs(points_cv_mm[:, 2].max() - points_cv_mm[:, 2].min()) / 1000, 1e-6)
-                        tolerance = max(config.output.depth_scale_mm / 1000, span * .01)
-                        interior = _interior_mask(visible)
-                        outside = measured_mask & ((depth_m < lowest) | (depth_m > highest))
-                        beyond = measured_mask & ((depth_m < lowest - tolerance) | (depth_m > highest + tolerance))
-                        allowance = 0 if measured.size < 20 else max(1, int(measured.size * .01))
-                        if (outside & interior).any() or int(beyond.sum()) > allowance:
-                            errors.append(f"BOP {pair} object {obj_id}: PNG depth and model pose use inconsistent units")
+                        amplitude = max(.002, span * .01)
+                        lowest = points_cv_mm[:, 2].min() / 1000 - 2 * step_m
+                        highest = points_cv_mm[:, 2].max() / 1000 + 2 * step_m
+                        problems = _depth_problems(depth_m, measured_mask, _interior_mask(visible),
+                                                   lowest, highest, amplitude)
+                        for problem in problems:
+                            if problem == "amplitude":
+                                errors.append(f"BOP {pair} object {obj_id}: observed depth deviates by more than {amplitude * 1000:.1f} mm from the posed model")
+                            elif problem == "interior":
+                                errors.append(f"BOP {pair} object {obj_id}: a pixel inside the mask lies outside the model depth range")
+                            else:
+                                errors.append(f"BOP {pair} object {obj_id}: PNG depth and model pose use inconsistent units")
                 gt_frame_count += 1
             except Exception as exc:
                 errors.append(f"BOP frame {row.get('frame_index', '?')}: {type(exc).__name__}: {exc}")
@@ -305,15 +306,6 @@ def check_bop(root: Path, expected_ids=None) -> dict:
     return {"frames": status["saved"], "object_ids": ids}
 
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("dataset", type=Path)
-    diagnostics = verify_bop(parser.parse_args().dataset)
-    print("\n".join(diagnostics) if diagnostics else "BOP: PASS")
-    raise SystemExit(1 if diagnostics else 0)
-
-
 def _interior_mask(mask):
     """Pixels whose four neighbours are all inside the mask, i.e. not on its outline."""
     inner = mask.copy()
@@ -322,3 +314,33 @@ def _interior_mask(mask):
     inner[:, 1:] &= mask[:, :-1]
     inner[:, :-1] &= mask[:, 1:]
     return inner
+
+
+
+def _depth_problems(depth_m, measured_mask, interior, lowest, highest, amplitude):
+    """Classify depth-pose disagreements.
+
+    ``amplitude`` is the largest excursion the rasteriser can explain; anything past it is a unit
+    or scaling error wherever it sits. Inside that amplitude, outline pixels share one budget of
+    one percent of the mask (counted in both directions) while interior pixels get no allowance.
+    """
+    problems = []
+    outside = measured_mask & ((depth_m < lowest) | (depth_m > highest))
+    if (measured_mask & ((depth_m < lowest - amplitude) | (depth_m > highest + amplitude))).any():
+        problems.append("amplitude")
+    if (outside & interior).any():
+        problems.append("interior")
+    allowance = 0 if int(measured_mask.sum()) < 20 else max(1, int(measured_mask.sum() * .01))
+    if int((outside & ~interior).sum()) > allowance:
+        problems.append("budget")
+    return problems
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("dataset", type=Path)
+    diagnostics = verify_bop(parser.parse_args().dataset)
+    print("\n".join(diagnostics) if diagnostics else "BOP: PASS")
+    raise SystemExit(1 if diagnostics else 0)
+

@@ -195,26 +195,70 @@ def write_bop_models(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpe
         stream.write("\n")
 
 
-def suggest_ranges(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec], camera: CameraSpec) -> tuple[Box, Range]:
-    """Conservative editable placement and distance suggestions for all targets."""
-    active = [t for t in targets if t.enabled and t.asset.key in meshes]
-    if not active:
-        return Box(), Range(0.5, 0.8)
-    extents = [np.ptp(meshes[t.asset.key].bounds_m, axis=0) for t in active]
-    largest = np.max(extents, axis=0)
-    # Scale with the asset: a 2 cm floor would frame a millimetre part from across the room.
-    # The offsets only need variety, not room: a wide spread used to push the camera 17× the
-    # object's own footprint away, which made the orbit unusable for debugging.
-    spread = float(max(largest.max() * .15 * max(1., math.sqrt(len(extents))), 1e-5))
-    box = Box(Range(-spread, spread), Range(-spread, spread), Range(-0.35 * spread, 0.35 * spread))
-    # Frame the box this suggestion is about to create: the offsets above plus the largest target.
-    half = np.asarray(largest, dtype=float) / 2 + spread
-    if not (half > 0).any():
-        return box, Range(0.5, 0.8)
-    # Corner projection, not the bounding-sphere shortcut: the sphere put the camera so close
-    # that two targets side by side left the frame on 90% of the cameras drawn from the region.
-    minimum = fit_distance(np.stack((-half, half)), camera, azimuths_deg=(-20., 0., 20.), fill=.85)
-    return box, Range(minimum, minimum * 1.35)
+LAYOUT_GAP_FRACTION = .1
+
+
+def framing_band(bounds_m: np.ndarray, camera: CameraSpec) -> Range:
+    """Distance window that keeps the whole box in frame while the camera sweeps its region."""
+    minimum = fit_distance(bounds_m, camera, azimuths_deg=(-20., 0., 20.), fill=.85)
+    return Range(minimum, minimum * 1.35)
+
+
+def suggest_layout(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec], anchor_key: str,
+                   camera: CameraSpec) -> tuple[dict[str, Box], Range]:
+    """Per-target offset ranges that cannot overlap, plus the distance they need to stay framed.
+
+    A single shared box for every target let two 10 cm cubes land on the same spot, so the sampler
+    rejected whole scenes as collisions. The render centre now stays at the origin and each other
+    target owns an X band on its own side of it, ordered by the target list: the nearest face of a
+    band always keeps ``LAYOUT_GAP_FRACTION`` of the largest target clear of the previous one, so
+    no sample can produce overlapping AABBs whatever the Y/Z jitter does.
+
+    Returns a mapping for the enabled targets only; disabled targets keep their authored offsets.
+    """
+    enabled = [target for target in targets if target.enabled]
+    if not enabled:
+        raise ValueError("至少需要一个启用的目标")
+    missing = [target.asset.key for target in enabled if target.asset.key not in meshes]
+    if missing:
+        raise ValueError("目标网格未载入：" + "、".join(missing))
+    anchor_index = next((index for index, target in enumerate(enabled)
+                         if target.asset.key == anchor_key), None)
+    if anchor_index is None:
+        raise ValueError("渲染中心必须是启用的目标")
+    extents = {target.asset.key: np.ptp(meshes[target.asset.key].bounds_m, axis=0) for target in enabled}
+    largest = max(float(extent.max()) for extent in extents.values())
+    if largest <= 0:
+        raise ValueError("目标的包围盒为空")
+    gap = largest * LAYOUT_GAP_FRACTION
+    jitter_y = largest * .15
+    anchor_half = extents[enabled[anchor_index].asset.key][0] / 2
+    # The render centre is the reference point every other target is placed around; a jittered
+    # anchor would move the whole layout and make the offsets below meaningless.
+    boxes = {enabled[anchor_index].asset.key: Box(Range(0., 0.), Range(0., 0.), Range(0., 0.))}
+    left_edge, right_edge = -anchor_half - gap, anchor_half + gap
+    for index, target in enumerate(enabled):
+        if index == anchor_index:
+            continue
+        half = extents[target.asset.key][0] / 2
+        width = max(largest * .5, 2 * half)
+        jitter = Range(-jitter_y, jitter_y)
+        depth = Range(-.35 * jitter_y, .35 * jitter_y)
+        if index < anchor_index:
+            near = left_edge - half - width
+            boxes[target.asset.key] = Box(Range(near, near + width), jitter, depth)
+            left_edge = near - half - gap
+        else:
+            near = right_edge + half
+            boxes[target.asset.key] = Box(Range(near, near + width), jitter, depth)
+            right_edge = near + width + half + gap
+    low, high = np.full(3, np.inf), np.full(3, -np.inf)
+    for target in enabled:
+        box = boxes[target.asset.key]
+        half = extents[target.asset.key] / 2
+        low = np.minimum(low, np.array([box.x.minimum, box.y.minimum, box.z.minimum]) - half)
+        high = np.maximum(high, np.array([box.x.maximum, box.y.maximum, box.z.maximum]) + half)
+    return boxes, framing_band(np.stack((low, high)), camera)
 
 
 def content_bounds(meshes: Mapping[str, MeshData], targets: Sequence[TargetSpec]) -> np.ndarray | None:

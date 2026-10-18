@@ -263,8 +263,8 @@ class SamplingPanel(QWidget):
 
         Fitting the render centre alone put the whole region inside the content, because other
         targets sit at random offsets around it, and every candidate then failed ``out_of_frame``.
-        ``suggest_ranges`` already accounts for the offsets and the target sizes, so reuse it
-        instead of inventing a second distance rule that disagrees with the import wizard.
+        ``content_bounds`` already accounts for the offsets and the target sizes, so reuse the
+        same rule instead of inventing a second distance rule that disagrees with the wizard.
         """
         bounds = content_bounds(self.state.meshes, self.state.config.targets)
         if bounds is None:
@@ -376,7 +376,7 @@ class SamplingPanel(QWidget):
 
         Without this, opening a project whose radius was sized for a metre-scale asset shows a
         region sphere several times larger than the imported mesh. The replacement band comes
-        from ``suggest_ranges``, so reopening a project converges instead of shrinking again.
+        from ``assets.framing_band``, so reopening a project converges instead of shrinking again.
         """
         targets = [t for t in self.state.config.targets if t.enabled and t.asset.key in self.state.meshes]
         if not targets:

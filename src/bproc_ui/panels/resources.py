@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QComboBox, QPush
                                QAbstractItemView, QFileDialog, QMessageBox)
 
 from bproc_core.config import AssetSpec, TargetSpec, Box
-from bproc_core.assets import suggest_ranges
+from bproc_core.assets import suggest_layout
 from bproc_ui.asset_loader import AssetLoader
 from bproc_ui.widgets import integer, RangeEditor, section, note, row
 
@@ -240,12 +240,15 @@ class ResourcesPanel(QWidget):
             self.apply_offsets_to_selected(self._target().offset)
 
     def restore_suggestions(self):
+        """Give every enabled target its own feasible offsets and a distance that frames them all."""
         try:
             enabled = [t for t in self.state.config.targets if t.enabled]
             if not enabled or any(t.asset.key not in self.state.meshes for t in enabled):
                 raise ValueError("请先等待所有启用目标载入完成")
-            box, radius = suggest_ranges(self.state.meshes, enabled, self.state.config.camera)
-            self.state.update(targets=tuple(replace(t, offset=box) for t in self.state.config.targets),
+            boxes, radius = suggest_layout(self.state.meshes, enabled, self.state.config.anchor_key,
+                                           self.state.config.camera)
+            self.state.update(targets=tuple(replace(t, offset=boxes[t.asset.key]) if t.asset.key in boxes else t
+                                            for t in self.state.config.targets),
                               regions=tuple(replace(r, radius_m=radius) for r in self.state.config.regions))
         except (ValueError, KeyError) as error:
             self._show_error(error)

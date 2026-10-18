@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from bproc_core.assets import AssetError, load_mesh, mesh_diameter_m, suggest_ranges, write_bop_models
-from bproc_core.config import AssetSpec, CameraSpec, TargetSpec
+from bproc_core.assets import AssetError, load_mesh, mesh_diameter_m, suggest_layout, write_bop_models
+from bproc_core.config import AssetSpec, Box, CameraSpec, Range, TargetSpec
 from tests.factories import make_mesh, write_mesh
 
 
@@ -64,9 +64,9 @@ def test_size_suggestions_account_for_all_targets_and_camera_fov(tmp_path):
     small = make_mesh("small", size=.02)
     large = make_mesh("large", size=.2)
     targets = [TargetSpec(AssetSpec(k, tmp_path / (k + ".ply")), k, i) for i, k in enumerate(("small", "large"), 1)]
-    box, radius = suggest_ranges({"small": small, "large": large}, targets, CameraSpec())
-    _, close_radius = suggest_ranges({"small": small}, targets[:1], CameraSpec())
-    assert box.x.minimum < 0 < box.x.maximum
+    boxes, radius = suggest_layout({"small": small, "large": large}, targets, "small", CameraSpec())
+    _, close_radius = suggest_layout({"small": small}, targets[:1], "small", CameraSpec())
+    assert boxes["small"] == Box(Range(0., 0.), Range(0., 0.), Range(0., 0.))
     assert radius.minimum > close_radius.minimum > 0
     assert radius.maximum > radius.minimum
 
@@ -74,6 +74,6 @@ def test_size_suggestions_account_for_all_targets_and_camera_fov(tmp_path):
 def test_size_suggestions_stay_close_for_millimetre_models(tmp_path):
     tiny = make_mesh("tiny", size=.001)
     target = TargetSpec(AssetSpec("tiny", tmp_path / "tiny.ply"), "tiny", 1)
-    _, radius = suggest_ranges({"tiny": tiny}, [target], CameraSpec())
+    _, radius = suggest_layout({"tiny": tiny}, [target], "tiny", CameraSpec())
     assert radius.minimum < .01
     assert radius.maximum / radius.minimum == pytest.approx(1.35)

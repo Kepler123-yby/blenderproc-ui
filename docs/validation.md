@@ -41,7 +41,8 @@
 | 场景内摆放固定、机位随机 | `scene_count: 2`、`views_per_scene: 3`、1 个区域：6 张全部 saved，同场景三帧的 `placements` 与 `light` 完全一致，`azimuth_deg` 分别为 −22.0° / 137.4° / 154.7°，退出码 0 |
 | 无遮挡物时的遮挡要求 | 修掉空遮挡物清单下“ratio 永远到不了下限”的死循环：5 / 5 帧写出，`rejections.jsonl` 为空 |
 | 遮挡物覆盖目标 | `.artifacts/demo/workspace.yaml` 渲染 2 帧：遮挡率 0.198 / 0.426（窗口 0.1–0.5），2/2 写出；修复前同一项目 30/30 次因 `occlusion` 被拒、0 帧 |
-| 机位距离随模型缩放 | `fit_radius_m` 与归一化包围盒成正比；`suggest_ranges` 不再把 1 mm 模型放到 5 cm 之外 |
+| 机位距离随模型缩放 | `fit_radius_m` 与归一化包围盒成正比；`suggest_layout` 的 `framing_band` 不再把 1 mm 模型放到 5 cm 之外 |
+| 建议范围可摆放多目标 | `suggest_layout` 给每个启用目标独立的 X 区间（间隔 ≥ 最大目标尺寸 10%），250 组抽样 0 次 AABB 重叠；相机距离按全部目标联合包围盒的角点投影求解 |
 
 测试演示由本地 Blender 生成 HDRI，并使用偏置 CAD 原点的 mm / cm 目标及 m 遮挡物；单元测试另覆盖三种单位。演示是合成网格，尚未使用用户自己的生产模型和 Haven 资源批量验证。
 

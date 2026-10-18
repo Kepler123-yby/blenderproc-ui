@@ -25,8 +25,8 @@ def test_preview_impossible_layout_is_bounded_and_clears_candidate(state, monkey
         calls.append(attempt)
         return Rejection("collision", "overlap")
     monkeypatch.setattr("bproc_ui.preview.propose_candidate", reject)
-    monkeypatch.setattr("bproc_ui.preview.propose_scene",
-                        lambda config, meshes, index: SimpleNamespace(scene_index=index))
+    monkeypatch.setattr("bproc_ui.preview.sample_scene",
+                        lambda config, meshes, index, **kwargs: SimpleNamespace(scene_index=index))
     controller = PreviewController(state)
     state.set_candidate(object())
     assert controller.refresh() is None

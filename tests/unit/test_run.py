@@ -43,7 +43,8 @@ class Recorder:
     def __init__(self): self.frames=[]; self.rejections=[]; self.summary=None
     def begin(self,c): pass
     def record_frame(self,ref,c,e): self.frames.append(ref)
-    def record_rejection(self,*values): self.rejections.append(values)
+    def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view"):
+        self.rejections.append((scene_index, view_index, attempt_index, reason, phase))
     def finish(self,s): self.summary=s
 
 
@@ -52,11 +53,21 @@ def candidate(c,m,scene,view,attempt):
                            wants_unoccluded=True)
 
 
-def stub_scene(monkeypatch):
-    """Every scene index maps to a usable scene state so camera proposals are reached."""
+def stub_scene(monkeypatch, rejected=None):
+    """Every scene index maps to a usable scene state so camera proposals are reached.
+
+    ``run_project`` now goes through ``sample_scene`` (which owns the layout retry budget), so the
+    stub has to intercept that call site rather than the inner ``propose_scene``.
+    """
     from bproc_core.scene import SceneState
     state = SceneState(0,(),None,1.,0.,None,True)
-    monkeypatch.setattr(runner,"propose_scene",lambda c,m,i: SimpleNamespace(scene_index=i, scene=state))
+
+    def sample(config, meshes, scene_index, *, on_rejection=None):
+        if rejected is not None and scene_index in rejected:
+            return Rejection("missing_mesh", "gone")
+        return SimpleNamespace(scene_index=scene_index, scene=state, placements=(), material=None,
+                               layout_attempt_index=0)
+    monkeypatch.setattr(runner, "sample_scene", sample)
 
 
 def test_retry_budget_shared(monkeypatch):
@@ -66,7 +77,7 @@ def test_retry_budget_shared(monkeypatch):
     r=runner.run_project(project(),{},backend,Writer(),recorder)
     assert (r.status,r.saved,r.skipped,r.exit_code)==("partial",0,2,2)
     assert len(recorder.rejections)==60
-    assert recorder.rejections[-1]==(1,0,29,"collision") and backend.closed
+    assert recorder.rejections[-1]==(1,0,29,"collision","view") and backend.closed
 
 
 def test_partial_is_not_success(monkeypatch):

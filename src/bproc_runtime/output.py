@@ -81,11 +81,11 @@ class JsonRunRecorder:
         self._frames.append(row)
         atomic_json(self.root / "manifest.json", self._manifest())
 
-    def record_rejection(self, scene_index, view_index, attempt_index, reason) -> None:
+    def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view") -> None:
         with (self.root / "rejections.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps({"scene_index": scene_index, "view_index": view_index,
-                                     "attempt_index": attempt_index, "reason": reason},
-                                    ensure_ascii=False) + "\n")
+                                     "attempt_index": attempt_index, "reason": reason,
+                                     "phase": phase}, ensure_ascii=False) + "\n")
 
     def finish(self, summary) -> None:
         atomic_json(self.root / "status.json", {**asdict(summary), "world": self._world,

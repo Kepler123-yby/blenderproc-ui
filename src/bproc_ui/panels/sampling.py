@@ -120,12 +120,15 @@ class SamplingPanel(QWidget):
         form = section("数据集采样", layout)
         self.scene_count = integer(250, 0, 1000000)
         self.views = integer(4, 1, 1000)
+        self.layout_attempts = integer(30, 1, 1000)
         self.seed = SeedEditor(42)
         self.scene_count.valueChanged.connect(lambda: self._counts_changed("scene_count"))
         self.views.valueChanged.connect(lambda: self._counts_changed("views_per_scene"))
+        self.layout_attempts.valueChanged.connect(lambda: self._counts_changed("layout_max_attempts"))
         self.seed.valueChanged.connect(lambda: self._counts_changed("seed"))
         form.addRow("场景数", self.scene_count)
         form.addRow("每场景视角数", self.views)
+        form.addRow("场景布局尝试上限", self.layout_attempts)
         form.addRow("随机种子", self.seed)
         self.allocation = note("")
         form.addRow(self.allocation)
@@ -485,6 +488,8 @@ class SamplingPanel(QWidget):
             self.state.update(scene_count=self.scene_count.value())
         elif field == "views_per_scene":
             self.state.update(views_per_scene=self.views.value())
+        elif field == "layout_max_attempts":
+            self.state.update(layout_max_attempts=self.layout_attempts.value())
         else:
             self.state.update(seed=self.seed.value())
 
@@ -608,6 +613,7 @@ class SamplingPanel(QWidget):
         else:
             self.radius_note.setText("")
         self.scene_count.setValue(config.scene_count)
+        self.layout_attempts.setValue(config.layout_max_attempts)
         self.views.setValue(config.views)
         self.seed.setValue(config.seed)
         fixed_mode = config.camera_mode == "fixed"

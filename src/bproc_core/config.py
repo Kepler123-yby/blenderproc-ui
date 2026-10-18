@@ -193,6 +193,7 @@ class ProjectConfig:
     camera_mode: Literal["fixed", "random"] = "random"
     scene_count: int = 250
     views_per_scene: int = 4
+    layout_max_attempts: int = 30
     regions: tuple[RegionSpec, ...] = (RegionSpec(),)
     fixed_cameras: tuple[FixedCameraSpec, ...] = ()
     camera: CameraSpec = CameraSpec()
@@ -291,6 +292,7 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
     elif not config.fixed_cameras:
         issue("fixed_cameras", "固定机位模式至少需要一个机位")
     integer("seed", config.seed, 0)
+    integer("layout_max_attempts", config.layout_max_attempts, 1)
     enabled = [t for t in config.targets if t.enabled]
     if not enabled:
         issue("targets", "请添加至少一个启用的目标模型")

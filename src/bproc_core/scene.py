@@ -45,6 +45,7 @@ class SceneCandidate:
     wants_unoccluded: bool
     camera_kind: str = "random"
     material: MaterialState = MaterialState(.65, .5)
+    layout_attempt_index: int = 0
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,7 @@ class SceneState:
     light: LightState
     wants_unoccluded: bool
     material: MaterialState = MaterialState(.65, .5)
+    layout_attempt_index: int = 0
 
 
 @dataclass(frozen=True)
@@ -94,9 +96,10 @@ def nominal_radius(config: ProjectConfig) -> float:
     return float(np.mean(radii)) if radii else 1.0
 
 
-def propose_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_index: int) -> SceneState | Rejection:
+def propose_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_index: int,
+                  *, layout_attempt_index: int = 0) -> SceneState | Rejection:
     """Sample everything a scene keeps for all of its views: placement, occluders, lighting."""
-    rng = scene_rng(config.seed, scene_index)
+    rng = scene_rng(config.seed, scene_index, layout_attempt_index)
     targets = [t for t in config.targets if t.enabled]
     anchor = next((t for t in targets if t.asset.key == config.anchor_key), None)
     if anchor is None:
@@ -140,7 +143,34 @@ def propose_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_i
     return SceneState(scene_index, tuple(placements), hdri,
                       float(rng.uniform(config.hdri.strength.minimum, config.hdri.strength.maximum)),
                       float(rng.uniform(config.hdri.rotation_deg.minimum, config.hdri.rotation_deg.maximum)),
-                      light, wants_none, material)
+                      light, wants_none, material, layout_attempt_index)
+
+
+# Only a placement clash can be fixed by drawing a new layout; missing assets never can.
+LAYOUT_RETRY_REASONS = frozenset({"collision"})
+
+
+def sample_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_index: int,
+                 *, on_rejection=None) -> SceneState | Rejection:
+    """Draw a scene layout, retrying only collisions within its own bounded budget.
+
+    Each retry changes the layout seed, so a range that is too tight for one draw still has a
+    chance instead of dropping the whole scene. Missing meshes or an unset render centre are
+    returned at once because another attempt cannot fix them.
+    """
+    attempts = int(config.layout_max_attempts)
+    if attempts < 1:
+        raise ValueError("Layout attempts must be positive")
+    result = Rejection("collision", "没有可用的布局")
+    for layout_attempt_index in range(attempts):
+        result = propose_scene(config, meshes, scene_index, layout_attempt_index=layout_attempt_index)
+        if not isinstance(result, Rejection):
+            return result
+        if result.reason not in LAYOUT_RETRY_REASONS:
+            return result
+        if on_rejection is not None:
+            on_rejection(layout_attempt_index, result)
+    return result
 
 
 def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], pose: CameraPose,
@@ -216,7 +246,8 @@ def propose_candidate(config: ProjectConfig, meshes: Mapping[str, MeshData], sce
         placements.extend(occluders)
     return SceneCandidate(scene.scene_index, view_index, attempt_index, region_key, config.anchor_key, pose,
                           tuple(placements), scene.hdri_path, scene.hdri_strength, scene.hdri_rotation_deg,
-                          scene.light, scene.wants_unoccluded, kind, material=scene.material)
+                          scene.light, scene.wants_unoccluded, kind, material=scene.material,
+                          layout_attempt_index=scene.layout_attempt_index)
 
 
 def candidate_to_dict(candidate: SceneCandidate) -> dict:
@@ -259,4 +290,5 @@ def candidate_from_dict(payload: Mapping) -> SceneCandidate:
         bool(payload["wants_unoccluded"]), str(payload.get("camera_kind", "random")),
         MaterialState(float((payload.get("material") or {}).get("roughness", .65)),
                       float((payload.get("material") or {}).get("specular", .5)),
-                      float((payload.get("material") or {}).get("metallic", 0.))))
+                      float((payload.get("material") or {}).get("metallic", 0.))),
+        int(payload.get("layout_attempt_index", 0)))

@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from bproc_core.assets import load_mesh
 from bproc_core.project_io import load_project
-from bproc_core.scene import Rejection, candidate_from_dict, propose_candidate, propose_scene
+from bproc_core.scene import Rejection, candidate_from_dict, propose_candidate, sample_scene
 from bproc_export.blender_view import open_gui, prepare_scene
 
 
@@ -31,7 +31,7 @@ def main(argv=None) -> int:
         assets = [t.asset for t in config.targets if t.enabled] + list(config.occluders)
         meshes = {asset.key: load_mesh(asset) for asset in assets}
         candidate = None
-        scene = propose_scene(config, meshes, arguments.scene)
+        scene = sample_scene(config, meshes, arguments.scene)
         if isinstance(scene, Rejection):
             print(f"场景无法摆放：{scene.reason}", file=sys.stderr)
             return 1

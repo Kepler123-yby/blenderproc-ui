@@ -57,9 +57,9 @@ def _set_rendered_viewport() -> str:
 
 
 def _load_candidate(config, meshes, scene_index, view_index):
-    from bproc_core.scene import Rejection, propose_candidate, propose_scene
+    from bproc_core.scene import Rejection, propose_candidate, sample_scene
 
-    scene = propose_scene(config, meshes, scene_index)
+    scene = sample_scene(config, meshes, scene_index)
     if isinstance(scene, Rejection):
         raise SystemExit(f"场景无法摆放：{scene.reason}")
     for attempt in range(60):

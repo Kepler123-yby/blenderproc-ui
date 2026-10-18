@@ -4,7 +4,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from bproc_core.scene import Rejection, propose_candidate, propose_scene
+from bproc_core.scene import Rejection, propose_candidate, sample_scene
 
 
 class PreviewController(QObject):
@@ -55,7 +55,7 @@ class PreviewController(QObject):
                                      views_per_scene=1, scene_count=1, seed=self.preview_seed)
         rejection = None
         try:
-            scene = propose_scene(preview_config, self.state.meshes, 0)
+            scene = sample_scene(preview_config, self.state.meshes, 0)
             if isinstance(scene, Rejection):
                 rejection = scene
             else:

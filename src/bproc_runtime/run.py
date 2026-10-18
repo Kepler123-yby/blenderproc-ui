@@ -8,7 +8,7 @@ from typing import Protocol
 import numpy as np
 
 from bproc_core.masks import occlusion_ratio
-from bproc_core.scene import propose_candidate, propose_scene, Rejection
+from bproc_core.scene import LAYOUT_RETRY_REASONS, Rejection, propose_candidate, sample_scene
 from .records import FrameRef, RunSummary
 
 
@@ -35,9 +35,9 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
     expected_ids = {t.obj_id for t in config.targets if t.enabled}
     anchor_id = next(t.obj_id for t in config.targets if t.asset.key == config.anchor_key)
 
-    def reject(scene_index, view_index, attempt, reason):
+    def reject(scene_index, view_index, attempt, reason, *, phase="view"):
         failures[reason] += 1
-        recorder.record_rejection(scene_index, view_index, attempt, reason)
+        recorder.record_rejection(scene_index, view_index, attempt, reason, phase=phase)
 
     def interrupt(signum, frame):
         nonlocal pending_signal
@@ -74,9 +74,15 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
         began = True
         native_call(backend.prepare, config, meshes)
         for scene_index in range(config.scene_count):
-            scene = propose_scene(config, meshes, scene_index)
+            def layout_rejected(layout_attempt_index, rejection, scene_index=scene_index):
+                # A layout retry belongs to the scene, not to view 0: view_index -1 says so.
+                reject(scene_index, -1, layout_attempt_index, rejection.reason, phase="layout")
+
+            scene = sample_scene(config, meshes, scene_index, on_rejection=layout_rejected)
             if isinstance(scene, Rejection):
-                reject(scene_index, 0, 0, scene.reason)
+                if scene.reason not in LAYOUT_RETRY_REASONS:
+                    reject(scene_index, -1, 0, scene.reason, phase="layout")
+                # An exhausted collision budget was already recorded once per attempt.
                 continue
             for view_index in range(config.views):
                 for attempt in range(config.occlusion.max_attempts):

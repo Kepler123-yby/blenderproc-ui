@@ -18,11 +18,21 @@ def allocate_regions(total: int, keys: Sequence[str]) -> dict[str, int]:
     return {key: quotient + (i < remainder) for i, key in enumerate(keys)}
 
 
-def scene_rng(seed: int, scene_index: int) -> np.random.Generator:
-    """Stream shared by every view of a scene: placements, occluders, lighting."""
-    if min(seed, scene_index) < 0:
-        raise ValueError("Seed and scene indices must be nonnegative")
-    return np.random.default_rng(np.random.SeedSequence([seed, scene_index, 0x5343454E]))
+def scene_rng(seed: int, scene_index: int, layout_attempt_index: int = 0) -> np.random.Generator:
+    """Stream shared by every view of a scene: placements, occluders, lighting.
+
+    Attempt 0 keeps the historical stream, so existing projects keep rendering the same frames;
+    a layout retry only re-draws this scene by adding an entry to the seed sequence, never the
+    process-global RNG.
+    """
+    if min(seed, scene_index, layout_attempt_index) < 0:
+        raise ValueError("Seed, scene and layout attempt indices must be nonnegative")
+    # 0x5343454E ("SCEN") is the historical separator; attempt 0 keeps exactly that sequence so
+    # existing projects keep rendering the same frames, and a retry only appends its index.
+    entropy = [seed, scene_index, 0x5343454E]
+    if layout_attempt_index:
+        entropy.append(layout_attempt_index)
+    return np.random.default_rng(np.random.SeedSequence(entropy))
 
 
 def view_rng(seed: int, scene_index: int, view_index: int, attempt_index: int) -> np.random.Generator:

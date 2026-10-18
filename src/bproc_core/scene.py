@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 from itertools import product
 import numpy as np
 
@@ -173,46 +173,79 @@ def sample_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_in
     return result
 
 
-def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], pose: CameraPose,
-                        anchor_key: str, rng) -> list[Placement] | Rejection:
-    """Occluders for one camera: on its line of sight, offset sideways so the cover is partial.
+OCCLUDER_CLEARANCE_M = 0.01
+OCCLUDER_DRAWS = 24
 
-    A world-space occluder sampled anywhere on the sphere almost never crosses the target's line
-    of sight (the camera band is a few percent of it), which left ``occlusion_ratio`` at 0 on
-    almost every frame. Placing them along this camera's ray, a fraction of the way to the target
-    and pushed sideways by a fraction of the target size, keeps the ratio inside the configured
-    window and lets a retry adjust it.
+
+def _world_aabb(bounds_m: np.ndarray, world_from_model: np.ndarray):
+    """World axis-aligned bounds of a transformed box; exact for the scale+translation placements."""
+    world = transform_points(bounds_corners(bounds_m), world_from_model)
+    return world.min(axis=0), world.max(axis=0)
+
+
+def _boxes_overlap(a, b) -> bool:
+    """Conservative AABB intersection test used to keep occluders out of every solid."""
+    return bool(np.all(a[0] < b[1]) and np.all(b[0] < a[1]))
+
+
+def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], pose: CameraPose,
+                        anchor_key: str, rng, targets: Sequence[Placement] = ()) -> list[Placement] | Rejection:
+    """Occluders for one camera: inside its segment to the target, offset sideways so the cover is partial.
+
+    They used to be placed at a fraction of the scene-wide nominal radius, which put them behind the
+    camera as soon as a view sat closer than that radius. A placement is now chosen by its depth from
+    this camera: past the near clip plane, in front of the nearest target surface, and separated from
+    every target and from the other occluders by a conservative AABB test. No room left is reported as
+    a rejection instead of looping or drifting behind the camera.
     """
     anchor = meshes[anchor_key]
     center_size = float(np.max(np.ptp(anchor.bounds_m, axis=0)))
-    nominal = nominal_radius(config)
-    ray = np.asarray(pose.position_m, dtype=float)
-    length = float(np.linalg.norm(ray))
-    if length <= 0:
+    camera = np.asarray(pose.position_m, dtype=float)
+    distance = float(np.linalg.norm(camera))
+    if distance <= 0:
         return Rejection('invalid_pivot', anchor_key)
-    direction = ray / length
-    side = np.cross(direction, np.array([0., 0., 1.]))
-    if np.linalg.norm(side) < 1e-6:
-        side = np.array([1., 0., 0.])
-    side /= np.linalg.norm(side)
-    up = np.cross(side, direction)
+    view = -camera / distance
+    right = np.cross(view, np.array([0., 0., 1.]))
+    if np.linalg.norm(right) < 1e-6:
+        right = np.array([1., 0., 0.])
+    right /= np.linalg.norm(right)
+    up = np.cross(right, view)
+    boxes = [_world_aabb(meshes[p.asset_key].bounds_m, p.world_from_model)
+             for p in targets if p.asset_key in meshes]
+    target_front = min((float(np.min((transform_points(bounds_corners(meshes[p.asset_key].bounds_m),
+                                                     p.world_from_model) - camera) @ view))
+                        for p in targets if p.asset_key in meshes), default=distance)
     placements = []
     for _ in range(int(rng.integers(config.occlusion.count[0], config.occlusion.count[1] + 1))):
         asset = config.occluders[int(rng.integers(len(config.occluders)))]
         mesh = meshes[asset.key]
-        max_side = float(np.max(np.ptp(mesh.bounds_m, axis=0)))
+        extent = np.ptp(mesh.bounds_m, axis=0)
+        max_side = float(extent.max())
         if max_side <= 0:
             return Rejection('invalid_mesh', asset.key)
         size = center_size * rng.uniform(config.occlusion.scale.minimum, config.occlusion.scale.maximum)
-        angle = rng.uniform(0., 2 * np.pi)
-        offset = size * rng.uniform(.1, .9)
-        center = (direction * nominal * rng.uniform(.3, .55)
-                  + (np.cos(angle) * side + np.sin(angle) * up) * offset)
         scale = size / max_side
-        matrix = np.eye(4)
-        matrix[:3, :3] *= scale
-        matrix[:3, 3] = center - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
-        placements.append(Placement(asset.key, None, None, matrix, 'occluder'))
+        half_diagonal = float(np.linalg.norm(extent * scale / 2))
+        nearest = float(pose.clip_near_m) + OCCLUDER_CLEARANCE_M + half_diagonal
+        farthest = target_front - OCCLUDER_CLEARANCE_M - half_diagonal
+        if farthest <= nearest:
+            return Rejection('no_occluder_room', asset.key)
+        for _ in range(OCCLUDER_DRAWS):
+            angle = rng.uniform(0., 2 * np.pi)
+            offset = size * rng.uniform(.1, .9)
+            center = (camera + view * rng.uniform(nearest, farthest)
+                      + (np.cos(angle) * right + np.sin(angle) * up) * offset)
+            matrix = np.eye(4)
+            matrix[:3, :3] *= scale
+            matrix[:3, 3] = center - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
+            box = _world_aabb(mesh.bounds_m, matrix)
+            if any(_boxes_overlap(box, other) for other in boxes):
+                continue
+            boxes.append(box)
+            placements.append(Placement(asset.key, None, None, matrix, 'occluder'))
+            break
+        else:
+            return Rejection('occluder_collision', asset.key)
     return placements
 
 
@@ -240,7 +273,8 @@ def propose_candidate(config: ProjectConfig, meshes: Mapping[str, MeshData], sce
             return Rejection('out_of_frame', placement.asset_key)
     placements = list(scene.placements)
     if not scene.wants_unoccluded and config.occluders:
-        occluders = occluder_placements(config, meshes, pose, config.anchor_key, rng)
+        occluders = occluder_placements(config, meshes, pose, config.anchor_key, rng,
+                                        targets=[p for p in scene.placements if p.role == 'target'])
         if isinstance(occluders, Rejection):
             return occluders
         placements.extend(occluders)

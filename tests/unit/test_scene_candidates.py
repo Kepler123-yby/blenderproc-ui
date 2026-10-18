@@ -116,19 +116,104 @@ def occluded_fixture():
     return config, meshes
 
 
-def test_occluders_sit_on_the_camera_ray_so_the_target_can_actually_be_covered():
+def _front_depth(shot, meshes):
+    """Depth from this camera to the nearest target surface along the view axis."""
+    camera = np.asarray(shot.camera.position_m)
+    view = -camera / np.linalg.norm(camera)
+    corners = np.vstack([transform_points(bounds_corners(meshes[p.asset_key].bounds_m), p.world_from_model)
+                         for p in shot.placements if p.role == 'target'])
+    return float(np.min((corners - camera) @ view))
+
+
+def _occluder_corners(shot, meshes):
+    return [(p.asset_key, transform_points(bounds_corners(meshes[p.asset_key].bounds_m), p.world_from_model))
+            for p in shot.placements if p.role == 'occluder']
+
+
+def _aabb(points):
+    return points.min(axis=0), points.max(axis=0)
+
+
+def _shots(config, meshes, attempts=30, radius=None):
+    if radius is not None:
+        config = replace(config, regions=(RegionSpec(radius_m=Range(radius, radius), azimuth=Azimuth(0, 0, False),
+                                                     elevation_deg=Range(20, 20)),))
+    state = propose_scene(config, meshes, 0)
+    assert isinstance(state, SceneState), state
+    return [propose_candidate(config, meshes, state, 0, attempt) for attempt in range(attempts)]
+
+
+def test_occluders_stay_between_the_camera_and_the_nearest_target_surface():
+    """The old placement used the scene-wide nominal radius, so a 0.5 m view put it behind the camera."""
     config, meshes = occluded_fixture()
+    for radius in (.5, 5.):
+        shots = _shots(config, meshes, radius=radius)
+        accepted = [shot for shot in shots if isinstance(shot, SceneCandidate)]
+        assert len(accepted) >= 25, (radius, len(accepted))
+        for shot in accepted:
+            camera = np.asarray(shot.camera.position_m)
+            view = -camera / np.linalg.norm(camera)
+            front = _front_depth(shot, meshes)
+            for key, corners in _occluder_corners(shot, meshes):
+                depths = (corners - camera) @ view
+                assert float(depths.min()) > shot.camera.clip_near_m, (radius, key, depths)
+                assert float(depths.max()) < front, (radius, key, depths, front)
+
+
+def test_occluders_never_intersect_targets_or_each_other():
+    config, meshes = occluded_fixture()
+    small = np.array([[-.01, -.01, -.01], [.01, .01, .01]])
+    meshes['o'] = MeshData('o', bounds_corners(small), np.array([[0, 1, 2]]), None, small)
+    config = replace(config, occlusion=OcclusionSpec(none_fraction=0., ratio=Range(.1, .5), max_attempts=30,
+                                                     count=(2, 3), scale=Range(1., 1.8)))
+    accepted = [shot for shot in _shots(config, meshes, attempts=20) if isinstance(shot, SceneCandidate)]
+    assert accepted
+    for shot in accepted:
+        boxes = [(_aabb(transform_points(bounds_corners(meshes[p.asset_key].bounds_m), p.world_from_model)), p.asset_key)
+                 for p in shot.placements]
+        for i, (a, key_a) in enumerate(boxes):
+            for b, key_b in boxes[i + 1:]:
+                overlapping = np.all(a[0] < b[1]) and np.all(b[0] < a[1])
+                assert not overlapping, (key_a, key_b)
+
+
+def test_occluders_are_reproducible_for_a_seed():
+    config, meshes = occluded_fixture()
+    first = candidate(config, meshes)
+    second = candidate(config, meshes)
+    assert isinstance(first, SceneCandidate) and isinstance(second, SceneCandidate)
+    assert candidate_to_dict(first) == candidate_to_dict(second)
+
+
+def test_occluders_cover_random_bands_from_close_and_far_views():
+    config, meshes = occluded_fixture()
+    config = replace(config, camera_mode='random', scene_count=3, views_per_scene=4,
+                     regions=(RegionSpec(radius_m=Range(.5, 5.), azimuth=Azimuth(-90, 90, False),
+                                         elevation_deg=Range(0, 60)),))
+    for scene_index in range(3):
+        state = propose_scene(config, meshes, scene_index)
+        assert isinstance(state, SceneState), state
+        for view_index in range(4):
+            shot = propose_candidate(config, meshes, state, view_index, 0)
+            assert isinstance(shot, SceneCandidate), shot
+            camera = np.asarray(shot.camera.position_m)
+            view = -camera / np.linalg.norm(camera)
+            front = _front_depth(shot, meshes)
+            for key, corners in _occluder_corners(shot, meshes):
+                depths = (corners - camera) @ view
+                assert float(depths.min()) > shot.camera.clip_near_m, (key, depths)
+                assert float(depths.max()) < front, (key, depths, front)
+
+
+def test_a_segment_too_short_for_an_occluder_is_an_explainable_rejection():
+    config, meshes = occluded_fixture()
+    heavy = np.array([[-.1, -.1, -.1], [.1, .1, .1]])
+    meshes['o'] = MeshData('o', bounds_corners(heavy), np.array([[0, 1, 2]]), None, heavy)
+    config = replace(config, occlusion=OcclusionSpec(none_fraction=0., ratio=Range(.1, .5), max_attempts=30,
+                                                     count=(1, 1), scale=Range(60., 60.)))
     shot = candidate(config, meshes)
-    assert isinstance(shot, SceneCandidate), shot
-    ray = shot.camera.position_m / np.linalg.norm(shot.camera.position_m)
-    nominal = float(np.linalg.norm(shot.camera.position_m))
-    occluders = [p for p in shot.placements if p.role == 'occluder']
-    assert len(occluders) == 2
-    for placement in occluders:
-        center = transform_points(meshes['o'].bounds_m.mean(axis=0)[None], placement.world_from_model)[0]
-        along = float(center @ ray)
-        assert .25 * nominal <= along <= .6 * nominal   # in front of the target, behind the camera
-        assert float(np.linalg.norm(center - along * ray)) <= .06
+    assert isinstance(shot, Rejection), shot
+    assert shot.reason == 'no_occluder_room'
 
 
 def test_the_scene_itself_holds_no_occluders_because_they_follow_each_camera():

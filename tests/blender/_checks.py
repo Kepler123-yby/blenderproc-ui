@@ -52,8 +52,15 @@ def verify_metadata(root: Path, *, require_complete=True):
     if not isinstance(status, dict) or not isinstance(manifest, dict) or not isinstance(objects, list) or config is None:
         return errors or ["Metadata documents have invalid types"], config, status, []
     from bproc_runtime.metadata import SCHEMA_VERSION
-    if status.get("status") == "completed" and (manifest.get("schema_version") != SCHEMA_VERSION
-                                                or manifest.get("final") is not True):
+    # Datasets written before the journal existed carry a version 0/1 manifest and no frames.jsonl.
+    # They are a different format, not corrupt data: the reader accepts them, so the checker must
+    # not demand a `final` flag those writers never produced. Everything with a journal, or with a
+    # newer/unknown version, keeps the strict schema 2 rule.
+    journal = folder / "frames.jsonl"
+    version = manifest.get("schema_version", 0)
+    legacy_manifest = not journal.exists() and version in (0, 1)
+    if status.get("status") == "completed" and not legacy_manifest and (
+            version != SCHEMA_VERSION or manifest.get("final") is not True):
         errors.append("status=completed 但 manifest 不是最终快照（schema 2 且 final=true）")
     try:
         # Historical datasets used ``request_index`` before scenes and views existed. That is a

@@ -534,3 +534,27 @@ def test_checkers_refuse_a_completed_run_without_a_final_manifest(valid_rgb_mask
 
     manifest.write_text(json.dumps(original))
     assert verify_rgb_masks(valid_rgb_masks_output) == []
+
+
+def test_a_completed_legacy_manifest_without_a_journal_is_accepted(valid_rgb_masks_output):
+    """Version 0/1 manifests predate the journal: they are a format, not corrupt data."""
+    folder = valid_rgb_masks_output / "run_metadata"
+    (folder / "frames.jsonl").unlink()
+    manifest = json.loads((folder / "manifest.json").read_text())
+    manifest.pop("schema_version", None)
+    manifest.pop("final", None)
+    (folder / "manifest.json").write_text(json.dumps(manifest))
+
+    assert verify_rgb_masks(valid_rgb_masks_output) == []
+
+
+def test_an_unknown_manifest_version_is_rejected_even_without_a_journal(valid_rgb_masks_output):
+    """Accepting legacy versions must not turn into accepting anything without a journal."""
+    folder = valid_rgb_masks_output / "run_metadata"
+    (folder / "frames.jsonl").unlink()
+    manifest = json.loads((folder / "manifest.json").read_text())
+    manifest["schema_version"] = 3
+    (folder / "manifest.json").write_text(json.dumps(manifest))
+
+    diagnostics = verify_rgb_masks(valid_rgb_masks_output)
+    assert any("版本" in error for error in diagnostics), diagnostics

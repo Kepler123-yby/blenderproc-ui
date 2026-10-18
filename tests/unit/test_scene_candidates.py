@@ -6,7 +6,8 @@ import pytest
 from bproc_core.assets import MeshData
 from bproc_core.config import *
 from bproc_core.scene import *
-from bproc_core.scene import _covered_share, _silhouette
+from bproc_core.scene import (_covered_share, _silhouette, _silhouette_points,
+                              SILHOUETTE_POINT_LIMIT)
 
 
 def fixture_scene():
@@ -418,3 +419,86 @@ def test_the_aim_stays_inside_the_requested_window(window):
     # so allow a hair on it; non-degenerate windows must be hit exactly by the estimate.
     slack = 1e-4 if window.minimum == window.maximum else 0.
     assert all(window.minimum - slack <= share <= window.maximum + slack for share in shares), shares
+
+
+def _box_surface(lo, hi):
+    """Every face of an axis-aligned box, not just one triangle: masks and hulls must agree."""
+    vertices = bounds_corners(np.array([lo, hi], dtype=float))
+    faces = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4],
+                      [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]])
+    return vertices, faces
+
+
+def _frame_fixture(window):
+    """A square frame with a real hole: its convex hull fills the hole and over-states the area."""
+    outer, inner, half_z = .05, .03, .005
+    parts = [((-outer, -outer, -half_z), (outer, -inner, half_z)),
+             ((-outer, inner, -half_z), (outer, outer, half_z)),
+             ((-outer, -inner, -half_z), (-inner, inner, half_z)),
+             ((inner, -inner, -half_z), (outer, inner, half_z))]
+    vertices, faces, offset = [], [], 0
+    for low, high in parts:
+        part_vertices, part_faces = _box_surface(low, high)
+        vertices.append(part_vertices)
+        faces.append(part_faces + offset)
+        offset += len(part_vertices)
+    vertices = np.vstack(vertices)
+    faces = np.vstack(faces)
+    bounds = np.array([vertices.min(axis=0), vertices.max(axis=0)])
+    occluder_vertices, occluder_faces = _box_surface((-.02, -.02, -.002), (.02, .02, .002))
+    occluder_bounds = np.array([occluder_vertices.min(axis=0), occluder_vertices.max(axis=0)])
+    meshes = {"a": MeshData("a", vertices, faces, None, bounds),
+              "o": MeshData("o", occluder_vertices, occluder_faces, None, occluder_bounds)}
+    config = ProjectConfig(
+        targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
+        occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
+        regions=(RegionSpec(radius_m=Range(.5, .5), azimuth=Azimuth(0, 0, False),
+                            elevation_deg=Range(90, 90)),),
+        occlusion=OcclusionSpec(none_fraction=1., ratio=window, count=(1, 1),
+                                scale=Range(1., 1.)))
+    pose = CameraPose(np.eye(4), np.array([0., 0., .5]), .5, 0., 0., .005, 50.)
+    return config, meshes, pose
+
+
+def _raster(mesh, world_from_model, pose, camera):
+    from PIL import Image, ImageDraw
+    from bproc_core.camera import project_points
+    uv, valid = project_points(transform_points(mesh.vertices_m, world_from_model), pose, camera)
+    image = Image.new("1", (camera.width, camera.height), 0)
+    draw = ImageDraw.Draw(image)
+    for triangle in mesh.faces:
+        if valid[triangle].all():
+            draw.polygon([tuple(uv[index]) for index in triangle], fill=1)
+    return np.asarray(image, dtype=bool)
+
+
+@pytest.mark.parametrize("window", [Range(.25, .35), Range(.05, .15), Range(.8, .9)])
+def test_a_hollow_target_is_aimed_by_its_real_outline(window):
+    """The old bounding-box hull aimed the frame's hole as if it were solid metal.
+
+    A 100 x 60 x 100 mm frame has 36 % of its box area; estimating coverage from the outer hull
+    over-covered every proposal. The sampler now rasterises the projected triangles, so the final
+    full-resolution pixel share lands inside the requested window instead of 2-3x above it.
+    """
+    config, meshes, pose = _frame_fixture(window)
+    target_mask = _raster(meshes["a"], np.eye(4), pose, config.camera)
+    assert 0 < target_mask.sum() < np.prod(target_mask.shape)
+    for seed in range(6):
+        placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(seed), ())
+        assert isinstance(placements, list), placements
+        occluder_mask = _raster(meshes["o"], placements[0].world_from_model, pose, config.camera)
+        share = float((target_mask & occluder_mask).sum()) / float(target_mask.sum())
+        assert window.minimum - .01 <= share <= window.maximum + .01, (seed, share)
+
+
+
+def test_dense_mesh_silhouette_projection_stays_bounded():
+    """A million-face part must not sort every vertex for the hull fallback."""
+    box = np.array([[-1., -1., -1.], [1., 1., 1.]])
+    vertices = np.repeat(bounds_corners(box), 3000, axis=0)
+    mesh = MeshData("dense", vertices, np.array([[0, 1, 2]]), None, box)
+    points = _silhouette_points(mesh)
+    assert len(points) <= SILHOUETTE_POINT_LIMIT + 8
+    assert len(points) >= 8
+    np.testing.assert_allclose(points.min(axis=0), box[0])
+    np.testing.assert_allclose(points.max(axis=0), box[1])

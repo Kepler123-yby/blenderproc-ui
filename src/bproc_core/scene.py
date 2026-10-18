@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 from itertools import product
 import numpy as np
+from PIL import Image, ImageDraw
 
 from .assets import MeshData
 from .camera import CameraPose, project_points, sample_camera
@@ -178,6 +179,15 @@ def sample_scene(config: ProjectConfig, meshes: Mapping[str, MeshData], scene_in
 OCCLUDER_CLEARANCE_FRACTION = (0.1, 0.01)      # of the target size, and of the camera distance
 OCCLUDER_DRAWS = 24
 
+# The aiming estimate needs the projected *shape*, not its bounding box: a hollow or U-shaped
+# part has a convex hull several times its real silhouette. Up to this many triangles the
+# silhouette is rasterised exactly on a small screen-space grid; heavier parts fall back to the
+# hull of a bounded vertex sample, which keeps a million-face preview responsive.
+SILHOUETTE_MASK_MAX_FACES = 6000
+SILHOUETTE_MASK_MAX_VERTICES = 20000
+SILHOUETTE_POINT_LIMIT = 4096
+SILHOUETTE_GRID_SIZE = 256
+
 
 def _world_aabb(bounds_m: np.ndarray, world_from_model: np.ndarray):
     """World axis-aligned bounds of a transformed box; exact for the scale+translation placements."""
@@ -209,12 +219,120 @@ def _convex_hull(points: np.ndarray) -> np.ndarray:
     return np.array(lower[:-1] + upper[:-1])
 
 
-def _silhouette(corners_m, world_from_model, pose: CameraPose, camera):
-    """Screen-space convex hull of a mesh's vertices, or None when part of it is behind the camera."""
-    uv, valid = project_points(transform_points(corners_m, world_from_model), pose, camera)
+def _silhouette(points_m, world_from_model, pose: CameraPose, camera):
+    """Screen-space convex hull of the supplied points, or None when one is behind the camera."""
+    uv, valid = project_points(transform_points(points_m, world_from_model), pose, camera)
     if not valid.all():
         return None
     return _convex_hull(uv)
+
+
+def _silhouette_points(mesh: MeshData) -> np.ndarray:
+    """Vertices worth projecting for the hull fallback, capped for million-face parts.
+
+    ``bounds_corners`` is always included: a strided sample may otherwise miss one extreme of a
+    dense mesh, and the hull would shrink below the real outline.
+    """
+    vertices = mesh.vertices_m
+    if len(vertices) <= SILHOUETTE_POINT_LIMIT:
+        return vertices
+    stride = int(np.ceil(len(vertices) / SILHOUETTE_POINT_LIMIT))
+    return np.vstack([vertices[::stride], bounds_corners(mesh.bounds_m)])
+
+
+@dataclass(frozen=True)
+class _SilhouetteGrid:
+    """A square screen-space grid that target and occluder masks share."""
+    left_px: float
+    top_px: float
+    pixels_per_px: float
+    size: int = SILHOUETTE_GRID_SIZE
+
+    def map(self, uv) -> np.ndarray:
+        return (np.asarray(uv, dtype=float) - [self.left_px, self.top_px]) * self.pixels_per_px
+
+
+def _silhouette_grid(entries, pose: CameraPose, camera) -> _SilhouetteGrid | None:
+    """Grid covering every mesh that will be compared as a rasterised mask."""
+    boxes = []
+    for mesh, matrix in entries:
+        uv, valid = project_points(transform_points(mesh.vertices_m, matrix), pose, camera)
+        if not valid.all():
+            return None
+        if len(uv):
+            boxes.append((uv.min(axis=0), uv.max(axis=0)))
+    if not boxes:
+        return None
+    low = np.min([box[0] for box in boxes], axis=0)
+    high = np.max([box[1] for box in boxes], axis=0)
+    span = float(np.max(high - low))
+    if not np.isfinite(span) or span <= 0:
+        return None
+    margin = 2.
+    scale = (SILHOUETTE_GRID_SIZE - 1 - 2 * margin) / span
+    return _SilhouetteGrid(float(low[0]) - margin / scale, float(low[1]) - margin / scale,
+                           scale)
+
+
+def _rasterize_mask(mesh: MeshData, world_from_model: np.ndarray, pose: CameraPose, camera,
+                    grid: _SilhouetteGrid, *, triangles: bool) -> np.ndarray:
+    """Fill the projected mesh (or its bounded hull) into the shared grid."""
+    points = mesh.vertices_m if triangles else _silhouette_points(mesh)
+    uv, valid = project_points(transform_points(points, world_from_model), pose, camera)
+    pixel = grid.map(uv)
+    image = Image.new("1", (grid.size, grid.size), 0)
+    draw = ImageDraw.Draw(image)
+    if triangles:
+        for triangle in mesh.faces:
+            if valid[triangle].all():
+                draw.polygon([tuple(pixel[index]) for index in triangle], fill=1)
+    elif valid.any():
+        hull = _convex_hull(pixel[valid])
+        if len(hull) >= 3:
+            draw.polygon([tuple(point) for point in hull], fill=1)
+    return np.asarray(image, dtype=bool)
+
+
+def _mask_covered_share(target_mask: np.ndarray, occluder_mask: np.ndarray) -> float:
+    """Pixel share of the target silhouette hidden by the occluder."""
+    total = int(np.count_nonzero(target_mask))
+    if total == 0:
+        return 0.0
+    return float(np.count_nonzero(target_mask & occluder_mask)) / total
+
+
+@dataclass(frozen=True)
+class _TargetShapes:
+    """Targets as either exact masks or convex-hull fallbacks on one shared grid."""
+    hulls: tuple[np.ndarray, ...]
+    grid: _SilhouetteGrid | None
+    masks: tuple[np.ndarray, ...]
+
+
+def _target_shapes(entries, pose: CameraPose, camera) -> _TargetShapes:
+    hulls, masked = [], []
+    for mesh, matrix in entries:
+        # Tiny fixtures describe a hull with one triangle; rasterising that triangle would
+        # under-state the shape, so only a real surface takes the mask path.
+        if (8 <= len(mesh.faces) <= SILHOUETTE_MASK_MAX_FACES
+                and len(mesh.vertices_m) <= SILHOUETTE_MASK_MAX_VERTICES):
+            masked.append((mesh, matrix))
+        else:
+            hull = _silhouette(_silhouette_points(mesh), matrix, pose, camera)
+            if hull is not None:
+                hulls.append(hull)
+    grid = _silhouette_grid(masked, pose, camera) if masked else None
+    if grid is None:
+        # A mesh behind the camera (or a degenerate projection) cannot be masked; keep the
+        # affine hull fallback rather than rejecting an otherwise valid target.
+        for mesh, matrix in masked:
+            hull = _silhouette(_silhouette_points(mesh), matrix, pose, camera)
+            if hull is not None:
+                hulls.append(hull)
+        return _TargetShapes(tuple(hulls), None, ())
+    masks = tuple(_rasterize_mask(mesh, matrix, pose, camera, grid, triangles=True)
+                  for mesh, matrix in masked)
+    return _TargetShapes(tuple(hulls), grid, masks)
 
 
 def _polygon_area(polygon: np.ndarray) -> float:
@@ -260,8 +378,8 @@ def _intersection(p1, p2, a, b):
 def _covered_share(target_hull, occluder_hull) -> float:
     """Share of the target silhouette hidden by the occluder, from projected convex hulls.
 
-    Hulls still over-state a concave silhouette, but they follow the mesh closely enough that a
-    hull-based aim lands inside the window where a bounding box aim over-covered by 2-3x.
+    This is the fallback for parts too dense to rasterise. Hulls over-state a concave or hollow
+    outline; the mask path in :func:`_aimed_offset` is preferred whenever the mesh is small enough.
     """
     target_area = _polygon_area(target_hull)
     if target_area <= 0 or occluder_hull is None:
@@ -269,16 +387,16 @@ def _covered_share(target_hull, occluder_hull) -> float:
     return _polygon_area(_clip_to_convex(occluder_hull, target_hull)) / target_area
 
 
-def _aimed_offset(base, direction, mesh, scale, target_boxes, pose, config, rng, spread):
+def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, config, rng, spread):
     """Sideways offset that should cover roughly the middle of the occlusion window.
 
     The renderer used to reject most proposals for over-covering: a box three quarters of the
     target's width, offset by a tenth of it, hides most of the silhouette. The offset is now
-    bisected against the projected-box estimate, which falls monotonically as the occluder moves
-    away from the target's centre. ``spread`` keeps the draw varied and bounds the search.
+    bisected against the projected *mesh* silhouette, which falls monotonically as the occluder
+    moves away from the target's centre. ``spread`` keeps the draw varied and bounds the search.
     """
     wanted = config.occlusion.ratio
-    if wanted.maximum <= 0 or not target_boxes:
+    if wanted.maximum <= 0 or (not shapes.hulls and shapes.grid is None):
         return spread * rng.uniform(.1, .9)
     # Aim inside the *user's* closed window, never near it: an 80-90 % window must not be aimed at
     # 72 %, and a 0-1 % window must not be aimed at 2 %. Clamping after the midpoint keeps the
@@ -290,8 +408,19 @@ def _aimed_offset(base, direction, mesh, scale, target_boxes, pose, config, rng,
         matrix = np.eye(4)
         matrix[:3, :3] *= scale
         matrix[:3, 3] = base + direction * offset - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
-        hull = _silhouette(bounds_corners(mesh.bounds_m), matrix, pose, config.camera)
-        return 0. if hull is None else max(_covered_share(t, hull) for t in target_boxes)
+        share = 0.
+        if shapes.hulls:
+            hull = _silhouette(_silhouette_points(mesh), matrix, pose, config.camera)
+            if hull is not None:
+                share = max(_covered_share(target, hull) for target in shapes.hulls)
+        if shapes.grid is not None:
+            exact = (8 <= len(mesh.faces) <= SILHOUETTE_MASK_MAX_FACES
+                     and len(mesh.vertices_m) <= SILHOUETTE_MASK_MAX_VERTICES)
+            occluder_mask = _rasterize_mask(mesh, matrix, pose, config.camera, shapes.grid,
+                                            triangles=exact)
+            share = max([share, *(_mask_covered_share(target, occluder_mask)
+                                  for target in shapes.masks)])
+        return share
 
     for _ in range(10):
         middle = (low + high) / 2
@@ -344,11 +473,10 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
     up = np.cross(right, view)
     boxes = [_world_aabb(meshes[p.asset_key].bounds_m, p.world_from_model)
              for p in targets if p.asset_key in meshes]
-    # Screen-space boxes of every target, used to aim the occluder at the requested coverage.
-    boxes_targets = [hull for hull in (_silhouette(bounds_corners(meshes[p.asset_key].bounds_m),
-                                                   p.world_from_model, pose, config.camera)
-                                      for p in targets if p.asset_key in meshes)
-                     if hull is not None]
+    # Screen-space silhouettes of every target, used to aim the occluder at the requested coverage.
+    target_entries = [(meshes[p.asset_key], p.world_from_model)
+                      for p in targets if p.asset_key in meshes]
+    target_shapes = _target_shapes(target_entries, pose, config.camera)
     target_front = min((float(np.min((transform_points(bounds_corners(meshes[p.asset_key].bounds_m),
                                                      p.world_from_model) - camera) @ view))
                         for p in targets if p.asset_key in meshes), default=distance)
@@ -386,7 +514,7 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
             base = camera + view * depth
             direction = np.cos(angle) * right + np.sin(angle) * up
             center = base + direction * _aimed_offset(
-                base, direction, mesh, scale, boxes_targets, pose, config, rng, apparent * ratio)
+                base, direction, mesh, scale, target_shapes, pose, config, rng, apparent * ratio)
             matrix = np.eye(4)
             matrix[:3, :3] *= scale
             matrix[:3, 3] = center - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)

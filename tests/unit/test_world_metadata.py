@@ -44,10 +44,13 @@ def test_recorder_keeps_the_world_after_frames_are_recorded(tmp_path):
     recorder = JsonRunRecorder(tmp_path / "metadata")
     recorder.begin(config)
     recorder.record_frame(FrameRef(frame_index=0, relative_rgb="rgb/0.png"), candidate, evidence)
+    from bproc_runtime.metadata import read_frame_records
     manifest = json.loads(Path(tmp_path / "metadata/manifest.json").read_text(encoding="utf-8"))
     assert manifest["world"] == {"kind": "neutral", "color": list(DEFAULT_WORLD_COLOR)}
-    assert len(manifest["frames"]) == 1
-    assert manifest["frames"][0]["candidate"]["hdri_path"] is None
+    assert manifest["frames"] == []                     # frames live in the journal until finish
+    journal = read_frame_records(tmp_path / "metadata")
+    assert len(journal) == 1
+    assert journal[0]["candidate"]["hdri_path"] is None
     recorder.finish(RunSummary(status="completed", requested=1, written_frames=1, saved=1,
                                skipped=0, failures_by_reason={}, exit_code=0))
     status = json.loads(Path(tmp_path / "metadata/status.json").read_text(encoding="utf-8"))

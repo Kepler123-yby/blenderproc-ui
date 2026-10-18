@@ -63,6 +63,25 @@
 
 证据：`.artifacts/gpu-probe/`（EGL 探测、Cycles 设备、OptiX 降噪）、`.artifacts/gpu-e2e/`（两个独立任务与日志）、`.artifacts/gpu-quality*/`（表面处理对照）。`tests/blender/check_render_quality.py` 对同一场景比对平直 / 平滑 / 按角度平滑的渲染差异。上方截图均为 GPU 版界面，在真实桌面 OpenGL 会话中捕获。
 
+## 帧元数据写入（2026-10-18，schema 2）
+
+审计发现 400 帧数据集最终约 1.13 MB，却在运行中累计写入约 225.94 MB、耗时约 10 秒：每帧重写整份
+`manifest.json` 让写入呈平方增长。现在每帧只向 `run_metadata/frames.jsonl` 追加一行（写完立即
+flush + fsync 才计入已提交），`manifest.json` 只在 `finish` 时原子生成一次并带 `final: true`；
+`read_frame_records()` 优先读 journal，一旦存在最终 manifest 就核对帧数与帧号一致。
+
+用 `JsonRunRecorder` 直接回放固定长度记录（不含渲染）测量，写入量与帧数严格线性：
+
+| 帧数 | journal 字节 | 累计写入字节 | 耗时 |
+|---|---|---|---|
+| 100 | 86 590 | 256 121 | 0.82 s |
+| 200 | 173 290 | 512 121 | 1.43 s |
+| 400 | 346 690 | 1 024 121 | 2.83 s |
+
+400 帧的累计写入从约 225.94 MB 降到约 1.02 MB（约 1/220），耗时从约 10 秒降到 2.8 秒；每帧
+journal 行约 866 字节且不随帧数变化。旧版无 journal 的 manifest 仍可只读兼容，不做原地迁移。
+测量脚本与原始数据在 `.artifacts/metadata-bench/bench.json`（本地产物，不进仓库）。
+
 ## Blender 查看（2026-10-17）
 目标：导入的文档模型在视口里不显示时，不必等终端试渲染才能判断建模与光照。做法是后台用 Blender 自身的 Python 重建场景并保存 `.blend`，再另起一个 Blender 打开它；打开文件也会跳过启动画面，否则画面被 splash 挡住。
 

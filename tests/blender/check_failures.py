@@ -9,6 +9,7 @@ import argparse
 from dataclasses import replace
 import hashlib
 import json
+import sys
 import os
 from pathlib import Path
 import signal
@@ -20,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bproc_core.config import AssetSpec, Azimuth, Box, Range
 from bproc_core.project_io import load_project
+sys.path.insert(0, "src")
+from bproc_runtime.metadata import read_frame_records
 from bproc_export.bundle import export_job
 
 
@@ -41,14 +44,14 @@ def _run(job, python, log_path, *, interrupt=None, after_frames=1):
                                    env=env, start_new_session=True)
         if interrupt is not None:
             config = load_project(job.directory / "scene.yaml")
-            manifest_path = config.output.root / config.output.dataset_name / "run_metadata/manifest.json"
+            metadata_dir = config.output.root / config.output.dataset_name / "run_metadata"
             deadline = time.monotonic() + 90
             while process.poll() is None and time.monotonic() < deadline:
                 try:
-                    manifest = json.loads(manifest_path.read_text())
+                    committed = len(read_frame_records(metadata_dir, allow_incomplete_tail=True))
                 except (OSError, ValueError):
-                    manifest = {}
-                if len(manifest.get("frames", [])) >= after_frames:
+                    committed = 0
+                if committed >= after_frames:
                     process.send_signal(interrupt)
                     break
                 time.sleep(.05)

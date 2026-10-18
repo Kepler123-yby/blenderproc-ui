@@ -38,6 +38,12 @@ def verify_metadata(root: Path, *, require_complete=True):
     status = read_json(folder / "status.json", errors)
     manifest = read_json(folder / "manifest.json", errors)
     objects = read_json(folder / "objects.json", errors)
+    from bproc_runtime.metadata import MetadataError, read_frame_records
+    try:
+        frames = read_frame_records(folder)
+    except MetadataError as error:
+        frames = None
+        errors.append(str(error))
     try:
         config = load_project(folder / "project.yaml")
     except Exception as exc:
@@ -48,9 +54,9 @@ def verify_metadata(root: Path, *, require_complete=True):
     try:
         # Historical datasets used ``request_index`` before scenes and views existed. That is a
         # different format, not corrupt data, so report it once before any counter arithmetic.
-        if _is_legacy_records(manifest.get("frames")):
+        if _is_legacy_records(frames):
             errors.append("旧 request_index 数据集格式不受支持（版本不兼容），请用当前版本重新导出")
-            return errors, config, status, manifest.get("frames")
+            return errors, config, status, frames
         for name in ("requested", "written_frames", "saved", "skipped", "exit_code"):
             if isinstance(status.get(name), bool) or not isinstance(status.get(name), int):
                 raise ValueError(f"status.{name} must be an integer")
@@ -75,11 +81,11 @@ def verify_metadata(root: Path, *, require_complete=True):
         failures = status.get("failures_by_reason")
         if not isinstance(failures, dict) or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in failures.values()):
             errors.append("Invalid failure counters")
-        records = manifest.get("frames")
+        records = frames
         if not isinstance(records, list):
-            raise ValueError("manifest.frames must be a list")
+            raise ValueError("Frame records must be a list")
         if len(records) != written:
-            errors.append("Manifest frame count differs from written_frames")
+            errors.append("Frame record count differs from written_frames")
         if manifest.get("seed") != config.seed:
             errors.append("Manifest seed differs from project snapshot")
         targets = {t.obj_id: t for t in config.targets if t.enabled}

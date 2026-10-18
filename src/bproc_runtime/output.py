@@ -9,6 +9,7 @@ import tempfile
 from datetime import datetime, timezone
 
 from bproc_core.masks import occlusion_ratio
+from .metadata import append_frame, manifest_payload, reset_journal
 
 
 class OutputConflict(FileExistsError):
@@ -52,6 +53,7 @@ class JsonRunRecorder:
         self._frames = []
         self._started = None
         self._world = None
+        self._seed = None
         self.begun = False
         self.finished = False
 
@@ -60,30 +62,28 @@ class JsonRunRecorder:
         from bproc_core.project_io import save_project
         self._config = config
         self._world = world_metadata(config)
+        self._seed = config.seed
         self.root.mkdir(parents=True, exist_ok=True)
         self._started = datetime.now(timezone.utc).isoformat()
         atomic_json(self.root / "status.json", {"status": "running", "started_at": self._started,
                     "requested": config.total_shots, "written_frames": 0, "saved": 0,
                     "world": self._world})
+        reset_journal(self.root)
         save_project(config, self.root / "project.yaml")
         atomic_json(self.root / "objects.json", [
             {"key": t.asset.key, "obj_id": t.obj_id, "name": t.name,
              "source": str(t.asset.path), "unit": t.asset.unit}
             for t in config.targets if t.enabled])
-        atomic_json(self.root / "manifest.json", self._manifest())
+        atomic_json(self.root / "manifest.json", manifest_payload(self._seed, self._world, []))
         self.begun = True
-
-    def _manifest(self) -> dict:
-        return {"seed": self._config.seed, "world": self._world, "frames": self._frames}
 
     def record_frame(self, ref, candidate, evidence) -> None:
         from bproc_core.scene import candidate_to_dict
         anchor = next(t.obj_id for t in self._config.targets if t.asset.key == candidate.anchor_key)
         row = {**asdict(ref), "candidate": candidate_to_dict(candidate),
                "occlusion_ratio": occlusion_ratio(evidence, anchor), "seed": self._config.seed}
+        append_frame(self.root, row)      # one appended, fsynced line; the manifest waits for finish
         self._frames.append(row)
-        atomic_json(self.root / "manifest.json", self._manifest())
-        self.begun = True
 
     def record_rejection(self, scene_index, view_index, attempt_index, reason, *, phase="view") -> None:
         with (self.root / "rejections.jsonl").open("a", encoding="utf-8") as stream:
@@ -97,6 +97,13 @@ class JsonRunRecorder:
         The dataset directory is already ours at this point, so leaving a stale "running"
         marker would be worse than writing a status with unknown start time or world.
         """
+        manifest_error = None
+        if self._world is not None:
+            try:
+                atomic_json(self.root / "manifest.json",
+                            manifest_payload(self._seed, self._world, self._frames, final=True))
+            except Exception as error:      # the status below must still be written
+                manifest_error = error
         payload = {**asdict(summary), "finished_at": datetime.now(timezone.utc).isoformat()}
         if self._started is not None:
             payload["started_at"] = self._started
@@ -104,6 +111,8 @@ class JsonRunRecorder:
             payload["world"] = self._world
         atomic_json(self.root / "status.json", payload)
         self.finished = True
+        if manifest_error is not None:
+            raise manifest_error
 
 
 def write_terminal_status(dataset: Path, status: str, failures=None, exit_code: int = 1,

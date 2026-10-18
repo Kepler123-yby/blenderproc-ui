@@ -1,3 +1,5 @@
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6.QtCore import QItemSelectionModel
@@ -84,4 +86,17 @@ def test_preview_index_walks_scene_views_and_locks_for_pinned_cameras(state, qtb
 
     state.update(camera_mode="random", regions=(RegionSpec(key="r1"),))
     assert window.sample_index.maximum() == 5 and window.sample_index.isEnabled()
+    window._closing = True
+
+
+def test_switching_projects_clears_the_exported_command_preview(state, qtbot, tmp_path):
+    window = MainWindow(state, scene_factory=FakeScene, camera_factory=FakeCamera, restore_settings=False)
+    qtbot.addWidget(window)
+    window.export_panel.export_function = lambda config, path: SimpleNamespace(
+        directory=Path(path), command="A 命令", preview_command="A 试渲染")
+    window.export_panel.export_to(tmp_path / "job-a")
+    assert window.command_preview.toPlainText() == "A 命令"
+    window.export_panel.state.set_project(replace(state.config, scene_count=3))
+    assert window.command_preview.toPlainText() == ""
+    assert "切换前" in window.command_preview.placeholderText()
     window._closing = True

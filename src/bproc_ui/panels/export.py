@@ -3,12 +3,13 @@
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QComboBox, QPushButton,
                                QLabel, QPlainTextEdit, QFileDialog, QApplication, QCheckBox)
 
 from bproc_core.config import validate_project
 from bproc_export.bundle import export_job
+from bproc_ui.export_worker import ExportTask, new_request
 from bproc_ui.blender_view import BlenderViewer
 from bproc_ui.widgets import number, integer, section, note, row
 
@@ -16,12 +17,16 @@ from bproc_ui.widgets import number, integer, section, note, row
 class ExportPanel(QWidget):
     exported = Signal(object)
     message = Signal(str)
+    stale = Signal()
 
-    def __init__(self, state, parent=None, export_function=None):
+    def __init__(self, state, parent=None, export_function=None, pool=None):
         super().__init__(parent)
         self.state = state
         self.export_function = export_function or export_job
+        self.pool = pool or QThreadPool.globalInstance()
         self._updating = False
+        self._export_task = None
+        self._last_request = None
         self.last_result = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 10)
@@ -115,10 +120,10 @@ class ExportPanel(QWidget):
         form.addRow("新任务目录", row(self.job_path, choose_job))
         check = QPushButton("检查配置")
         check.clicked.connect(self.validate)
-        export = QPushButton("导出脚本与配置")
-        export.setObjectName("primaryButton")
-        export.clicked.connect(self._export_clicked)
-        form.addRow(row(check, export))
+        self.export_button = QPushButton("导出脚本与配置")
+        self.export_button.setObjectName("primaryButton")
+        self.export_button.clicked.connect(self._export_clicked)
+        form.addRow(row(check, self.export_button))
         self.validation = QLabel()
         self.validation.setWordWrap(True)
         self.validation.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -235,27 +240,86 @@ class ExportPanel(QWidget):
         return issues
 
     def export_to(self, path):
+        """Synchronous core API, kept for scripts and tests; the button uses `start_export`."""
         errors = [issue for issue in self.validate() if issue.severity == "error"]
         if errors:
             raise ValueError("请先修正配置检查中列出的项目")
-        result = self.export_function(self.state.config, Path(path))
+        request = new_request(self.state, path)
+        result = self.export_function(request.config, Path(path))
+        self._show_result(result, request)
+        return result
+
+    def start_export(self, path) -> bool:
+        """Run one export on a worker thread; returns False while another export is running."""
+        if self._export_task is not None:
+            return False
+        errors = [issue for issue in self.validate() if issue.severity == "error"]
+        if errors:
+            self._show_error("请先修正配置检查中列出的项目")
+            return False
+        request = new_request(self.state, path)
+        task = ExportTask(request, self.export_function)
+        task.signals.finished.connect(self._export_finished)
+        task.signals.failed.connect(self._export_failed)
+        self._export_task = task
+        self._busy(True)
+        self.pool.start(task)
+        return True
+
+    def _busy(self, running):
+        self.export_button.setEnabled(not running)
+        self.export_button.setText("正在导出…" if running else "导出脚本与配置")
+
+    def _matches(self, request) -> bool:
+        """A result may only be shown as current if its whole context is still current."""
+        return (request.revision == getattr(self.state, "context_revision", 0)
+                and request.config == self.state.config
+                and request.project_path == getattr(self.state, "path", None))
+
+    def _export_finished(self, request, result):
+        self._export_task = None
+        self._busy(False)
+        if not self._matches(request):
+            # Only the snapshot's own context was exported; the disk copy stays valid.
+            self.stale.emit()
+            self._show_error(f"这次导出属于切换前的项目或旧设置，已过期；任务仍在 {result.directory}")
+            return
+        self._show_result(result, request)
+        self.message.emit(f"导出完成：{result.directory}")
+
+    def _export_failed(self, request, message):
+        self._export_task = None
+        self._busy(False)
+        if not self._matches(request):
+            self.stale.emit()
+            self.message.emit("已忽略上一次导出任务的失败：" + message)
+            return
+        self._show_error(message)
+
+    def _show_result(self, result, request):
+        self._last_request = request
         self.last_result = result
         self.job_path.setText(str(result.directory))
         self.command.setPlainText(result.command)
         self.preview_command.setPlainText(result.preview_command)
+        self.validation.setObjectName("successLabel")
         self.validation.setText(f"已导出：{result.directory}\n可关闭 UI，在终端执行以下命令。")
+        self._restyle()
         self.exported.emit(result)
-        return result
+
+    def _show_error(self, text):
+        self.validation.setObjectName("errorLabel")
+        self.validation.setText(text)
+        self._restyle()
+        self.message.emit(text)
+
+    def _restyle(self):
+        self.validation.style().unpolish(self.validation)
+        self.validation.style().polish(self.validation)
 
     def _export_clicked(self):
-        try:
-            self.export_to(self.job_path.text())
-        except (ValueError, OSError) as error:
-            self.validation.setObjectName("errorLabel")
-            self.validation.setText(str(error))
-            self.validation.style().unpolish(self.validation)
-            self.validation.style().polish(self.validation)
-            self.message.emit(str(error))
+        if not self.start_export(self.job_path.text()) and self._export_task is not None:
+            self.message.emit("上一次导出还没结束")
 
     def _copy(self, value):
         if value:
@@ -289,7 +353,16 @@ class ExportPanel(QWidget):
         self.blenderproc.setText(str(config.runtime.blenderproc_executable))
         self.toolkit_path.setText(str(config.runtime.toolkit_path) if config.runtime.toolkit_path else "")
         self.toolkit_path.setEnabled(config.output.format == "bop")
-        if self.last_result:
+        if self.last_result is not None and self._last_request is not None \
+                and not self._matches(self._last_request):
+            # The shown command belongs to a project or settings that are no longer current.
+            self.last_result = None
+            self._last_request = None
+            self.command.clear()
+            self.preview_command.clear()
+            self.validation.setText("上一个导出属于切换前的项目或旧设置，命令已隐藏；磁盘上的任务仍可运行。")
+            self.stale.emit()
+        elif self.last_result:
             self.validation.setText("项目设置已更改；请导出到新的任务目录以更新快照。")
         self._updating = False
         self.blender_open.setEnabled(self.state.candidate is not None)

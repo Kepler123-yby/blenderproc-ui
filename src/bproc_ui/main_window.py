@@ -135,6 +135,7 @@ class MainWindow(QMainWindow):
         self.resources.error.connect(lambda message: self.statusBar().showMessage(message))
         self.export_panel.message.connect(lambda message: self.statusBar().showMessage(message, 12000))
         self.export_panel.exported.connect(self._exported)
+        self.export_panel.stale.connect(self._export_stale)
         state.project_changed.connect(self.sync)
         state.selection_changed.connect(self._selection_changed)
         state.candidate_changed.connect(self._candidate_changed)
@@ -334,7 +335,13 @@ class MainWindow(QMainWindow):
     def _preview_status(self, message):
         self.preview_status.setText(message)
 
+    def _export_stale(self):
+        """A shown command must never look like it belongs to the current project."""
+        self.command_preview.clear()
+        self.command_preview.setPlaceholderText("上一个导出属于切换前的项目；重新导出后这里会显示当前命令。")
+
     def _exported(self, result):
+        self.command_preview.setPlaceholderText("在脚本工作区检查配置并导出，然后复制命令到终端运行。")
         self.command_preview.setPlainText(result.command)
         self.bottom.setCurrentIndex(1)
         self.statusBar().showMessage(f"已导出脚本与配置：{result.directory}", 15000)

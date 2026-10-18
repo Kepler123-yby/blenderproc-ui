@@ -151,6 +151,29 @@ def main():
                 screenshot = f"workspace-export-{mode}.png"
                 window.grab().save(str(destination / screenshot))
                 evidence["screenshots"].append(screenshot)
+            heartbeat_ticks = []
+            heartbeat = QTimer()
+            heartbeat.setInterval(5)
+            heartbeat.timeout.connect(lambda: heartbeat_ticks.append(1))
+            heartbeat.start()
+            window.export_panel.job_path.setText(str(destination / "gui-async-job"))
+            started_export = time.monotonic()
+            window.export_panel.export_button.click()
+            if window.export_panel.export_button.text() != "正在导出…":
+                raise RuntimeError("the export button did not enter its busy state")
+            deadline = time.monotonic() + 180
+            while window.export_panel._export_task is not None and time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(.01)
+            heartbeat.stop()
+            elapsed_export = time.monotonic() - started_export
+            if window.export_panel.last_result is None:
+                raise RuntimeError("async export produced no result: " + window.export_panel.validation.text())
+            if not heartbeat_ticks:
+                raise RuntimeError(f"export blocked the Qt event loop for {elapsed_export:.2f}s")
+            evidence["async_export"] = {"heartbeat_ticks": len(heartbeat_ticks),
+                                        "seconds": round(elapsed_export, 2),
+                                        "directory": str(window.export_panel.last_result.directory)}
             saved = destination / "gui-saved.yaml"
             state.save(saved)
             if load_project(saved) != state.config:

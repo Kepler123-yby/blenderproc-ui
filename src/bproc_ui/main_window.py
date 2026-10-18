@@ -353,6 +353,11 @@ class MainWindow(QMainWindow):
 
     def _exported(self, result):
         self.command_preview.setPlaceholderText("在脚本工作区检查配置并导出，然后复制命令到终端运行。")
+        if isinstance(result, list):
+            self.command_preview.setPlainText("\n\n".join(item.command for item in result))
+            self.bottom.setCurrentIndex(1)
+            self.statusBar().showMessage(f"已按尺寸拆分导出 {len(result)} 个任务", 15000)
+            return
         self.command_preview.setPlainText(result.command)
         self.bottom.setCurrentIndex(1)
         self.statusBar().showMessage(f"已导出脚本与配置：{result.directory}", 15000)

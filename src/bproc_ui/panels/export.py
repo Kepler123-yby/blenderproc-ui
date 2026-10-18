@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QComboBox, QPush
                                QLabel, QPlainTextEdit, QFileDialog, QApplication, QCheckBox)
 
 from bproc_core.config import validate_project
-from bproc_export.bundle import export_job
+from bproc_core.scale_groups import split_by_scale
+from bproc_export.bundle import export_grouped_jobs, export_job
 from bproc_ui.export_worker import ExportTask, new_request
 from bproc_ui.blender_view import BlenderViewer
 from bproc_ui.widgets import number, integer, section, note, row
@@ -118,6 +119,10 @@ class ExportPanel(QWidget):
         choose_job.setMaximumWidth(28)
         choose_job.clicked.connect(self._choose_job)
         form.addRow("新任务目录", row(self.job_path, choose_job))
+        self.split_scales = QCheckBox("目标尺寸相差 >10× 时按组导出")
+        self.split_scales.setToolTip(
+            "混尺度项目会拆成多个任务，每组只含同一尺寸段的目标；相机、灯光和深度编码保持原配置。")
+        form.addRow(self.split_scales)
         check = QPushButton("检查配置")
         check.clicked.connect(self.validate)
         self.export_button = QPushButton("导出脚本与配置")
@@ -282,7 +287,12 @@ class ExportPanel(QWidget):
         if not self._matches(request):
             # Only the snapshot's own context was exported; the disk copy stays valid.
             self.stale.emit()
-            self._show_error(f"这次导出属于切换前的项目或旧设置，已过期；任务仍在 {result.directory}")
+            where = result[0].directory if isinstance(result, list) and result else getattr(result, "directory", "")
+            self._show_error(f"这次导出属于切换前的项目或旧设置，已过期；任务仍在 {where}")
+            return
+        if isinstance(result, list):
+            self._show_grouped_result(result, request)
+            self.message.emit(f"导出完成：{len(result)} 个任务（按尺寸拆分）")
             return
         self._show_result(result, request)
         self.message.emit(f"导出完成：{result.directory}")
@@ -307,6 +317,20 @@ class ExportPanel(QWidget):
         self._restyle()
         self.exported.emit(result)
 
+    def _show_grouped_result(self, results, request):
+        self._last_request = request
+        self.last_result = results
+        self.job_path.setText(str(request.path))
+        self.command.setPlainText("\n\n".join(result.command for result in results))
+        self.preview_command.setPlainText("\n\n".join(result.preview_command for result in results))
+        self.validation.setObjectName("successLabel")
+        self.validation.setText(
+            f"已按尺寸拆分导出 {len(results)} 个任务：\n"
+            + "\n".join(str(result.directory) for result in results)
+            + "\n每个任务独立运行；相机与深度编码保持原配置。")
+        self._restyle()
+        self.exported.emit(results)
+
     def _show_error(self, text):
         self.validation.setObjectName("errorLabel")
         self.validation.setText(text)
@@ -318,8 +342,35 @@ class ExportPanel(QWidget):
         self.validation.style().polish(self.validation)
 
     def _export_clicked(self):
-        if not self.start_export(self.job_path.text()) and self._export_task is not None:
+        groups = split_by_scale(self.state.config, self.state.meshes)
+        if self.split_scales.isChecked() and len(groups) > 1:
+            started = self.start_grouped_export(self.job_path.text())
+        else:
+            started = self.start_export(self.job_path.text())
+        if not started and self._export_task is not None:
             self.message.emit("上一次导出还没结束")
+
+    def start_grouped_export(self, path) -> bool:
+        """Export one job per scale group; a single group falls back to the normal path."""
+        if self._export_task is not None:
+            return False
+        errors = [issue for issue in self.validate() if issue.severity == "error"]
+        if errors:
+            self._show_error("请先修正配置检查中列出的项目")
+            return False
+        meshes = dict(self.state.meshes)
+        groups = split_by_scale(self.state.config, meshes)
+        if len(groups) <= 1:
+            return self.start_export(path)
+        request = new_request(self.state, path)
+        task = ExportTask(request, lambda config, destination: export_grouped_jobs(
+            config, meshes, destination))
+        task.signals.finished.connect(self._export_finished)
+        task.signals.failed.connect(self._export_failed)
+        self._export_task = task
+        self._busy(True)
+        self.pool.start(task)
+        return True
 
     def _copy(self, value):
         if value:

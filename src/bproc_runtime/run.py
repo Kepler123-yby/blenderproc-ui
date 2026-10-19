@@ -168,6 +168,15 @@ def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSu
     finally:
         finalizing = True
         try:
+            payload = backend.tiling_metadata() if hasattr(backend, "tiling_metadata") else None
+            if payload is not None:
+                recorder.record_metadata("render_tiling", payload)
+        except Exception as exc:
+            # Metadata is evidence, never a reason to lose the frames already written; a missing
+            # file is visible in the run directory and counted as a failure.
+            failures["metadata:render_tiling:" + type(exc).__name__] += 1
+            print(f"Render metadata failed: {type(exc).__name__}: {exc}", flush=True)
+        try:
             writer.finalize()
             if config.output.format == "bop":
                 saved = committed

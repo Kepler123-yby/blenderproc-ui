@@ -147,3 +147,15 @@ def test_the_split_button_reports_an_unloaded_target_instead_of_raising(qtbot, t
     assert panel.validation.objectName() == "errorLabel"
     assert "target-9" in panel.validation.text()
     assert not list(tmp_path.glob("clicked-job*"))
+
+
+def test_cycles_tiling_controls_reach_the_real_config(state, qtbot):
+    panel = ExportPanel(state)
+    qtbot.addWidget(panel)
+    panel.use_tiling.setChecked(False)
+    assert state.config.render.use_tiling is False
+    panel.tile_size.setValue(512)
+    assert state.config.render.tile_size == 512
+    panel.use_tiling.setChecked(True)
+    assert state.config.render.use_tiling is True
+    assert panel.tile_size.value() == 512

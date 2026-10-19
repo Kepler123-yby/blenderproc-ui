@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 import importlib
 import math
@@ -13,6 +14,7 @@ from bproc_core.masks import decode_instances
 from .contracts import RenderError, VisibilityEvidence, RenderedFrame
 from .render_quality import (apply_object_shading, assert_gpu_only, configure_gpu,
                              configure_rgb_quality, label_pass_without_denoising)
+from .render_tiling import NativeTiling
 
 
 VERTEX_NODE = "bproc_vertex_colour"  # stable name so a purged material can be rebuilt
@@ -36,6 +38,7 @@ class BlenderBackend:
         self._renderer_module = None
         self._original_render = None
         self.gpu_devices = None
+        self.tiling = None
 
     def prepare(self, config, meshes) -> None:
         if self.api is None:
@@ -62,6 +65,11 @@ class BlenderBackend:
         self.api.renderer.set_max_amount_of_samples(config.render.samples)
         self.gpu_devices = configure_gpu(self.api, self.bpy, config.render.device)
         configure_rgb_quality(self.api, self.bpy, config.render)
+        # Native Cycles image tiling is applied and verified against the live scene, and its own
+        # `render_stats` lines are captured as execution evidence.
+        self.tiling = NativeTiling(self.bpy, config.render, Path(self._temporary.name) / "tiling")
+        self.tiling.apply("prepare")
+        self.tiling.install_observer()
         self.api.renderer.set_output_format("PNG", 8)
         if config.output.format == "bop":
             self.api.renderer.enable_depth_output(activate_antialiasing=False)
@@ -244,6 +252,10 @@ class BlenderBackend:
 
     def _segmentation(self):
         self._single_frame()
+        # render_segmap runs inside an undo scope that can re-create scene data, so the tile
+        # values are applied again at each native boundary instead of being cached once.
+        if self.tiling is not None:
+            self.tiling.apply("segmentation")
         with tempfile.TemporaryDirectory(dir=self._temporary.name, prefix="seg-") as directory:
             try:
                 if self.gpu_devices is not None:
@@ -289,6 +301,8 @@ class BlenderBackend:
                     with self._isolate(obj_id):
                         full_masks[obj_id] = self._segmentation()[obj_id]
         self._single_frame()
+        if self.tiling is not None:
+            self.tiling.apply("rgb")
         with tempfile.TemporaryDirectory(dir=self._temporary.name, prefix="rgb-pass-") as directory:
             try:
                 assert_gpu_only(self.bpy, self.config.render.device)
@@ -312,10 +326,23 @@ class BlenderBackend:
             except Exception as exc:
                 raise RenderError(f"RGB/depth pass failed: {exc}") from exc
 
+    def tiling_metadata(self) -> dict | None:
+        if self.tiling is None:
+            return None
+        payload = asdict(self.tiling.metadata)
+        payload["tile_schedule_lines"] = self.tiling.tile_lines()
+        payload["scheduled_tiles_proven"] = bool(payload["tile_schedule_lines"])
+        return payload
+
     def close(self) -> None:
         if self._renderer_module is not None and self._original_render is not None:
             self._renderer_module.render = self._original_render
             self._original_render = None
+        if self.tiling is not None:
+            try:
+                self.tiling.restore()
+            finally:
+                self.tiling = None
         if self._temporary is not None:
             self._temporary.cleanup()
             self._temporary = None

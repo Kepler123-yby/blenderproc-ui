@@ -79,7 +79,17 @@ class ExportPanel(QWidget):
         self.noise_threshold.setToolTip("自适应采样的噪声阈值；0 关闭自适应采样。")
         self.noise_threshold.valueChanged.connect(lambda: self._render_changed("noise_threshold"))
         form.addRow("噪声阈值 / 0 关闭", self.noise_threshold)
-        form.addRow(note("终端仅使用 GPU 渲染；启动检查会核验所选 GPU 后端。"))
+        self.use_tiling = QCheckBox("图像分块")
+        self.use_tiling.setToolTip("使用 Blender 4.2 Cycles 原生 use_auto_tile：仅降低高分辨率图像缓冲，\n"
+                                   "场景与几何仍完整驻留，不是超显存几何分块。")
+        self.use_tiling.toggled.connect(lambda: self._render_changed("use_tiling"))
+        form.addRow("图像分块", self.use_tiling)
+        self.tile_size = integer(2048, 8, 8192)
+        self.tile_size.setToolTip("Cycles 原生 tile_size（8–8192 像素）。")
+        self.tile_size.valueChanged.connect(lambda: self._render_changed("tile_size"))
+        form.addRow("分块尺寸", self.tile_size)
+        form.addRow(note("终端仅使用 GPU 渲染；启动检查会核验所选 GPU 后端。\n"
+                         "图像分块只降低图像缓冲；几何仍完整驻留，不能渲染任意超显存场景。"))
         form = section("表面处理", layout)
         self.shading_mode = QComboBox()
         for title, value in (("平直", "flat"), ("平滑", "smooth"), ("按角度平滑", "auto")):
@@ -194,7 +204,9 @@ class ExportPanel(QWidget):
                       "smooth_angle_deg": self.smooth_angle.value(),
                       "weighted_normals": self.weighted_normals.isChecked(),
                       "denoiser": self.denoiser.currentData(),
-                      "noise_threshold": self.noise_threshold.value()}
+                      "noise_threshold": self.noise_threshold.value(),
+                      "use_tiling": self.use_tiling.isChecked(),
+                      "tile_size": self.tile_size.value()}
             self.state.update(render=replace(self.state.config.render, **{field: values[field]}))
 
     def _runtime_changed(self, field):
@@ -423,6 +435,9 @@ class ExportPanel(QWidget):
         self.weighted_normals.setChecked(config.render.weighted_normals)
         self.denoiser.setCurrentIndex(self.denoiser.findData(config.render.denoiser))
         self.noise_threshold.setValue(config.render.noise_threshold)
+        self.use_tiling.setChecked(config.render.use_tiling)
+        self.tile_size.setValue(config.render.tile_size)
+        self.tile_size.setEnabled(config.render.use_tiling)
         self.conda_env.setText(config.runtime.conda_env)
         self.blender_dir.setText(str(config.runtime.blender_dir))
         self.blenderproc.setText(str(config.runtime.blenderproc_executable))

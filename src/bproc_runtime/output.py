@@ -95,6 +95,12 @@ class JsonRunRecorder:
             payload["warnings"] = list(self._warnings)
             atomic_json(status, payload)
 
+    def record_metadata(self, name: str, payload) -> None:
+        """Write an extra run-metadata document (e.g. the effective native tiling values)."""
+        if not self.begun:
+            raise RuntimeError("Run metadata cannot be recorded before begin()")
+        atomic_json(self.root / f"{name}.json", payload)
+
     def record_frame(self, ref, candidate, evidence) -> None:
         from bproc_core.scene import candidate_to_dict
         anchor = next(t.obj_id for t in self._config.targets if t.asset.key == candidate.anchor_key)

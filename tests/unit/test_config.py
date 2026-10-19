@@ -2,7 +2,8 @@ from dataclasses import replace
 from pathlib import Path
 import pytest
 
-from bproc_core.config import AssetSpec, Azimuth, Box, ConfigError, Range, RegionSpec, new_project, validate_project
+from bproc_core.config import (AssetSpec, Azimuth, Box, ConfigError, Range, RegionSpec,
+                               ScaleGroupingSpec, ViewportSpec, new_project, validate_project)
 from bproc_core.project_io import load_project, save_project, project_to_dict
 from tests.factories import make_project
 
@@ -184,3 +185,38 @@ def test_fixed_material_roundtrip_and_legacy_mode_migration(tmp_path):
 def test_material_source_validation(tmp_path, changes, field):
     project = make_project(tmp_path)
     assert field in error_fields(replace(project, material=replace(project.material, **changes)))
+
+
+def test_viewport_tiling_and_grouping_defaults_and_roundtrip(tmp_path):
+    project = make_project(tmp_path)
+    assert project.render.use_tiling is True and project.render.tile_size == 2048
+    assert project.viewport == ViewportSpec("auto", 100_000, 50_000)
+    assert project.scale_grouping == ScaleGroupingSpec(False, 0.10)
+    changed = replace(
+        project,
+        render=replace(project.render, use_tiling=False, tile_size=512),
+        viewport=ViewportSpec("full", 20_000, 5_000),
+        scale_grouping=ScaleGroupingSpec(True, 0.2))
+    path = tmp_path / "boundaries.yaml"
+    save_project(changed, path)
+    assert load_project(path) == changed
+    document = project_to_dict(changed)
+    assert document["render"]["use_tiling"] is False and document["render"]["tile_size"] == 512
+    assert document["viewport"]["lod_mode"] == "full"
+    assert document["scale_grouping"] == {"reframe": True, "margin_fraction": 0.2}
+
+
+@pytest.mark.parametrize("change,expected", [
+    (lambda p: replace(p, render=replace(p.render, tile_size=7)), "render.tile_size"),
+    (lambda p: replace(p, render=replace(p.render, tile_size=9000)), "render.tile_size"),
+    (lambda p: replace(p, render=replace(p.render, tile_size=True)), "render.tile_size"),
+    (lambda p: replace(p, render=replace(p.render, use_tiling=1)), "render.use_tiling"),
+    (lambda p: replace(p, viewport=ViewportSpec("auto", 100, 101)), "viewport.lod_target_faces"),
+    (lambda p: replace(p, viewport=ViewportSpec("auto", True, 1)), "viewport.lod_threshold_faces"),
+    (lambda p: replace(p, viewport=ViewportSpec("rough", 10, 5)), "viewport.lod_mode"),
+    (lambda p: replace(p, scale_grouping=ScaleGroupingSpec(True, float("nan"))), "scale_grouping.margin_fraction"),
+    (lambda p: replace(p, scale_grouping=ScaleGroupingSpec(True, 0.45)), "scale_grouping.margin_fraction"),
+    (lambda p: replace(p, scale_grouping=ScaleGroupingSpec(1, 0.1)), "scale_grouping.reframe"),
+])
+def test_new_boundary_settings_have_specific_error_fields(tmp_path, change, expected):
+    assert expected in error_fields(change(make_project(tmp_path)))

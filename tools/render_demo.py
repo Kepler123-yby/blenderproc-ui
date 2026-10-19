@@ -27,6 +27,9 @@ def main(argv=None) -> int:
                           help="只渲染前 N 张；按视角取整，例如 1/4/5 张在 3 视角时实际是 3/3/6 张")
     counting.add_argument("--num-scenes", type=int, help="只渲染前 N 个场景，每个场景的视角数不变")
     parser.add_argument("--device", help="覆盖 Cycles 后端，例如 OPTIX / CUDA")
+    tiling = parser.add_mutually_exclusive_group()
+    tiling.add_argument("--tile-size", type=int, help="覆盖 Cycles 原生 tile_size（8–8192）")
+    tiling.add_argument("--no-tiling", action="store_true", help="关闭原生图像分块（沿用其余 YAML 设置）")
     parser.add_argument("--run", action="store_true", help="导出后立即执行任务命令")
     arguments = parser.parse_args(argv)
 
@@ -43,6 +46,12 @@ def main(argv=None) -> int:
     render = project.render
     if arguments.device:
         render = replace(render, device=arguments.device)
+    if arguments.tile_size is not None:
+        if not 8 <= arguments.tile_size <= 8192:
+            parser.error("--tile-size 必须位于 8 到 8192")
+        render = replace(render, use_tiling=True, tile_size=arguments.tile_size)
+    if arguments.no_tiling:
+        render = replace(render, use_tiling=False)
     config = replace(project, output=output, render=render)
     if arguments.num_scenes is not None:
         if arguments.num_scenes < 0:

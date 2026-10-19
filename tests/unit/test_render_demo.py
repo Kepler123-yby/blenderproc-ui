@@ -77,3 +77,23 @@ def test_two_counting_options_are_rejected(tool, tmp_path):
     with pytest.raises(SystemExit):
         module.main(['--project', str(tmp_path / 'd.yaml'), '--destination', str(tmp_path / 'j'),
                      '--format', 'rgb_masks', '--num-scenes', '1', '--num-samples', '4'])
+
+
+def test_tile_size_override_reaches_the_exported_snapshot(tool, tmp_path):
+    code, captured = run(tool, tmp_path, '--tile-size', '512')
+    assert code == 0
+    assert captured['config'].render.use_tiling is True
+    assert captured['config'].render.tile_size == 512
+
+
+def test_no_tiling_override_disables_the_native_tiles(tool, tmp_path):
+    code, captured = run(tool, tmp_path, '--no-tiling')
+    assert code == 0
+    assert captured['config'].render.use_tiling is False
+
+
+def test_an_out_of_range_tile_size_is_rejected(tool, tmp_path):
+    module, _ = tool
+    with pytest.raises(SystemExit):
+        module.main(['--project', str(tmp_path / 'd.yaml'), '--destination', str(tmp_path / 'j'),
+                     '--format', 'rgb_masks', '--tile-size', '7'])

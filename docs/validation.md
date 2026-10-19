@@ -247,7 +247,7 @@ E=.artifacts/review12-native-masks/completion-20261019
 
 **关键命令与真实结果**
 
-- 全量回归：`env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p pytestqt.plugin tests/unit tests/ui -q` → **687 passed / 46.32 s / 退出 0**（修复前基线 659，原始基线 567）。
+- 全量回归：`env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p pytestqt.plugin tests/unit tests/ui -q` → **687 passed / 48.22 s / 退出 0**（修复前基线 659，原始基线 567）。
 - AC-2 配置链路子集 → 退出 0；AC-3/4 LOD、AC-6 tiling、AC-8/9 分组、AC-11 streaming、AC-13 验收工具子集均退出 0（完整命令见 `commands.json`/日志）。
 - 真实 LOD：`tools/benchmark_remaining_geometry.py --case lod --output "$E/lod"` → 退出 0，输入/输出/心跳/截图见上表。
 - 真实轮廓：`tools/benchmark_remaining_geometry.py --case silhouette --output "$E/silhouette"` → 退出 0，2,002,000 面、30/30 通过。
@@ -273,12 +273,12 @@ E=.artifacts/review12-native-masks/completion-20261019
 
 **最终版本实测（`$F`，HEAD `ae5f04d`）**
 
-- 全量：**687 passed / 46.32 s / 退出 0**（`$F/green/full-suite.txt`；基线 659）。
-- LOD：百万面 → 39,798 面，0.228 s，心跳最大 18.38 ms，RSS **970.941 MiB**；真实 GL 截图 13.96% / 86.07%；阈值内 60,000 面检查见 `$F/lod/threshold-check.json`。
+- 全量：**687 passed / 48.22 s / 退出 0**（`$F/green/full-suite.txt`；基线 659）。
+- LOD：百万面 → 39,798 面，0.234 s，心跳最大 18.13 ms，RSS **970.863 MiB**；真实 GL 截图 13.96% / 86.07%；阈值内 60,000 面检查见 `$F/lod/threshold-check.json`。
 - 超限轮廓：2,002,000 面，冷 0.935 s，工作峰值 3.82 MiB，额外 RSS 0 MiB，30/30 提案入窗（`$F/silhouette/silhouette.json`）。
 - 重取景：从最终源码重新导出两组 BOP（`$F/reframe/jobs/render_job-size-{1,2}`），各 2 帧、GPU OPTIX、`check_bop.py` 与 `audit_dataset()` 均 PASS；`$F/reframe/consistency.json` 记录真实 journal 半径/灯光区间。随机紧半径的真实导出见 `$F/reframe-clamps/jobs/*/grouping.json`，两端点均记录钳位。
 - dense 遮挡物：`$F/occluder/occluder.json` 记录 10,000 面双组件原点中心 union=true/outline=false，实际瞄准 union share 0.877、outline 0.502，placement share 0.895。
-- 真实桌面：`DISPLAY=:1` 的 `gui_smoke.py` 退出 0，18 张 PNG 在 `$F/gui/`，导出 YAML 含 tile/reframe/LOD 字段。
+- 真实桌面：`DISPLAY=:1` 的 `gui_smoke.py` 退出 0，18 张 PNG 在 `$F/gui-final/`，导出 YAML 含 tile/reframe/LOD 字段。
 - 统一证据门：`$F/verify-remaining.json` 仅 `production=false`（verify 退出 2，缺少生产 summary），其余 preflight/lod/tiles/reframe/silhouette/fixture_guard 为 true；`$F/logs/verify-summary.log` 退出 1。tile 复用 `$E` 的明确版本证据（算法未改），旧任务哈希不迎合新源码；重取景使用新源码任务。
 
 **证据限制**：tile 只证明图像缓冲；LOD 只影响视口；分组重取景不改变科学标定；超限轮廓不是逐输出像素真值；生产验收未用合成资源冒充。所有真实渲染均为 RTX 3060 Ti / OPTIX / NVIDIA EGL，未使用 CPU 渲染回退。

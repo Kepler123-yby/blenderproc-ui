@@ -160,9 +160,9 @@ def _grouping_document(source: ProjectConfig, groups, group, meshes) -> dict:
         "group_bounds_m": None if bounds is None else bounds.tolist(),
         "reference_scale_m": None if reference is None else envelope_radius(reference),
         "group_scale_m": None if bounds is None else envelope_radius(bounds),
-        "scale_factor": (None if report else
-                         (envelope_radius(bounds) / envelope_radius(reference)
-                          if bounds is not None and reference is not None and envelope_radius(reference) else None)),
+        "scale_factor": ((envelope_radius(bounds) / envelope_radius(reference))
+                         if bounds is not None and reference is not None and envelope_radius(reference)
+                         else None),
         "reframe": bool(report.get("reframe", False)),
         "margin_fraction": group_config.scale_grouping.margin_fraction,
         "cameras": cameras,

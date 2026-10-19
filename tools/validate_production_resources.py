@@ -22,6 +22,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -189,7 +190,12 @@ def preflight(manifest: Manifest, *, num_scenes: int | None = None,
             config = load_project(case.project)
         except (ConfigError, OSError, ValueError) as exc:
             raise ManifestError(f"无法读取项目 {case.project}：{exc}") from exc
-        errors = [issue for issue in validate_project(config, check_files=True) if issue.severity == "error"]
+        # The source project's own output directory may already exist; the run always derives a
+        # fresh directory under the new destination, so validate against a unique placeholder.
+        probe = replace(config, output=replace(
+            config.output, root=Path(tempfile.gettempdir()) / f"bproc-production-preflight-{os.getpid()}",
+            dataset_name="probe"))
+        errors = [issue for issue in validate_project(probe, check_files=True) if issue.severity == "error"]
         if errors:
             raise ManifestError(f"项目 {case.project} 未通过检查：" + "；".join(
                 f"{issue.field}: {issue.message}" for issue in errors))

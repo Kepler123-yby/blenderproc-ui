@@ -1246,7 +1246,8 @@ def test_a_low_face_occluder_still_uses_its_triangles(monkeypatch):
     assert calls["outline"] == 0
 
 
-def test_a_dense_occluder_stream_failure_is_reported_with_the_outline_fallback(monkeypatch):
+def test_a_dense_occluder_without_real_or_outline_coverage_reports_the_hull(monkeypatch):
+    """No surface could be measured: the hull is the method, not a successful outline."""
     from bproc_core.silhouette import SilhouetteDiagnostic
     config, meshes, pose = _dense_overlap_fixture(Range(.9, 1.))
     diagnostic = SilhouetteDiagnostic("o", "unavailable", 256, len(meshes["o"].faces), 0,
@@ -1260,5 +1261,43 @@ def test_a_dense_occluder_stream_failure_is_reported_with_the_outline_fallback(m
         np.array([0., 0., .25]), np.array([1., 0., 0.]), meshes["o"], 1., shapes, pose,
         config, np.random.default_rng(0), .02, target_points, diagnostics)
     assert diagnostics and diagnostics[0]["asset_key"] == "o"
-    assert diagnostics[0]["fallback_reason"] == "stream:invalid_faces"
+    assert diagnostics[0]["method"] == "hull"
+    assert diagnostics[0]["estimate_only"] is True
+    assert diagnostics[0]["fallback_reason"] == "stream:invalid_faces/open_outline"
+
+
+def test_a_dense_occluder_stream_failure_keeps_a_working_outline_as_the_method(monkeypatch):
+    """A real outline fill is reported as the outline method, never as an estimate."""
+    from bproc_core.silhouette import SilhouetteDiagnostic
+    config, meshes, pose = _dense_overlap_fixture(Range(.9, 1.))
+    diagnostic = SilhouetteDiagnostic("o", "unavailable", 256, len(meshes["o"].faces), 0,
+                                      "work_budget", False, 0, 0.0, 0)
+    monkeypatch.setattr(scene_module, "stream_coverage", lambda *args, **kwargs: (None, diagnostic))
+    shapes, _target_mask_result = _target_mask(config, meshes, pose)
+    target_points = transform_points(bounds_corners(meshes["a"].bounds_m), np.eye(4))
+    diagnostics: list = []
+    scene_module._aimed_offset(
+        np.array([0., 0., .25]), np.array([1., 0., 0.]), meshes["o"], 1., shapes, pose,
+        config, np.random.default_rng(0), .02, target_points, diagnostics)
+    assert diagnostics and diagnostics[0]["asset_key"] == "o"
+    assert diagnostics[0]["method"] == "outline"
     assert diagnostics[0]["estimate_only"] is False
+    assert diagnostics[0]["fallback_reason"] == "stream:work_budget"
+
+
+def test_propose_candidate_reports_the_hull_when_the_dense_occluder_has_no_surface():
+    """The real aiming/placement/candidate chain must not label a hull aim as an outline."""
+    from dataclasses import replace as dataclass_replace
+    config, meshes, _pose = _dense_overlap_fixture(Range(.85, .95))
+    faces = meshes["o"].faces.copy()
+    faces[0, 0] = len(meshes["o"].vertices_m)       # out-of-range index fails stream and outline
+    meshes["o"] = dataclass_replace(meshes["o"], faces=faces)
+    state = propose_scene(config, meshes, 0)
+    assert isinstance(state, SceneState), state
+    shot = propose_candidate(config, meshes, state, 0, 0)
+    assert isinstance(shot, SceneCandidate), shot
+    rows = [row for row in shot.silhouette_diagnostics
+            if row["asset_key"] == "o" and row["method"] == "hull"]
+    assert rows, shot.silhouette_diagnostics
+    assert rows[0]["estimate_only"] is True
+    assert rows[0]["fallback_reason"] == "stream:invalid_faces/invalid_faces"

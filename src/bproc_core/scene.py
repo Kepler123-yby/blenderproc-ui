@@ -873,25 +873,27 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
     # even-odd outline first: that fill cancels the overlap of separate components.
     grid = shapes.grid
     outline_cache: dict = {}
-    reported_stream_failures: set = set()
+    reported_fallbacks: set = set()
     reported_empty_reasons: set = set()
 
-    def record_stream_failure(matrix, diagnostic):
+    def record_fallback(stream_reason, method, estimate_only, fallback_reason):
+        """Report the path that actually measured this occluder, not the one we hoped for."""
         if diagnostics_out is None:
             return
-        reason = diagnostic.fallback_reason or "unavailable"
-        if reason in reported_stream_failures:
+        key = (method, fallback_reason)
+        if key in reported_fallbacks:
             return
-        reported_stream_failures.add(reason)
+        reported_fallbacks.add(key)
         diagnostics_out.append({
-            "asset_key": mesh.key, "method": "outline", "estimate_only": False,
-            "fallback_reason": f"stream:{reason}", "grid_size": None if grid is None else grid.size,
-            "faces": len(mesh.faces),
+            "asset_key": mesh.key, "method": method, "estimate_only": estimate_only,
+            "fallback_reason": fallback_reason,
+            "grid_size": None if grid is None else grid.size, "faces": len(mesh.faces),
         })
 
     def occluder_real(matrix):
         """The occluder's own surface on the shared grid, or None when only its envelope is left."""
         if grid is None:
+            record_fallback("no_grid", "hull", True, "no_shared_grid")
             return None
         if _maskable(mesh):
             return _rasterize_mask(mesh, matrix, pose, config.camera, grid, triangles=True)
@@ -910,15 +912,23 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
                     "note": diagnostic.fallback_reason,
                 })
             return np.zeros((grid.size, grid.size), dtype=bool)
-        record_stream_failure(matrix, diagnostic)
+        stream_reason = diagnostic.fallback_reason or "unavailable"
         if "outline" not in outline_cache:
             # The legacy outline is a fallback for inputs the streaming limits reject, not the
             # primary dense path. Its topology is still built once per aim.
             outline_cache["outline"] = _outline_for(mesh, matrix, pose, config.camera)
-        outline, _reason = outline_cache["outline"]
-        if outline is None:
-            return None
-        return outline.mask(matrix, pose, config.camera, grid)[0]
+        outline, outline_reason = outline_cache["outline"]
+        if outline is not None:
+            outline_mask, mask_reason = outline.mask(matrix, pose, config.camera, grid)
+            if outline_mask is not None:
+                record_fallback(stream_reason, "outline", False, f"stream:{stream_reason}")
+                return outline_mask
+            outline_reason = mask_reason
+        # Both real-surface paths were unavailable for this aim: the envelope is the estimate
+        # actually used by ``estimate``. Keep both failure reasons so support limits stay visible.
+        record_fallback(stream_reason, "hull", True,
+                        f"stream:{stream_reason}/{outline_reason or 'unavailable'}")
+        return None
 
     origin = occluder_real(matrix_at(0.))
     occluder_convex = grid is None or (origin is not None and _is_convex_silhouette(

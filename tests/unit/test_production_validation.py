@@ -15,7 +15,8 @@ from tools import validate_production_resources as vpr
 class FakeExecutor:
     def __init__(self, *, fail=None, partial=False, send_signal=None, datasets=2,
                  layout_rejections=0, view_rejections=1, grouped_jobs=1,
-                 missing_status=False, missing_counters_for_signal=False):
+                 missing_status=False, missing_counters_for_signal=False,
+                 status_payload=None):
         self.fail = fail
         self.partial = partial
         self.send_signal = send_signal
@@ -25,6 +26,7 @@ class FakeExecutor:
         self.grouped_jobs = grouped_jobs
         self.missing_status = missing_status
         self.missing_counters_for_signal = missing_counters_for_signal
+        self.status_payload = status_payload
         self.commands = []
         self.calls = []
 
@@ -37,10 +39,13 @@ class FakeExecutor:
         (dataset / "run_metadata").mkdir(exist_ok=True)
         if not missing_status:
             saved = 1 if self.partial else self.datasets
-            (dataset / "run_metadata" / "status.json").write_text(json.dumps({
+            payload = self.status_payload if self.status_payload is not None else {
                 "status": "partial" if self.partial else "completed", "requested": self.datasets,
                 "written_frames": self.datasets, "saved": saved,
-                "skipped": self.datasets - saved, "failures_by_reason": {}}), encoding="utf-8")
+                "skipped": self.datasets - saved, "failures_by_reason": {},
+                "exit_code": 2 if self.partial else 0}
+            (dataset / "run_metadata" / "status.json").write_text(json.dumps(payload),
+                                                                  encoding="utf-8")
         frames = [{"frame_index": index} for index in range(self.datasets)]
         (dataset / "run_metadata" / "frames.jsonl").write_text(
             "".join(json.dumps(row) + "\n" for row in frames), encoding="utf-8")
@@ -319,6 +324,61 @@ def test_unreadable_current_counters_record_a_reason_instead_of_zeroes(tmp_path)
     assert counters["readable"] is False
     assert counters["error"]
     assert "requested" not in counters or counters["requested"] is None
+
+
+@pytest.mark.parametrize("payload,needle", [
+    ({}, "status"),
+    ({"status": "completed"}, "requested"),
+    ({"status": "completed", "requested": None, "written_frames": 0, "saved": 0,
+      "skipped": 0, "exit_code": 0}, "requested"),
+    ({"status": "completed", "requested": "2", "written_frames": 2, "saved": 2,
+      "skipped": 0, "exit_code": 0}, "requested"),
+    ({"status": "running", "requested": 2, "written_frames": 0, "saved": 0,
+      "skipped": 0, "exit_code": 0}, "running"),
+    ({"status": "completed", "requested": 2, "written_frames": 2, "saved": 2,
+      "skipped": 0}, "exit_code"),
+])
+def test_malformed_or_incomplete_status_is_unreadable_not_zeroes(tmp_path, payload, needle):
+    path, _project, _ = build_manifest(tmp_path)
+    destination = tmp_path / "evidence"
+    executor = FakeExecutor(status_payload=payload)
+    assert vpr.run(path, destination, executor=executor) != 0
+    summary, counters = _current_job_counters(destination)
+    assert summary["status"] == "failed"
+    assert counters["readable"] is False
+    assert needle in counters["error"]
+    assert "requested" not in counters
+    assert summary["totals"]["readable_jobs"] == 0
+    assert summary["totals"]["counter_errors"] == 1
+
+
+def test_a_terminal_failed_status_without_counters_keeps_its_nonzero_exit_code(tmp_path):
+    path, _project, _ = build_manifest(tmp_path)
+    destination = tmp_path / "evidence"
+    executor = FakeExecutor(status_payload={"status": "failed", "exit_code": 7, "failures": {}})
+    assert vpr.run(path, destination, executor=executor) != 0
+    summary, counters = _current_job_counters(destination)
+    assert counters["readable"] is False
+    assert "requested" in counters["error"]
+    assert counters["exit_code"] == 7
+    assert counters["status"] == "failed"
+
+
+@pytest.mark.parametrize("signum,expected", [(signal.SIGINT, 130), (signal.SIGTERM, 143)])
+def test_signals_record_unreadable_counters_with_the_real_reason(tmp_path, signum, expected):
+    path, _project, _ = build_manifest(tmp_path, second_hdri=True)
+    destination = tmp_path / "evidence"
+    executor = FakeExecutor(send_signal=signum, status_payload={
+        "status": "running", "requested": 2, "written_frames": 0, "saved": 0,
+        "skipped": 0, "exit_code": 0})
+    assert vpr.run(path, destination, executor=executor) == expected
+    summary, counters = _current_job_counters(destination)
+    assert summary["status"] == "interrupted" and summary["exit_code"] == expected
+    assert summary["cases"][1]["status"] == "not_started"
+    assert counters["readable"] is False
+    assert "running" in counters["error"]
+    assert "requested" not in counters
+    assert summary["totals"]["counter_errors"] == 1
 
 
 def test_layout_and_view_rejections_are_counted_separately(tmp_path):

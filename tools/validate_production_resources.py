@@ -349,24 +349,77 @@ class LocalExecutor:
                           "--output", str(report)], log)
 
 
+TERMINAL_RUN_STATUSES = frozenset({"completed", "partial", "failed", "interrupted"})
+
+
+def _counter_int(status: dict, name: str) -> int:
+    """One required counter as a non-negative integer; never a silent zero default."""
+    if name not in status:
+        raise ValueError(f"missing required field {name!r}")
+    value = status[name]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"field {name!r} is not an integer: {value!r}")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"field {name!r} is not an integer: {value!r}")
+        value = int(value)
+    if value < 0:
+        raise ValueError(f"field {name!r} is negative: {value!r}")
+    return value
+
+
+def _unreadable_counters(dataset: Path, reason: str, status) -> dict:
+    """An explicit unreadable result; echo a legible status/exit code, never counter zeroes."""
+    counters = {"readable": False, "dataset": str(dataset), "error": reason}
+    if isinstance(status, dict):
+        name = status.get("status")
+        if isinstance(name, str) and name:
+            counters["status"] = name
+        exit_code = status.get("exit_code")
+        if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+            counters["exit_code"] = exit_code
+    return counters
+
+
 def _dataset_counters(dataset: Path) -> dict:
     """Real counters for one finished child, or an explicit reason they cannot be read.
 
-    The summary must never present zeroes as if a child had run and produced nothing. A missing or
-    malformed status/journal is therefore reported as ``readable: False`` with its reason; the
-    caller decides whether that is a failure (normal completion) or part of an already interrupted
-    run (signal).
+    The summary must never present zeroes as if a child had run and produced nothing. A missing,
+    malformed, non-terminal or incomplete status is therefore ``readable: False`` with its reason;
+    the caller decides whether that is a failure (normal completion) or part of an already
+    interrupted run (signal).
     """
     dataset = Path(dataset)
     status_path = dataset / "run_metadata" / "status.json"
     try:
         status = json.loads(status_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        return {"readable": False, "dataset": str(dataset),
-                "error": f"status.json unreadable: {type(exc).__name__}: {exc}"}
+        return _unreadable_counters(dataset, f"status.json unreadable: {type(exc).__name__}: {exc}", None)
     if not isinstance(status, dict):
-        return {"readable": False, "dataset": str(dataset),
-                "error": "status.json is not an object"}
+        return _unreadable_counters(dataset, "status.json is not an object", None)
+    name = status.get("status")
+    if not isinstance(name, str) or not name:
+        return _unreadable_counters(dataset, "status.json is missing a string 'status'", status)
+    if name not in TERMINAL_RUN_STATUSES:
+        return _unreadable_counters(
+            dataset, f"status.json status {name!r} is not terminal", status)
+    try:
+        requested = _counter_int(status, "requested")
+        written = _counter_int(status, "written_frames")
+        saved = _counter_int(status, "saved")
+        skipped = _counter_int(status, "skipped")
+        exit_code = _counter_int(status, "exit_code")
+    except ValueError as exc:
+        return _unreadable_counters(dataset, f"status.json counters unavailable: {exc}", status)
+    if saved > requested or skipped != requested - saved:
+        return _unreadable_counters(
+            dataset,
+            f"status.json counters are inconsistent: requested={requested}, saved={saved}, "
+            f"skipped={skipped}", status)
+    failures = status.get("failures_by_reason") or {}
+    if not isinstance(failures, dict):
+        return _unreadable_counters(dataset, "status.json 'failures_by_reason' is not an object",
+                                    status)
     frames_path = dataset / "run_metadata" / "frames.jsonl"
     journal_frames = None
     try:
@@ -374,8 +427,8 @@ def _dataset_counters(dataset: Path) -> dict:
             journal_frames = len([line for line in frames_path.read_text(encoding="utf-8").splitlines()
                                   if line.strip()])
     except (OSError, ValueError) as exc:
-        return {"readable": False, "dataset": str(dataset),
-                "error": f"frames.jsonl unreadable: {type(exc).__name__}: {exc}"}
+        return _unreadable_counters(
+            dataset, f"frames.jsonl unreadable: {type(exc).__name__}: {exc}", status)
     rejections_path = dataset / "run_metadata" / "rejections.jsonl"
     rejection_rows = []
     rejection_error = None
@@ -404,19 +457,15 @@ def _dataset_counters(dataset: Path) -> dict:
         elif phase == "view":
             view_rejections += 1
             by_phase["view"][reason] = by_phase["view"].get(reason, 0) + 1
-    requested = int(status.get("requested", 0))
-    saved = int(status.get("saved", 0))
-    written = int(status.get("written_frames", journal_frames if journal_frames is not None else 0))
-    skipped = int(status.get("skipped", requested - saved))
     frames = journal_frames if journal_frames is not None else written
     counters = {
         "readable": True,
-        "status": status.get("status"),
+        "status": name,
         "requested": requested,
         "written": written,
         "saved": saved,
         "skipped": skipped,
-        "exit_code": int(status.get("exit_code", 0)),
+        "exit_code": exit_code,
         "journal_frames": journal_frames,
         "journal_written_match": journal_frames is None or journal_frames == written,
         "view_rejections": view_rejections,
@@ -427,13 +476,12 @@ def _dataset_counters(dataset: Path) -> dict:
         "frame_yield": (saved / requested) if requested else 0.0,
         "rejections_by_phase": by_phase,
         "rejections_by_reason": by_reason,
-        "errors": status.get("failures_by_reason") or {},
+        "errors": failures,
         "frames_read": frames,
     }
     if rejection_error:
         counters["rejections_error"] = rejection_error
     return counters
-
 
 def _totals(summary: dict) -> dict:
     """Aggregate readable job counters; unreadable children stay visible, never summed as 0."""
@@ -531,7 +579,11 @@ def run(manifest_path: Path, destination: Path, *, num_scenes: int | None = None
                             break
                     # The child has finalized (or the signal interrupted it): read the real
                     # status/journal now. A signal or a failed render must not skip this step.
-                    counters = _dataset_counters(job.dataset)
+                    try:
+                        counters = _dataset_counters(job.dataset)
+                    except Exception as exc:      # noqa: BLE001 - recorded, never lost
+                        counters = {"readable": False, "dataset": str(job.dataset),
+                                    "error": f"counter read failed: {type(exc).__name__}: {exc}"}
                     job_entry["counters"] = counters
                     if not counters.get("readable"):
                         job_entry["counters_error"] = counters.get("error")

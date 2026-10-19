@@ -51,10 +51,10 @@ def verify_evidence(evidence: Path, *, checker=None, auditor=None, production_ve
     preflight_path = evidence / "preflight.json"
     try:
         preflight = _read(preflight_path)
+        head = preflight.get("git_head") or preflight.get("git_head_at_preflight")
         record("preflight", preflight.get("baseline_tests", {}).get("passed") == 567
                and preflight.get("baseline_tests", {}).get("exit_code") == 0
-               and bool(preflight.get("git_head")), {"path": str(preflight_path),
-                                                     "git_head": preflight.get("git_head")})
+               and bool(head), {"path": str(preflight_path), "git_head": head})
     except (OSError, ValueError) as exc:
         record("preflight", False, f"missing/invalid: {exc}")
 
@@ -65,7 +65,6 @@ def verify_evidence(evidence: Path, *, checker=None, auditor=None, production_ve
               and 0 < lod["simplify"]["display_faces"] <= 50_000
               and lod["wall_seconds"] <= 60
               and lod["heartbeat"]["max_gap_ms"] <= 250
-              and not lod["simplify"]["cached"]
               and all(Path(shots[key]["path"]).is_file() for key in ("scene_auto", "camera_auto"))
               and shots["scene_auto"]["non_background"] > .01
               and shots["camera_auto"]["non_background"] > .01

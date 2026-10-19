@@ -1,6 +1,8 @@
 """A compact four-editor workspace, inspired by Blender's native layout."""
 
 from pathlib import Path
+from dataclasses import replace
+import inspect
 
 from PySide6.QtCore import Qt, QSettings, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QColor
@@ -14,6 +16,7 @@ from bproc_ui.widgets import editor_header, scrollable, integer, SeedEditor
 from bproc_ui.preview import PreviewController
 from bproc_ui.views.scene_view import SceneView, target_preview_rgba
 from bproc_ui.views.camera_view import CameraPreview
+from bproc_ui.viewport_lod import ViewportLodController, original_display_mesh
 from bproc_ui.panels.resources import ResourcesPanel
 from bproc_ui.panels.sampling import SamplingPanel
 from bproc_ui.panels.export import ExportPanel
@@ -76,7 +79,13 @@ class MainWindow(QMainWindow):
         camera_button.clicked.connect(lambda: self.camera_preview.show_preview())
         fit = QToolButton()
         fit.setText("适应场景")
-        scene_layout.addWidget(editor_header("▧  三维视口", self.anchor_badge, fit, camera_button))
+        self.lod_mode = QComboBox()
+        self.lod_mode.addItem("自动 LOD", "auto")
+        self.lod_mode.addItem("原始网格", "full")
+        self.lod_mode.setToolTip("自动 LOD 只简化两个视口的显示网格；采样、碰撞、导出和真渲染始终使用原始几何。\n"
+                                 "原始网格会把百万面模型完整上传，可能造成卡顿。")
+        self.lod_mode.currentIndexChanged.connect(self._lod_mode_changed)
+        scene_layout.addWidget(editor_header("▧  三维视口", self.lod_mode, self.anchor_badge, fit, camera_button))
         self.scene_view = scene_factory()
         fit.clicked.connect(self.scene_view.fit_scene)
         scene_layout.addWidget(self.scene_view, 1)
@@ -84,6 +93,10 @@ class MainWindow(QMainWindow):
         self.viewport_caption.setObjectName("muted")
         self.viewport_caption.setMinimumHeight(27)
         scene_layout.addWidget(self.viewport_caption)
+        self.lod_status = QLabel("  视口 LOD：自动 · 等待模型")
+        self.lod_status.setObjectName("muted")
+        self.lod_status.setMinimumHeight(20)
+        scene_layout.addWidget(self.lod_status)
         self.vertical.addWidget(scene_editor)
         self.bottom = QTabWidget()
         self.bottom.setMinimumHeight(135)
@@ -130,6 +143,12 @@ class MainWindow(QMainWindow):
 
         self.camera_preview = camera_factory(self)
         self.preview = PreviewController(state, self)
+        self.lod = ViewportLodController(self)
+        self.lod.ready.connect(self._lod_ready)
+        self.lod.failed.connect(self._lod_failed)
+        self._display_meshes = {}
+        self._pending = frozenset()
+        self._lod_failures = {}
         self.preview.status_changed.connect(self._preview_status)
         self.sampling.region_changed.connect(self._region_changed)
         self.resources.error.connect(lambda message: self.statusBar().showMessage(message))
@@ -312,14 +331,107 @@ class MainWindow(QMainWindow):
 
     def _refresh_scene(self):
         """Meshes can arrive after the first candidate; the viewport must resize and repaint."""
-        self.scene_view.set_scene(self.state.candidate, self.state.meshes)
+        self._lod_refresh()
+
+    def _lod_mode_changed(self, index):
+        if self._updating:
+            return
+        mode = self.lod_mode.itemData(index)
+        if mode == self.state.config.viewport.lod_mode:
+            return
+        self.state.update(viewport=replace(self.state.config.viewport, lod_mode=mode))
+
+    def _lod_refresh(self):
+        """Request/refresh display meshes for the current context and redraw both viewports."""
+        config = self.state.config
+        viewport = config.viewport
+        self.lod.set_context(self.state.context_revision, self.state.mesh_revision)
+        display = {}
+        if viewport.lod_mode == "full":
+            for key, mesh in self.state.meshes.items():
+                display[key] = original_display_mesh(mesh)
+            pending = frozenset()
+        else:
+            self.lod.set_parameters(viewport.lod_target_faces, viewport.lod_threshold_faces)
+            pending_keys = []
+            for key, mesh in self.state.meshes.items():
+                shown = self.lod.request(key, mesh)
+                if shown is None:
+                    pending_keys.append(key)
+                else:
+                    display[key] = shown
+            pending = frozenset(pending_keys)
+        self._display_meshes = display
+        self._pending = pending
+        self._lod_failures = {}
+        self._update_lod_status()
+        self._apply_scene_displays()
+
+    def _lod_ready(self, key, display):
+        if key not in self.state.meshes or display.source_faces != len(self.state.meshes[key].faces):
+            return
+        self._display_meshes[key] = display
+        self._pending = frozenset(k for k in self._pending if k != key)
+        self._lod_failures.pop(key, None)
+        self._update_lod_status()
+        self._apply_scene_displays()
+
+    def _lod_failed(self, key, message):
+        self._pending = frozenset(k for k in self._pending if k != key)
+        self._lod_failures[key] = message
+        self._update_lod_status()
+        self._apply_scene_displays()
+
+    def _apply_scene_displays(self):
+        self._call_set_scene(self.scene_view, self.state.candidate, self.state.meshes)
+        self._call_set_scene(self.camera_preview, self.state.candidate, self.state.meshes,
+                             target_rgba=target_preview_rgba(self.state.config))
+
+    def _call_set_scene(self, view, candidate, meshes, *, target_rgba=None):
+        """Pass only the keywords the view supports, so old view doubles keep working."""
+        parameters = inspect.signature(view.set_scene).parameters
+        kwargs = {}
+        if "target_rgba" in parameters:
+            kwargs["target_rgba"] = target_rgba
+        if "display_meshes" in parameters:
+            kwargs["display_meshes"] = self._display_meshes
+        if "pending" in parameters:
+            kwargs["pending"] = self._pending
+        view.set_scene(candidate, meshes, **kwargs)
+
+    def _update_lod_status(self):
+        viewport = self.state.config.viewport
+        meshes = self.state.meshes
+        if viewport.lod_mode == "full":
+            self.lod_status.setText("  视口 LOD：原始网格 · 百万面模型可能明显卡顿（仅影响视口）")
+            return
+        if not meshes:
+            self.lod_status.setText("  视口 LOD：自动 · 等待模型")
+            return
+        shown = len(self._display_meshes)
+        total = len(meshes)
+        if self._pending:
+            names = "、".join(sorted(self._pending)[:2])
+            self.lod_status.setText(
+                f"  视口 LOD：自动 · 正在后台生成视口 LOD（{shown}/{total}，{names}）…")
+            return
+        if self._lod_failures:
+            key, message = next(iter(self._lod_failures.items()))
+            self.lod_status.setText(f"  视口 LOD：{key} 简化失败：{message}（保留包围盒代理）")
+            return
+        source = sum(len(m.faces) for m in meshes.values())
+        drawn = sum(m.display_faces for m in self._display_meshes.values())
+        simplified = sum(1 for m in self._display_meshes.values() if m.simplified)
+        if simplified:
+            self.lod_status.setText(
+                f"  视口 LOD：自动 · {source:,} → {drawn:,} 面（{simplified} 个简化，{total} 个模型）")
+        else:
+            self.lod_status.setText(f"  视口 LOD：自动 · {source:,} 面未超过阈值")
 
     def _candidate_changed(self, candidate):
-        self.scene_view.set_scene(candidate, self.state.meshes)
+        self._apply_scene_displays()
         self.scene_view.set_selection(self.state.edited_target_key)
         self.scene_view.set_candidates([candidate] if candidate else [])
-        self.camera_preview.set_scene(candidate, self.state.meshes,
-                                      target_preview_rgba(self.state.config))
         if candidate:
             self.camera_preview.set_camera(self.state.config.camera, candidate.camera)
             anchor = next(t for t in self.state.config.targets if t.asset.key == candidate.anchor_key)
@@ -409,11 +521,12 @@ class MainWindow(QMainWindow):
         self.sample_index.setValue(1 if pinned else self.sample_index.value())
         self.sample_index.setEnabled(not pinned)
         self.scene_view.set_regions(config, self.sampling.current_region_key)
+        self.lod_mode.setCurrentIndex(self.lod_mode.findData(config.viewport.lod_mode))
+        self._lod_refresh()
         if self.state.candidate is not None:
             # Both viewports read the colour from the config, so an appearance-only change has to
             # redraw them explicitly; geometry-only updates still arrive through candidate_changed.
-            self.camera_preview.set_scene(self.state.candidate, self.state.meshes,
-                                          target_preview_rgba(config))
+            self._apply_scene_displays()
         cameras = (f"{len(config.fixed_cameras)} 个固定机位" if config.camera_mode == "fixed"
                    else f"{len(config.regions)} 个随机区域 · 每场景 {config.views} 视角")
         self.statusBar().showMessage(f"{sum(t.enabled for t in config.targets)} 个启用目标    |    "
@@ -486,6 +599,7 @@ class MainWindow(QMainWindow):
                     self.settings.setValue(key, splitter.saveState())
             # A search still in flight must not write a candidate into state after the editor is gone.
             self.preview.close()
+            self.lod.close()
             self.camera_preview.hide()
             event.accept()
         else:

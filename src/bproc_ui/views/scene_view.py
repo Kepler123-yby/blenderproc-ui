@@ -64,15 +64,33 @@ def _box_lines(bounds):
     return np.asarray(segments)
 
 
-def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False, target_rgba=None):
+def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False, target_rgba=None,
+                    display_meshes=None, pending=()):
+    """Draw the candidate placements from display meshes; pending heavy meshes keep a box proxy.
+
+    ``meshes`` stays canonical (bounds, framing and the selected-target outline use it), while
+    ``display_meshes`` carries the optional simplified arrays. A key in ``pending`` is still
+    waiting for its LOD, so only its canonical bounds are drawn and the full arrays never reach
+    the GPU first.
+    """
     nodes = []
     if candidate is None:
         return nodes
+    display_meshes = display_meshes or {}
+    pending = set(pending or ())
     for placement in candidate.placements:
         mesh = meshes.get(placement.asset_key)
         if mesh is None:
             continue
-        rgba = mesh.vertex_rgba
+        if placement.asset_key in pending:
+            color = (.62, .55, .42, .75) if placement.role == "target" else (.40, .45, .49, .65)
+            proxy = scene.visuals.Line(_box_lines(mesh.bounds_m), color=color, width=1,
+                                       connect="segments", method="gl", parent=parent)
+            proxy.transform = MatrixTransform(placement.world_from_model.T)
+            nodes.append(proxy)
+            continue
+        shown = display_meshes.get(placement.asset_key, mesh)
+        rgba = shown.vertex_rgba
         if rgba is not None:
             rgba = np.asarray(rgba, dtype=float)
             if rgba.max(initial=0) > 1:
@@ -80,7 +98,7 @@ def draw_placements(parent, candidate, meshes, selected_key=None, outlines=False
         color = (.53, .56, .59, 1) if placement.role == "target" else (.34, .39, .43, 1)
         if placement.role == "target" and target_rgba is not None:
             rgba, color = None, target_rgba
-        visual = scene.visuals.Mesh(vertices=mesh.vertices_m, faces=mesh.faces,
+        visual = scene.visuals.Mesh(vertices=shown.vertices_m, faces=shown.faces,
                                     vertex_colors=rgba, color=color,
                                     shading="smooth", parent=parent)
         visual.transform = MatrixTransform(placement.world_from_model.T)
@@ -147,6 +165,8 @@ class SceneView(QWidget):
         self._objects, self._regions, self._points = [], [], []
         self._candidate = None
         self._meshes = {}
+        self._display_meshes = {}
+        self._pending = frozenset()
         self._selected_key = None
         self._last_keys = ()
         self._config = None
@@ -199,13 +219,15 @@ class SceneView(QWidget):
 
     def set_selection(self, key):
         self._selected_key = key
-        self.set_scene(self._candidate, self._meshes)
+        self.set_scene(self._candidate, self._meshes, self._display_meshes, self._pending)
 
-    def set_scene(self, candidate, meshes):
+    def set_scene(self, candidate, meshes, display_meshes=None, pending=()):
         self._candidate, self._meshes = candidate, meshes
+        self._display_meshes = display_meshes or {}
+        self._pending = frozenset(pending or ())
         _clear(self._objects)
         self._objects = draw_placements(self.view.scene, candidate, meshes, self._selected_key, True,
-                                        self._target_rgba())
+                                        self._target_rgba(), self._display_meshes, self._pending)
         keys = tuple((p.asset_key, p.role) for p in candidate.placements) if candidate is not None else ()
         bounds = placed_content_bounds(candidate, meshes)
         # Re-frame only when the geometry really changed: occluders move on every view, and
@@ -285,7 +307,7 @@ class SceneView(QWidget):
         if self._candidate is not None and previous is not None and (
                 previous.material.color != config.material.color
                 or previous.material.base_color != config.material.base_color):
-            self.set_scene(self._candidate, self._meshes)
+            self.set_scene(self._candidate, self._meshes, self._display_meshes, self._pending)
 
     def set_candidates(self, candidates):
         _clear(self._points)

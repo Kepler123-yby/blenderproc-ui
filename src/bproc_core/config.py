@@ -166,6 +166,25 @@ class RenderSpec:
     weighted_normals: bool = False
     denoiser: Literal["auto", "none", "OPTIX"] = "auto"
     noise_threshold: float = 0.01
+    # Blender 4.2 Cycles native image tiling (`scene.cycles.use_auto_tile`). It caps the image
+    # buffer, not the geometry: the whole scene is still resident and rendered in one call.
+    use_tiling: bool = True
+    tile_size: int = 2048
+
+
+@dataclass(frozen=True)
+class ViewportSpec:
+    """Display-only simplification; never consumed by sampling, collision or export."""
+    lod_mode: Literal["auto", "full"] = "auto"
+    lod_threshold_faces: int = 100_000
+    lod_target_faces: int = 50_000
+
+
+@dataclass(frozen=True)
+class ScaleGroupingSpec:
+    """Opt-in per-group reframing for a genuinely multi-group export."""
+    reframe: bool = False
+    margin_fraction: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -204,6 +223,8 @@ class ProjectConfig:
     occlusion: OcclusionSpec = OcclusionSpec()
     seed: int = 42
     render: RenderSpec = RenderSpec()
+    viewport: ViewportSpec = ViewportSpec()
+    scale_grouping: ScaleGroupingSpec = ScaleGroupingSpec()
     output: OutputSpec = OutputSpec()
     runtime: RuntimeSpec = field(default_factory=RuntimeSpec)
 
@@ -403,6 +424,28 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
         if effective_occlusion_range(config, False).maximum == 0:
             issue("occluders", "只有一个启用目标且没有可用的专门遮挡物；遮挡比例请求无法满足，帧只能按无遮挡接收", "warning")
     integer("render.samples", config.render.samples, 1)
+    if not isinstance(config.render.use_tiling, bool):
+        issue("render.use_tiling", "图像分块开关必须是布尔值")
+    if (isinstance(config.render.tile_size, bool) or not isinstance(config.render.tile_size, int)
+            or not 8 <= config.render.tile_size <= 8192):
+        issue("render.tile_size", "图像分块尺寸必须是 8 到 8192 的整数")
+    viewport = config.viewport
+    if viewport.lod_mode not in ("auto", "full"):
+        issue("viewport.lod_mode", "视口 LOD 模式只能是 auto 或 full")
+    integer("viewport.lod_threshold_faces", viewport.lod_threshold_faces, 1)
+    integer("viewport.lod_target_faces", viewport.lod_target_faces, 1)
+    if (not isinstance(viewport.lod_threshold_faces, bool)
+            and not isinstance(viewport.lod_target_faces, bool)
+            and isinstance(viewport.lod_threshold_faces, int)
+            and isinstance(viewport.lod_target_faces, int)
+            and viewport.lod_target_faces > viewport.lod_threshold_faces):
+        issue("viewport.lod_target_faces", "视口 LOD 目标面数不能大于触发面数")
+    grouping = config.scale_grouping
+    if not isinstance(grouping.reframe, bool):
+        issue("scale_grouping.reframe", "分组重取景开关必须是布尔值")
+    if finite("scale_grouping.margin_fraction", grouping.margin_fraction):
+        if not 0 <= grouping.margin_fraction < 0.45:
+            issue("scale_grouping.margin_fraction", "重取景边距必须位于 0 到 0.45（不含）")
     if config.render.device not in ("CUDA", "OPTIX", "HIP", "ONEAPI", "METAL"):
         issue("render.device", "仅支持 GPU 后端：OPTIX、CUDA、HIP、ONEAPI、METAL；禁止 CPU 渲染")
     if config.render.shading_mode not in ("flat", "smooth", "auto"):

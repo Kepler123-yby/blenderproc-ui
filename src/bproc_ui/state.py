@@ -68,7 +68,9 @@ class ProjectState(QObject):
             return
         # Appearance is not geometry: recolouring the target must not throw away the candidate
         # the viewport is showing (the old behaviour blanked both viewports for a whole search).
-        appearance_only = replace(config, material=self.config.material) == self.config
+        # Viewport LOD is display-only too: switching auto/full must keep the same candidate.
+        appearance_only = replace(config, material=self.config.material,
+                                  viewport=self.config.viewport) == self.config
         old_assets = {t.asset.key: t.asset for t in self.config.targets}
         old_assets.update({a.key: a for a in self.config.occluders})
         new_assets = {t.asset.key: t.asset for t in config.targets}

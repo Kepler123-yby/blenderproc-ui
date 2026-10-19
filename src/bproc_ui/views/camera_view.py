@@ -87,9 +87,15 @@ class CameraPreview(QDialog):
             self.camera.set_calibration(camera, pose)
         self.canvas.update()
 
-    def set_scene(self, candidate, meshes, target_rgba=None):
+    def set_scene(self, candidate, meshes, target_rgba=None, display_meshes=None, pending=()):
         _clear(self._objects)
-        self._objects = draw_placements(self.view.scene, candidate, meshes, target_rgba=target_rgba)
+        kwargs = {}
+        if display_meshes:
+            kwargs["display_meshes"] = display_meshes
+        if pending:
+            kwargs["pending"] = pending
+        self._objects = draw_placements(self.view.scene, candidate, meshes, target_rgba=target_rgba,
+                                        **kwargs)
         if candidate is None:
             self.caption.setText("  等待有效候选机位")
         else:

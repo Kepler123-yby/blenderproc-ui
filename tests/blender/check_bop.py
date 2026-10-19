@@ -121,8 +121,18 @@ def _check_images(root: Path, expected_ids, errors: list[str]) -> dict:
                         errors.append(f"{entry}: cam_R_m2c is not a rotation matrix")
                     if not pose["cam_t_m2c"][2] > 0:
                         errors.append(f"{entry}: object origin must be in front of the camera")
-                    full = np.asarray(Image.open(chunk / "mask" / f"{im_id:06d}_{index:06d}.png"))
-                    visible = np.asarray(Image.open(chunk / "mask_visib" / f"{im_id:06d}_{index:06d}.png"))
+                    masks = {}
+                    for kind in ("mask", "mask_visib"):
+                        path = chunk / kind / f"{im_id:06d}_{index:06d}.png"
+                        with Image.open(path) as image:
+                            if image.format != "PNG":
+                                errors.append(f"{entry}: {kind} must be encoded as PNG (found {image.format})")
+                            if image.mode != "L":
+                                errors.append(f"{entry}: {kind} must be a single-channel 8-bit L image")
+                            masks[kind] = np.asarray(image)
+                    full, visible = masks["mask"], masks["mask_visib"]
+                    if full.dtype != np.uint8 or visible.dtype != np.uint8:
+                        errors.append(f"{entry}: masks must be uint8, not {full.dtype}/{visible.dtype}")
                     if full.shape != visible.shape or full.shape != depth.shape:
                         errors.append(f"{entry}: mask, mask_visib and depth differ in size")
                         continue

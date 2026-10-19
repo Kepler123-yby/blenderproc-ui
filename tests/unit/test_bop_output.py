@@ -152,3 +152,56 @@ def test_gt_delta_takes_the_smallest_target_in_a_mixed_scene():
     assert by_object[large.obj_id] == pytest.approx(.005)
     # 5 % of the largest target (5 mm) would hide an occluder from a 1 mm part entirely.
     assert gt_delta(project, meshes) == pytest.approx(by_object[small.obj_id])
+
+
+def test_finalize_delegates_to_native_helpers_with_configured_units(tmp_path, monkeypatch):
+    """The adapter must call the two native helpers, never the package-installing entry point."""
+    from tests.factories import make_box, make_project
+
+    config = make_project(tmp_path / "inputs", output_format="bop")
+    meshes = {target.asset.key: make_box(target.asset.key, [0, 0, 0], [.05, .05, .05])
+              for target in config.targets}
+    chunk = tmp_path / "dataset/train_pbr/000000"
+    chunk.mkdir(parents=True)
+
+    class FakeQueue:
+        def get(self, timeout=None): return None
+        def close(self): pass
+
+    class FakePool:
+        def close(self): pass
+        def join(self): pass
+        def terminate(self): raise AssertionError("a successful finalize must not terminate the pool")
+
+    class FakeContext:
+        def Queue(self): return FakeQueue()
+        def Pool(self, processes, initializer, initargs):
+            assert processes == 1 and initializer is postprocess._initialize_report
+            assert initargs[:2] == (config.camera.width, config.camera.height)
+            return FakePool()
+
+    calls = []
+    class Utility:
+        @staticmethod
+        def calc_gt_masks(**kwargs): calls.append(("masks", kwargs))
+        @staticmethod
+        def calc_gt_info(**kwargs): calls.append(("info", kwargs))
+
+    import types
+    toolkit = types.ModuleType("bop_toolkit_lib")
+    for name in ("inout", "misc", "visibility"):
+        module = types.ModuleType(f"bop_toolkit_lib.{name}")
+        setattr(toolkit, name, module)
+        monkeypatch.setitem(sys.modules, f"bop_toolkit_lib.{name}", module)
+    monkeypatch.setitem(sys.modules, "bop_toolkit_lib", toolkit)
+    monkeypatch.setattr(postprocess, "_utility", lambda: Utility)
+    monkeypatch.setattr(postprocess.multiprocessing, "get_context", lambda method: FakeContext())
+
+    postprocess.finalize_bop(tmp_path / "dataset", config, meshes, near_m=.001, far_m=5.)
+    assert [name for name, _ in calls] == ["masks", "info"]
+    for _, kwargs in calls:
+        assert kwargs["chunk_dirs"] == [str(chunk)]
+        assert kwargs["starting_frame_id"] == 0
+        assert kwargs["annotation_scale"] == 1000.0
+        assert kwargs["delta"] == pytest.approx(postprocess.gt_delta(config, meshes))
+    assert "setup_pip" not in Path(postprocess.__file__).read_text(encoding="utf-8")

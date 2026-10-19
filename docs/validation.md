@@ -192,3 +192,40 @@ env -u PYTHONPATH .venv/bin/python tools/render_demo.py \
 **混尺度是数据集格式的边界，不是靠调参能解决的事。** 同一数据集只能有一份 BOP GT 深度容差和一份遮挡比例窗口：容差按最小目标取值（更严，不会把小件误标为可见，代价是大件的标注同样用这个严容差）；遮挡窗口是全局的，1 mm 件与 20 mm 件并存时，一个窗口无法同时“部分遮挡”两者。2026-10-18 实测：1 mm 件旁边放 20 mm 件（相差 20×）可以出图，2/2 保存，`status.json` 自动写入 `warnings`（`mixed_scale_tolerance`，存在遮挡窗口时再加 `mixed_scale_occlusion`）。但 `check_bop.py` 对这份数据的深度一致性报错：最小目标的 `mask_visib` 边缘取样到了更远的面（同一帧里 20 mm 件比 1 mm 件离镜头更近的部分），中位偏差 0，末尾 1% 像素偏 26 mm，超过 2 mm 的幅度上限。也就是说：能出图，但一个数据集里的深度—可见性语义不能同时服务相差 20× 的两个目标。要两者都过检查，只能按尺度拆成两个数据集分别生成。2026-10-18 已加入 `tools/export_by_scale.py`：按目标最长边自动分组，普通项目仍导出一个任务，混尺度项目导出 `<任务>-size-1`、`<任务>-size-2`。用 2 mm + 40 mm 的 BOP 夹具（2 个固定机位、depth_scale 0.05 mm）实测：两组各 2/2 保存，`verify_bop` 均 PASS，数据集名 `dataset-size-1` / `dataset-size-2`；未拆分的同一夹具在旧数据集上曾因 40 mm 件参与深度/可见性判定而让 2 mm 件不通过。分组不改相机、灯光和深度编码，只替换目标集合；不含原渲染中心的组会把该组最大目标设为新中心，其余偏移按新中心的名义偏移平移。需要按组重新取景时，导出后编辑各组 `scene.yaml`。
 
 **中断验收统一入口：** `tools/verify_interrupted_datasets.py`（`run` / `verify` / `check` / `negatives`）从配置快照读取格式，RGB 用 `obj_id` 掩码名、BOP 用 GT 索引路径，直接调用仓库 `verify_rgb_masks` / `verify_bop(require_complete=False)`，退出码/状态/计数/journal/manifest/final/缺文件任一不符即非零退出。2026-10-19 从 `c6521e9` 重跑 RGB/BOP × SIGINT/SIGTERM 四组：requested=48、written/saved/journal/manifest=2、skipped=46、final=true、退出 130/143、checker PASS；四个复制夹具分别删除 RGB/depth/mask/mask_visib 后均 FAIL 非零。证据 `.artifacts/review10-signals/`（本地忽略目录）。
+
+## 原生实例掩码兼容性（2026-10-19）
+
+基线 `c6ee5c6`。对照用户指定的 `/home/kepler/bproc_project/dataset_rendering/`：`render.py` 调用原生 `render/write_bop`；`tools/dataset_converter.py` 只复制重命名，不能把其单目标对齐方式直接套到多目标。原生 `SegMapRendererUtility.py` 根据实例数选择 `uint8/uint16/uint32`，原生 `BopWriterUtility.py` 保存逐目标掩码时使用 uint8×255。**项目原有生产链路已支持该路径，本轮未修改生产解码、backend、writer、遮挡或深度行为。**
+
+“中间 uint32 实例 ID”“RGBA 四通道合计 32 位”和“逐目标二值图”不是同一概念；最终双掩码仍为单通道 8 位、0/255 PNG，BOP 深度是 16 位。单通道 32 位整数不是 PNG 支持的格式，不应再列为待开发功能。
+
+本轮变化：补齐大整数和真实 backend→解码→writer 回归；两个 checker 现在显式拒绝非 PNG、非 L 或非 uint8 的掩码，保留旧几何/深度/遮挡约束；新增只读 `tools/audit_native_masks.py`，用于有限参考哈希、图像格式、元数据一致性、命名/GT 映射和任务源码快照审计。已有文件（包括断链）拒绝覆盖，错误证据返回非零。
+
+| 验证 | 真实结果 |
+|---|---|
+| 参考只读审计 | 5 个源码（含两个原生 helper）+ 8 张参考图 SHA256 前后匹配；8 张均为 640×480、IHDR 8/0、L/uint8、0/255 |
+| uint32 边界 | 65535/65536、16777216/16777217、4294967294/4294967295 精确区分；大 idx 仅为合成小数组，不代表真实渲染数百万实例 |
+| 格式负例 | RGB/BOP × mask/mask_visib × uint16/RGB/RGBA/非二值/错误尺寸/伪 PNG；函数均拒绝，真实 CLI 均退出 1；正常 CLI 退出 0 |
+| 新 RGB GPU | 目标 2/7、1 scene×2 views、640×480、4 samples；requested=written=saved=2、skipped=0、final=true，checker 退出 0；后缀 000002/000007 |
+| 新 BOP GPU | 同配置 2/2；checker 退出 0；后缀 000000/000001 分别映射 GT 对象 2/7；两帧 depth IHDR 16/0、scale=0.1 mm |
+| 设备与源码 | OPTIX RTX3060Ti、CPU devices disabled；BOP 两个 EGL context 均为 NVIDIA。每个任务 11 个 core 文件、14 个 runtime 文件及两个入口模板逐文件哈希匹配当前源码 |
+| 回归 | 关键测试 134 passed / 16.41 s；全量 unit/Qt **567 passed / 36.81 s**，退出 0 |
+
+证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review12-native-masks/completion-20261019/`。`commands.json` 保存两格式导出、预检、渲染、checker 的完整命令及 8 个退出码（均 0）；`logs/` 保留 stdout/stderr 和测试日志，`{rgb,bop}-audit.json` 与 `reference-{before,after}.json` 保存事实。flow 的 checker RED→GREEN 在相邻 `run-20261019-native-mask/logs/`：9 failed→77 passed；补全审计工具的 RED 为 6 failed/11 passed（含逐帧深度报告结构的新增要求），GREEN 后纳入全量。
+
+复验（必须给报告使用**未存在的新路径**）：
+
+```bash
+cd /home/kepler/rm_2027/blenderproc-ui
+E=.artifacts/review12-native-masks/completion-20261019
+.venv/bin/python tools/audit_native_masks.py reference \
+  --manifest .artifacts/review12-native-masks/reference-audit.json --output "$E/reference-NEW.json"
+.venv/bin/python tools/audit_native_masks.py dataset \
+  --dataset "$E/results/native-rgb" --job "$E/rgb-job" --output "$E/rgb-NEW.json"
+.venv/bin/python tools/audit_native_masks.py dataset \
+  --dataset "$E/results/native-bop" --job "$E/bop-job" --output "$E/bop-NEW.json"
+.venv/bin/python tests/blender/check_rgb_masks.py "$E/results/native-rgb"
+.venv/bin/python tests/blender/check_bop.py "$E/results/native-bop"
+```
+
+范围限制：8 张参考、每种格式 2 帧只证明这组有限样本与当前接口；不能推导任意实例数量的 GPU 性能、完整生产 Haven 验收或所有遮挡窗口的成功率。RGB 精确分割与 BOP 深度容差可见性不要求逐像素一致。

@@ -134,7 +134,7 @@ conda run --no-capture-output -n bop python /任务目录/run_job.py
 
 ## 输出与运行状态
 
-`RGB + 双掩码` 默认 RGB PNG，可选 JPEG。每帧每个目标都有二值 PNG（0 / 255）：
+`RGB + 双掩码` 默认 RGB PNG，可选 JPEG。每帧每个目标都有同分辨率、单通道 8 位二值 PNG（0 / 255）：
 
 ```text
 dataset/
@@ -148,7 +148,18 @@ dataset/
 
 后缀是 `obj_id`。`mask` 是目标单独渲染的轮廓，`mask_visib` 是完整场景中的可见部分。轻格式不输出深度、BOP 位姿或模型。
 
-`BOP` 默认 RGB JPEG，另有深度 PNG、相机、位姿、canonical models、双掩码和 `scene_gt_info.json`。模型坐标与位姿平移用毫米；默认深度恢复公式为 `PNG数值 × 0.1 / 1000` 米。掩码后缀是 **GT 列表索引**，例如对象 ID 2 和 7 对应索引 0 和 1。BOP 可见性使用原生 0.015 m 容差，不等同于采样验收的精确分割遮挡率。本版不生成 COCO / YOLO。
+`BOP` 默认 RGB JPEG，另有 16 位深度 PNG、相机、位姿、canonical models、双掩码和 `scene_gt_info.json`。模型坐标与位姿平移用毫米；深度恢复公式为 `PNG数值 × depth_scale_mm / 1000` 米（默认 scale 为 0.1 mm）。掩码后缀是 **GT 列表索引**，例如对象 ID 2 和 7 对应索引 0 和 1。双掩码同样是单通道 8 位、0/255 PNG。BOP 后处理的可见性容差先按每个目标计算 `min(0.015, max(2 × depth_scale_mm / 1000, 0.05 × 最长边米数))`，再取启用目标中的最小值；不是固定 15 mm，也不等同于采样验收的精确分割遮挡率。本版不生成 COCO / YOLO。
+
+### 实例 ID 与掩码位深
+
+| 数据 | 含义 |
+|---|---|
+| 原生实例分割数组 `uint8/uint16/uint32` | BlenderProc 根据实例数选择中间整数类型；临时 `idx` 经属性映射到稳定 `obj_id`，不截断或转成 float32 |
+| `mask` / `mask_visib` | 每个目标各自的单通道 8 位二值 PNG，0 为背景、255 为前景；不是实例 ID 合成图 |
+| RGBA 的“32 位” | 四通道各 8 位的总位数，不代表单通道 uint32 掩码 |
+| BOP depth | 单通道 16 位深度 PNG，按上述 scale 恢复距离 |
+
+现有 RGB 路径使用原生 `render_segmap`；BOP 路径使用原生 `write_bop` 和 `calc_gt_masks/calc_gt_info`，无需新增“32 位 PNG”选项。PNG 不支持单通道 32 位整数样本。2026-10-19 对照 `bproc_project/dataset_rendering/render.py`、原生实现和有限真实产物完成兼容验证；生产渲染路径未改，本轮增加整数边界回归、只读审计和检查器格式校验，参见 [验证记录](validation.md#原生实例掩码兼容性2026-10-19)。
 
 `run_metadata/status.json` 记录 requested、written_frames、saved、skipped 和失败原因。每帧提交时先向 `run_metadata/frames.jsonl` 追加并落盘一行（相机、位姿、环境、光源、遮挡率），整轮结束时再一次性写 `manifest.json`；因此写入量随帧数线性增长，中断后 journal 仍可逐行读取，末尾未写完的一行默认报错、只允许显式按"可恢复"方式忽略。BOP 只有后处理完成才计入 saved。退出码：完成 0、部分完成 2、失败 1、SIGINT 130、SIGTERM 143。
 

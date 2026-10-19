@@ -560,3 +560,82 @@ def test_an_unknown_manifest_version_is_rejected_even_without_a_journal(valid_rg
 
     diagnostics = verify_rgb_masks(valid_rgb_masks_output)
     assert any("版本" in error for error in diagnostics), diagnostics
+
+
+def overwrite_mask(path, corruption):
+    """Replace a valid 8-bit L mask with a same-size but non-conforming file."""
+    path = Path(path)
+    mask = np.asarray(Image.open(path)) > 0
+    if corruption == "uint16":
+        Image.fromarray((mask.astype(np.uint16) * 255)).save(path)
+    elif corruption in ("rgb", "rgba"):
+        channels = 3 if corruption == "rgb" else 4
+        pixels = np.repeat((mask.astype(np.uint8) * 255)[:, :, None], channels, axis=2)
+        Image.fromarray(pixels).save(path)
+    elif corruption == "nonbinary":
+        Image.fromarray(np.where(mask, 127, 0).astype(np.uint8)).save(path)
+    elif corruption == "size":
+        Image.fromarray(np.zeros((47, 63), dtype=np.uint8)).save(path)
+    elif corruption == "fake_png":
+        Image.fromarray((mask.astype(np.uint8) * 255)).save(path, format="BMP")
+    else:
+        raise AssertionError(corruption)
+
+
+MASK_CORRUPTIONS = ["uint16", "rgb", "rgba", "nonbinary", "size", "fake_png"]
+
+
+@pytest.mark.parametrize("kind", ["mask", "mask_visib"])
+@pytest.mark.parametrize("corruption", MASK_CORRUPTIONS)
+def test_rgb_checker_rejects_wrong_mask_format_value_and_size(valid_rgb_masks_output, kind, corruption):
+    overwrite_mask(valid_rgb_masks_output / kind / "000000_000007.png", corruption)
+    assert verify_rgb_masks(valid_rgb_masks_output)
+    result = _checker_cli("check_rgb_masks.py", valid_rgb_masks_output)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "PASS" not in result.stdout
+
+
+@pytest.mark.parametrize("kind", ["mask", "mask_visib"])
+@pytest.mark.parametrize("corruption", MASK_CORRUPTIONS)
+def test_bop_checker_rejects_wrong_mask_format_value_and_size(valid_bop_output, kind, corruption):
+    overwrite_mask(valid_bop_output / "train_pbr/000000" / kind / "000000_000001.png", corruption)
+    assert verify_bop(valid_bop_output)
+    result = _checker_cli("check_bop.py", valid_bop_output)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "PASS" not in result.stdout
+
+
+def _checker_cli(script, root):
+    repo = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "PYTHONPATH": str(repo / "src")}
+    return subprocess.run([sys.executable, str(repo / "tests" / "blender" / script), str(root)],
+                          capture_output=True, text=True, env=env)
+
+
+@pytest.mark.parametrize("fmt", ["rgb", "bop"])
+def test_normal_mask_checker_cli_accepts_valid_data(request, fmt):
+    root = request.getfixturevalue("valid_rgb_masks_output" if fmt == "rgb" else "valid_bop_output")
+    result = _checker_cli("check_rgb_masks.py" if fmt == "rgb" else "check_bop.py", root)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS" in result.stdout
+
+
+def test_bop_checker_cli_rejects_uint16_masks(valid_bop_output):
+    overwrite_mask(valid_bop_output / "train_pbr/000000/mask/000000_000001.png", "uint16")
+    result = _checker_cli("check_bop.py", valid_bop_output)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "PASS" not in result.stdout
+
+
+def test_rgb_checker_cli_rejects_a_non_png_file_named_png(valid_rgb_masks_output):
+    overwrite_mask(valid_rgb_masks_output / "mask/000000_000007.png", "fake_png")
+    result = _checker_cli("check_rgb_masks.py", valid_rgb_masks_output)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "PASS" not in result.stdout
+
+
+def test_bop_checker_cli_rejects_a_non_png_file_named_png(valid_bop_output):
+    overwrite_mask(valid_bop_output / "train_pbr/000000/mask_visib/000000_000001.png", "fake_png")
+    result = _checker_cli("check_bop.py", valid_bop_output)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "PASS" not in result.stdout

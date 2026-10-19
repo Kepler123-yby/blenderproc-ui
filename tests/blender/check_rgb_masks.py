@@ -46,8 +46,10 @@ def verify_rgb_masks(root: Path, *, require_complete: bool = True) -> list[str]:
                     for kind in ("mask", "mask_visib"):
                         with Image.open(root / kind / name) as image:
                             pixels = np.asarray(image)
+                            if image.format != "PNG":
+                                errors.append(f"Frame {index} object {obj_id}: {kind} must be encoded as PNG (found {image.format})")
                             if image.mode != "L" or pixels.dtype != np.uint8 or pixels.shape != shape or not set(np.unique(pixels)) <= {0, 255}:
-                                errors.append(f"Frame {index} object {obj_id}: {kind} must be 8-bit 0/255 at RGB resolution")
+                                errors.append(f"Frame {index} object {obj_id}: {kind} must be an 8-bit 0/255 PNG at RGB resolution")
                             masks.append(pixels)
                     full, visible = masks
                     if full.shape != visible.shape:

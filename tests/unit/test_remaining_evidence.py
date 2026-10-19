@@ -124,3 +124,24 @@ def test_a_failing_real_checker_fails_the_gate(tmp_path):
                              auditor=lambda dataset, job: True,
                              production_verify=lambda destination: 0)
     assert report["passed"] is False
+
+
+def test_cli_emits_one_json_report_when_production_verify_prints(tmp_path, monkeypatch, capsys):
+    from tools import validate_production_resources as production
+    from tools import verify_remaining_evidence as gate
+
+    root = build(tmp_path / "evidence")
+    monkeypatch.setattr(gate, "_default_checker", lambda dataset: 0)
+    monkeypatch.setattr(gate, "_default_auditor", lambda dataset, job: True)
+
+    def noisy_verify(destination):
+        print(json.dumps({"helper": "production verify", "destination": str(destination)}))
+        return 2 if Path(destination).name == "production" else 1
+
+    monkeypatch.setattr(production, "verify", noisy_verify)
+    assert gate.main(["--evidence", str(root)]) == 1
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report["passed"] is False
+    assert [row["check"] for row in report["checks"] if not row["passed"]] == ["production"]
+    assert "production verify" in captured.err

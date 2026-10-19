@@ -259,7 +259,7 @@ E=.artifacts/review12-native-masks/completion-20261019
 ### 第十三轮修复：独立验收缺陷 R1–R7（2026-10-19）
 
 原 full-cycle 的 verify 终裁原文保存在 `/home/kepler/.pi/flow-workflows/ad453a42bd16bb13.json`，状态仍为 REVISE，未改写。本节只记录针对该终裁列出的代码缺陷的修复；修复证据根为
-`.artifacts/review13-remaining/fixes-20261019-r1r7/`（下称 `$F`），旧证据根 `$E` 保持只读。
+`.artifacts/review13-remaining/fixes-20261019-r1r7/`（下称 `$F`），旧证据根 `$E` 保持只读。本节先保留第一次修复的数据；中断后的最终版本与第二轮修复见末尾“续跑收口”，不能把 687 项历史结果当作当前总数。
 
 | 修复 | 代码 | 真实 RED → GREEN / 结果 |
 |---|---|---|
@@ -282,3 +282,33 @@ E=.artifacts/review12-native-masks/completion-20261019
 - 统一证据门：`$F/verify-remaining.json` 仅 `production=false`（verify 退出 2，缺少生产 summary），其余 preflight/lod/tiles/reframe/silhouette/fixture_guard 为 true；`$F/logs/verify-summary.log` 退出 1。tile 复用 `$E` 的明确版本证据（算法未改），旧任务哈希不迎合新源码；重取景使用新源码任务。
 
 **证据限制**：tile 只证明图像缓冲；LOD 只影响视口；分组重取景不改变科学标定；超限轮廓不是逐输出像素真值；生产验收未用合成资源冒充。所有真实渲染均为 RTX 3060 Ti / OPTIX / NVIDIA EGL，未使用 CPU 渲染回退。
+
+### 中断后续跑收口（代码基线 `62df532`）
+
+`build-verify` 在第二轮执行者完成主要修复及新证据后被父请求中断，返回 `CHILD_ABORTED`；不能把中断当作验收通过。第二轮提交 `62df532` 补齐真实 fallback 诊断（stream/outline 都不可用时明确 `method=hull, estimate_only=true`，保留两个失败原因）、不完整/非终态计数的显式不可读报告及其边界测试；此前 `bea6f2c` 已修复死 weakref 的 LOD cache 查询清理。
+
+续跑只接着验收和修正证据输出，没有重跑整套构建，也没有新增 Flow token/费用预算。发现并实修统一门 JSON 输出问题：生产子验收会打印自己的报告，原先污染主命令 stdout 导致 `json.loads` 的 Extra data；新增测试先真实失败，再将子报告路由到 stderr，退出码和原判定不变。stdout 现在是单一可解析 JSON。
+
+| 最终续跑检查 | 结果与来源 |
+|---|---|
+| 全量 unit/Qt | **699 passed / 49.16 s / 退出 0**；相比中断前 698 项增加一项 JSON 输出回归 |
+| 最新 LOD | 第二轮证据：1,000,000→39,798 面，wall 0.231 s，心跳18.26 ms，RSS **971.191 MiB**；60,000 面阈值内原数组身份/哈希不变、worker=0 |
+| 最新超限轮廓 | 2,002,000 面，冷0.947 s、工作3.82 MiB、额外RSS0 MiB，30/30入窗 |
+| dense 遮挡物 | 10,000 面重叠双组件，瞄准并集share0.877、旧outline0.502；原点中心union=true/outline=false。真实candidate对无可用表面报告hull估计，不谎报outline |
+| 最新分组GPU | 第二轮从`62df532`源码导出的两组BOP，各2/2帧；续跑统一门亲自重跑两checker及源码审计通过，不修改或重渲旧任务 |
+| 最新真实GUI | 第二轮`gui-final/gui-manifest.json`为passed，18张截图；可见LOD、tile、reframe配置进入导出快照 |
+| 统一门 | stdout单一有效JSON；退出 **1**，preflight/lod/tiles/reframe/silhouette/fixture_guard均true，仅production=false（缺少真实生产summary，子verify退出2）；未添加跳过生产开关 |
+
+最新证据索引：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review13-remaining/continuation-20261019-final/`，`sources.json` 明示每项实际来源。索引通过只读目录链接引用 `fixes-20261019-r1r7-2/` 的最终性能/GUI/重取景产物；tile 与fixture防冒充检查沿用初轮明确版本证据，不宣称这些旧任务快照等于当前源码。`preflight.json` 是历史基线记录副本，不冒充新基线。所有源产物保持不变。
+
+复验：
+
+```bash
+cd /home/kepler/rm_2027/blenderproc-ui
+env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFORM=offscreen \
+  .venv/bin/python -m pytest -p pytestqt.plugin tests/unit tests/ui -q
+.venv/bin/python tools/verify_remaining_evidence.py \
+  --evidence .artifacts/review13-remaining/continuation-20261019-final
+```
+
+**仍未完成：真实生产模型/Haven批量实测。** 指定的`/home/kepler/bproc_project/dataset_rendering/asserts/`再次确认为空，记录在新索引`production/blocked.json`。这不是代码缺失，也不是总体PASS；原full-cycle REVISE和生产AC-14阻塞保留。代码修复的独立终验单独记录，不放宽完整生产验收门。

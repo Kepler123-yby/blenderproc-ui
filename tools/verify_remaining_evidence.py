@@ -9,6 +9,7 @@ the whole command non-zero.
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 import json
 from pathlib import Path
 import subprocess
@@ -35,7 +36,10 @@ def _default_auditor(dataset: Path, job: Path) -> bool:
 
 def _default_production_verify(destination: Path) -> int:
     from tools.validate_production_resources import verify
-    return verify(destination)
+    # The nested verifier prints its own report. Keep diagnostics visible without
+    # contaminating this CLI's single machine-readable JSON document on stdout.
+    with redirect_stdout(sys.stderr):
+        return verify(destination)
 
 
 def verify_evidence(evidence: Path, *, checker=None, auditor=None, production_verify=None) -> dict:

@@ -120,3 +120,15 @@ signals `ready(key, display)`, `failed(key, reason)`, `status(key, text)`.
 
 原始 full-cycle 的 REVISE 状态保留在生产工作流 JSON 中；本表只关闭代码契约，生产资源
 AC-14 仍未完成，不能据此称整体生产验收 PASS。状态在对应真实命令产生退出码后才更新。
+
+### 第二轮修复与中断后续跑
+
+- [x] `bea6f2c`：LOD cache lookup 清理死 weakref，不留下不可命中项。
+- [x] `62df532`：报告 dense 遮挡物实际回退路径；status 缺字段/非终态/非法计数时显式不可读，不以零伪造完成；增加真实candidate与中断计数回归。
+- [x] 保留第二轮最终源码导出的两组GPU、GUI及性能证据：`fixes-20261019-r1r7-2/`，旧证据不改写。
+- [x] 续跑发现统一门stdout被子报告污染，新增单测观察RED，再将子报告路由stderr；保留整体非零退出和完整生产门。
+- [x] 最终全量 **699 passed / 49.16 s / 退出0**；新索引 `continuation-20261019-final/sources.json` 追踪版本与证据来源。
+- [x] 统一门亲自重跑，JSON有效，只有production失败，退出1；两新分组checker及源码审计通过。
+- [ ] 真正生产资源实测：缺少有来源的生产模型与Haven资源，生产AC-14 BLOCKED，不能勾选或由fixture替代。
+
+原full-cycle REVISE与被中断build-verify的CHILD_ABORTED分别保留为历史；代码修复的独立复核结论与完整生产门结果分开记录。

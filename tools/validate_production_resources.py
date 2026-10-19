@@ -350,32 +350,120 @@ class LocalExecutor:
 
 
 def _dataset_counters(dataset: Path) -> dict:
-    status_path = Path(dataset) / "run_metadata" / "status.json"
+    """Real counters for one finished child, or an explicit reason they cannot be read.
+
+    The summary must never present zeroes as if a child had run and produced nothing. A missing or
+    malformed status/journal is therefore reported as ``readable: False`` with its reason; the
+    caller decides whether that is a failure (normal completion) or part of an already interrupted
+    run (signal).
+    """
+    dataset = Path(dataset)
+    status_path = dataset / "run_metadata" / "status.json"
     try:
         status = json.loads(status_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise ManifestError(f"数据集缺少可读的 status.json：{dataset}：{exc}") from exc
-    frames_path = Path(dataset) / "run_metadata" / "frames.jsonl"
-    rejections_path = Path(dataset) / "run_metadata" / "rejections.jsonl"
-    frames = len([line for line in frames_path.read_text(encoding="utf-8").splitlines() if line.strip()]) \
-        if frames_path.is_file() else int(status.get("written_frames", 0))
+        return {"readable": False, "dataset": str(dataset),
+                "error": f"status.json unreadable: {type(exc).__name__}: {exc}"}
+    if not isinstance(status, dict):
+        return {"readable": False, "dataset": str(dataset),
+                "error": "status.json is not an object"}
+    frames_path = dataset / "run_metadata" / "frames.jsonl"
+    journal_frames = None
+    try:
+        if frames_path.is_file():
+            journal_frames = len([line for line in frames_path.read_text(encoding="utf-8").splitlines()
+                                  if line.strip()])
+    except (OSError, ValueError) as exc:
+        return {"readable": False, "dataset": str(dataset),
+                "error": f"frames.jsonl unreadable: {type(exc).__name__}: {exc}"}
+    rejections_path = dataset / "run_metadata" / "rejections.jsonl"
+    rejection_rows = []
+    rejection_error = None
+    try:
+        if rejections_path.is_file():
+            for line in rejections_path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    if isinstance(row, dict):
+                        rejection_rows.append(row)
+                    else:
+                        rejection_error = "rejections.jsonl contains a non-object row"
+    except (OSError, ValueError) as exc:
+        rejection_error = f"rejections.jsonl unreadable: {type(exc).__name__}: {exc}"
     view_rejections = 0
-    if rejections_path.is_file():
-        for line in rejections_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if row.get("phase") == "view":
-                view_rejections += 1
+    layout_rejections = 0
+    by_phase = {"view": {}, "layout": {}}
+    by_reason: dict[str, int] = {}
+    for row in rejection_rows:
+        phase = row.get("phase")
+        reason = str(row.get("reason") or "unknown")
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+        if phase == "layout" or row.get("view_index") == -1:
+            layout_rejections += 1
+            by_phase["layout"][reason] = by_phase["layout"].get(reason, 0) + 1
+        elif phase == "view":
+            view_rejections += 1
+            by_phase["view"][reason] = by_phase["view"].get(reason, 0) + 1
     requested = int(status.get("requested", 0))
     saved = int(status.get("saved", 0))
-    written = int(status.get("written_frames", frames))
-    return {"status": status.get("status"), "requested": requested, "written": written,
-            "saved": saved, "skipped": int(status.get("skipped", requested - saved)),
-            "proposal_accept_rate": (frames / (frames + view_rejections)) if frames + view_rejections else 0.0,
-            "frame_yield": (saved / requested) if requested else 0.0,
-            "errors": status.get("failures_by_reason") or {},
-            "view_rejections": view_rejections}
+    written = int(status.get("written_frames", journal_frames if journal_frames is not None else 0))
+    skipped = int(status.get("skipped", requested - saved))
+    frames = journal_frames if journal_frames is not None else written
+    counters = {
+        "readable": True,
+        "status": status.get("status"),
+        "requested": requested,
+        "written": written,
+        "saved": saved,
+        "skipped": skipped,
+        "exit_code": int(status.get("exit_code", 0)),
+        "journal_frames": journal_frames,
+        "journal_written_match": journal_frames is None or journal_frames == written,
+        "view_rejections": view_rejections,
+        "layout_rejections": layout_rejections,
+        "proposal_attempts": written + view_rejections,
+        "proposal_accept_rate": (written / (written + view_rejections)
+                                 if written + view_rejections else 0.0),
+        "frame_yield": (saved / requested) if requested else 0.0,
+        "rejections_by_phase": by_phase,
+        "rejections_by_reason": by_reason,
+        "errors": status.get("failures_by_reason") or {},
+        "frames_read": frames,
+    }
+    if rejection_error:
+        counters["rejections_error"] = rejection_error
+    return counters
+
+
+def _totals(summary: dict) -> dict:
+    """Aggregate readable job counters; unreadable children stay visible, never summed as 0."""
+    totals = {"cases": len(summary.get("cases") or []), "jobs": 0, "readable_jobs": 0,
+              "counter_errors": 0, "requested": 0, "written": 0, "saved": 0, "skipped": 0,
+              "view_rejections": 0, "layout_rejections": 0,
+              "rejections_by_phase": {"view": {}, "layout": {}},
+              "rejections_by_reason": {}}
+    for entry in summary.get("cases") or []:
+        for job_entry in entry.get("jobs") or []:
+            totals["jobs"] += 1
+            counters = job_entry.get("counters") or {}
+            if not counters.get("readable"):
+                totals["counter_errors"] += 1
+                continue
+            totals["readable_jobs"] += 1
+            for name in ("requested", "written", "saved", "skipped", "view_rejections",
+                         "layout_rejections"):
+                totals[name] += int(counters.get(name) or 0)
+            for phase in ("view", "layout"):
+                for reason, count in (counters.get("rejections_by_phase", {}).get(phase) or {}).items():
+                    bucket = totals["rejections_by_phase"][phase]
+                    bucket[reason] = bucket.get(reason, 0) + int(count)
+            for reason, count in (counters.get("rejections_by_reason") or {}).items():
+                totals["rejections_by_reason"][reason] =                     totals["rejections_by_reason"].get(reason, 0) + int(count)
+    totals["proposal_attempts"] = totals["written"] + totals["view_rejections"]
+    totals["proposal_accept_rate"] = (
+        totals["written"] / totals["proposal_attempts"] if totals["proposal_attempts"] else 0.0)
+    totals["frame_yield"] = (totals["saved"] / totals["requested"]) if totals["requested"] else 0.0
+    return totals
 
 
 def run(manifest_path: Path, destination: Path, *, num_scenes: int | None = None,
@@ -428,6 +516,7 @@ def run(manifest_path: Path, destination: Path, *, num_scenes: int | None = None
                                   "steps": []} for job in jobs]
                 for job, job_entry in zip(jobs, entry["jobs"]):
                     steps = job_entry["steps"]
+                    failure = None
                     for name, call in (
                             ("check_only", lambda job=job: executor.check_only(
                                 job, destination / "logs" / f"{key}-{job.job.name}-check.log")),
@@ -436,13 +525,27 @@ def run(manifest_path: Path, destination: Path, *, num_scenes: int | None = None
                         code = call()
                         steps.append({"step": name, "exit_code": code})
                         if code != 0:
-                            raise ManifestError(f"{name} failed for {job.job} (exit {code})")
+                            failure = ManifestError(f"{name} failed for {job.job} (exit {code})")
+                            break
                         if active.signum is not None:
                             break
-                    if active.signum is not None:
-                        break
+                    # The child has finalized (or the signal interrupted it): read the real
+                    # status/journal now. A signal or a failed render must not skip this step.
                     counters = _dataset_counters(job.dataset)
                     job_entry["counters"] = counters
+                    if not counters.get("readable"):
+                        job_entry["counters_error"] = counters.get("error")
+                    if failure is not None and active.signum is None:
+                        raise failure
+                    if active.signum is not None:
+                        break
+                    if not counters.get("readable"):
+                        raise ManifestError(
+                            f"counters unreadable for {job.dataset}: {counters.get('error')}")
+                    if counters["status"] != "completed" or counters["saved"] != counters["requested"]:
+                        raise ManifestError(
+                            f"dataset partial for {job.dataset}: "
+                            f"saved {counters['saved']} / requested {counters['requested']}")
                     code = executor.checker(job, destination / "logs" / f"{key}-{job.job.name}-checker.log")
                     steps.append({"step": "checker", "exit_code": code})
                     if code != 0:
@@ -452,10 +555,6 @@ def run(manifest_path: Path, destination: Path, *, num_scenes: int | None = None
                     steps.append({"step": "audit", "exit_code": code})
                     if code != 0:
                         raise ManifestError(f"audit failed for {job.dataset} (exit {code})")
-                    if counters["status"] != "completed" or counters["saved"] != counters["requested"]:
-                        raise ManifestError(
-                            f"dataset partial for {job.dataset}: "
-                            f"saved {counters['saved']} / requested {counters['requested']}")
                 entry["status"] = "interrupted" if active.signum is not None else "completed"
             except Exception as exc:          # noqa: BLE001 - reported in the summary, not hidden
                 entry["status"] = "failed"
@@ -471,6 +570,7 @@ def run(manifest_path: Path, destination: Path, *, num_scenes: int | None = None
             incomplete = [entry for entry in summary["cases"] if entry["status"] != "completed"]
             exit_code = 1 if incomplete else 0
             summary["status"] = "failed" if incomplete else "completed"
+        summary["totals"] = _totals(summary)
         _atomic_json(destination / "commands.json", list(getattr(executor, "commands", []) or []))
         all_production = classification == "production"
         summary["production_verified"] = bool(

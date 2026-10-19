@@ -13,33 +13,57 @@ from tools import validate_production_resources as vpr
 
 
 class FakeExecutor:
-    def __init__(self, *, fail=None, partial=False, send_signal=None, datasets=2):
+    def __init__(self, *, fail=None, partial=False, send_signal=None, datasets=2,
+                 layout_rejections=0, view_rejections=1, grouped_jobs=1,
+                 missing_status=False, missing_counters_for_signal=False):
         self.fail = fail
         self.partial = partial
         self.send_signal = send_signal
         self.datasets = datasets
+        self.layout_rejections = layout_rejections
+        self.view_rejections = view_rejections
+        self.grouped_jobs = grouped_jobs
+        self.missing_status = missing_status
+        self.missing_counters_for_signal = missing_counters_for_signal
         self.commands = []
         self.calls = []
 
-    def export(self, config, job_dir, *, grouped=False):
-        job_dir = Path(job_dir)
-        job_dir.mkdir(parents=True)
-        save_project(config, job_dir / "scene.yaml")
-        dataset = Path(config.output.root) / config.output.dataset_name
+    def _job(self, config, directory, *, missing_status=False, dataset_name=None):
+        directory = Path(directory)
+        directory.mkdir(parents=True)
+        save_project(config, directory / "scene.yaml")
+        dataset = Path(config.output.root) / (dataset_name or config.output.dataset_name)
         dataset.mkdir(parents=True)
         (dataset / "run_metadata").mkdir(exist_ok=True)
-        saved = 1 if self.partial else self.datasets
-        (dataset / "run_metadata" / "status.json").write_text(json.dumps({
-            "status": "partial" if self.partial else "completed", "requested": self.datasets,
-            "written_frames": self.datasets, "saved": saved,
-            "skipped": self.datasets - saved, "failures_by_reason": {}}), encoding="utf-8")
+        if not missing_status:
+            saved = 1 if self.partial else self.datasets
+            (dataset / "run_metadata" / "status.json").write_text(json.dumps({
+                "status": "partial" if self.partial else "completed", "requested": self.datasets,
+                "written_frames": self.datasets, "saved": saved,
+                "skipped": self.datasets - saved, "failures_by_reason": {}}), encoding="utf-8")
         frames = [{"frame_index": index} for index in range(self.datasets)]
         (dataset / "run_metadata" / "frames.jsonl").write_text(
             "".join(json.dumps(row) + "\n" for row in frames), encoding="utf-8")
+        rejections = [json.dumps({"reason": "occlusion", "phase": "view"}) + "\n"] * self.view_rejections
+        rejections += [json.dumps({"reason": "collision", "phase": "layout",
+                                   "view_index": -1}) + "\n"] * self.layout_rejections
         (dataset / "run_metadata" / "rejections.jsonl").write_text(
-            json.dumps({"reason": "occlusion", "phase": "view"}) + "\n", encoding="utf-8")
+            "".join(rejections), encoding="utf-8")
+        return vpr.JobPlan(directory, dataset)
+
+    def export(self, config, job_dir, *, grouped=False):
+        job_dir = Path(job_dir)
+        jobs = []
+        count = self.grouped_jobs if grouped else 1
+        for index in range(count):
+            directory = job_dir if count == 1 else job_dir.with_name(f"{job_dir.name}-size-{index + 1}")
+            missing = self.missing_status or (self.missing_counters_for_signal and self.send_signal)
+            dataset_name = (None if count == 1
+                            else f"{config.output.dataset_name}-size-{index + 1}")
+            jobs.append(self._job(config, directory, missing_status=missing,
+                                  dataset_name=dataset_name))
         self.calls.append(("export", grouped))
-        return [vpr.JobPlan(job_dir, dataset)]
+        return jobs
 
     def check_only(self, job, log):
         Path(log).parent.mkdir(parents=True, exist_ok=True)
@@ -239,3 +263,97 @@ def test_verify_runs_the_real_checker_on_incomplete_data(tmp_path):
     summary["device"] = "NVIDIA unit test"
     (destination / "summary.json").write_text(json.dumps(summary))
     assert vpr.verify(destination) == 1
+
+
+# -- R6: counters are read after the current child finalizes, even on signals ----------------
+def _current_job_counters(destination):
+    summary = json.loads((destination / "summary.json").read_text())
+    return summary, summary["cases"][0]["jobs"][0]["counters"]
+
+
+@pytest.mark.parametrize("signum,expected", [(signal.SIGINT, 130), (signal.SIGTERM, 143)])
+def test_signals_keep_the_current_job_counters_and_leave_later_cases_not_started(
+        tmp_path, signum, expected):
+    path, _project, _ = build_manifest(tmp_path, second_hdri=True)
+    destination = tmp_path / "evidence"
+    executor = FakeExecutor(send_signal=signum)
+    assert vpr.run(path, destination, executor=executor) == expected
+    summary, counters = _current_job_counters(destination)
+    assert summary["status"] == "interrupted" and summary["exit_code"] == expected
+    assert summary["cases"][0]["status"] == "interrupted"
+    assert summary["cases"][1]["status"] == "not_started"
+    assert counters["readable"] is True
+    assert counters["requested"] == counters["written"] == counters["saved"] == 2
+    assert counters["skipped"] == 0 and counters["exit_code"] == 0
+    assert counters["journal_frames"] == 2
+    recorded = json.loads((Path(summary["cases"][0]["jobs"][0]["dataset"])
+                           / "run_metadata" / "status.json").read_text())
+    for name in ("requested", "saved", "skipped"):
+        assert counters[name] == recorded[name]
+    assert counters["exit_code"] == recorded.get("exit_code", 0)
+    assert counters["written"] == recorded["written_frames"]
+
+
+def test_a_render_failure_still_records_the_current_job_counters(tmp_path):
+    path, _project, _ = build_manifest(tmp_path)
+    destination = tmp_path / "evidence"
+    assert vpr.run(path, destination, executor=FakeExecutor(fail="render")) != 0
+    summary, counters = _current_job_counters(destination)
+    assert summary["cases"][0]["status"] == "failed"
+    assert counters["readable"] is True
+    assert counters["requested"] == 2 and counters["saved"] == 2
+    assert summary["cases"][0]["error"]
+
+
+def test_unreadable_current_counters_record_a_reason_instead_of_zeroes(tmp_path):
+    path, _project, _ = build_manifest(tmp_path)
+    destination = tmp_path / "evidence"
+    executor = FakeExecutor(send_signal=signal.SIGINT, missing_counters_for_signal=True)
+    assert vpr.run(path, destination, executor=executor) == 130
+    summary, counters = _current_job_counters(destination)
+    assert summary["cases"][0]["status"] == "interrupted"
+    assert counters["readable"] is False
+    assert counters["error"]
+    assert "requested" not in counters or counters["requested"] is None
+
+
+def test_layout_and_view_rejections_are_counted_separately(tmp_path):
+    path, _project, _ = build_manifest(tmp_path)
+    destination = tmp_path / "evidence"
+    executor = FakeExecutor(layout_rejections=2, view_rejections=3, datasets=5)
+    assert vpr.run(path, destination, executor=executor) == 0
+    summary, counters = _current_job_counters(destination)
+    assert counters["view_rejections"] == 3
+    assert counters["layout_rejections"] == 2
+    assert counters["proposal_attempts"] == 8          # 5 frames + 3 view rejections
+    assert counters["proposal_accept_rate"] == pytest.approx(5 / 8)
+    assert counters["frame_yield"] == pytest.approx(1.0)
+    assert counters["rejections_by_phase"]["view"] == {"occlusion": 3}
+    assert counters["rejections_by_phase"]["layout"] == {"collision": 2}
+    assert counters["rejections_by_reason"] == {"occlusion": 3, "collision": 2}
+    totals = summary["totals"]
+    assert totals["view_rejections"] == 3 and totals["layout_rejections"] == 2
+    assert totals["proposal_attempts"] == 8
+    assert totals["proposal_accept_rate"] == pytest.approx(5 / 8)
+
+
+def test_totals_aggregate_multiple_cases_hdris_and_grouped_jobs(tmp_path):
+    path, _project, _ = build_manifest(tmp_path, second_hdri=True)
+    destination = tmp_path / "evidence"
+    executor = FakeExecutor(datasets=2, grouped_jobs=2, layout_rejections=1, view_rejections=1)
+    # Grouped export: one case per HDRI, two jobs each, each job has its own counters.
+    manifest = json.loads(path.read_text())
+    for case in manifest["cases"]:
+        case["grouped"] = True
+    path.write_text(json.dumps(manifest))
+    assert vpr.run(path, destination, executor=executor) == 0
+    summary = json.loads((destination / "summary.json").read_text())
+    assert len(summary["cases"]) == 2
+    assert all(len(entry["jobs"]) == 2 for entry in summary["cases"])
+    totals = summary["totals"]
+    assert totals["jobs"] == 4
+    assert totals["requested"] == totals["written"] == totals["saved"] == 8
+    assert totals["view_rejections"] == 4 and totals["layout_rejections"] == 4
+    assert totals["proposal_attempts"] == 12
+    assert totals["proposal_accept_rate"] == pytest.approx(8 / 12)
+    assert totals["rejections_by_phase"]["layout"] == {"collision": 4}

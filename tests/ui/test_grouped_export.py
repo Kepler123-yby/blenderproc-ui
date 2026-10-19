@@ -16,6 +16,7 @@ def test_the_split_option_exports_every_size_group(state, qtbot, tmp_path, monke
     calls = []
 
     def fake_export(config, destination):
+        Path(destination).mkdir(parents=True)        # the real exporter reserves the directory
         calls.append((config, Path(destination)))
         return SimpleNamespace(directory=Path(destination), command=f"完整命令 {len(calls)}",
                                preview_command=f"试渲染 {len(calls)}")
@@ -45,6 +46,7 @@ def test_a_single_size_group_uses_the_ordinary_export_path(state, qtbot, tmp_pat
     called = []
 
     def fake_export(config, destination):
+        Path(destination).mkdir(parents=True)
         called.append(Path(destination))
         return SimpleNamespace(directory=Path(destination), command="普通", preview_command="试")
 
@@ -159,3 +161,41 @@ def test_cycles_tiling_controls_reach_the_real_config(state, qtbot):
     panel.use_tiling.setChecked(True)
     assert state.config.render.use_tiling is True
     assert panel.tile_size.value() == 512
+
+
+def test_group_reframe_controls_reach_the_grouped_export(state, qtbot, tmp_path, monkeypatch):
+    state.set_meshes({"target-2": make_mesh(size=.002), "target-7": make_mesh(size=.04)})
+    calls = []
+
+    def fake_export(config, destination):
+        Path(destination).mkdir(parents=True)
+        calls.append(config)
+        return SimpleNamespace(directory=Path(destination), command="cmd", preview_command="preview")
+
+    monkeypatch.setattr("bproc_export.bundle.export_job", fake_export)
+    panel = ExportPanel(state)
+    qtbot.addWidget(panel)
+    panel.split_scales.setChecked(True)
+    panel.reframe_groups.setChecked(True)
+    panel.framing_margin.setValue(0.15)
+    assert state.config.scale_grouping.reframe is True
+    assert state.config.scale_grouping.margin_fraction == 0.15
+    assert "2 个尺寸组" in panel.grouping_note.text()
+    with qtbot.waitSignal(panel.exported, timeout=10000):
+        assert panel.start_grouped_export(tmp_path / "render_job")
+    assert len(calls) == 2
+    assert all(config.scale_grouping.reframe for config in calls)
+    assert all(abs(config.scale_grouping.margin_fraction - 0.15) < 1e-9 for config in calls)
+    # The camera distances now differ per group while the intrinsics stay untouched.
+    assert calls[0].fixed_cameras == calls[1].fixed_cameras
+    assert calls[0].camera == calls[1].camera
+
+
+def test_reframe_with_a_single_group_keeps_the_original_configuration(state, qtbot):
+    state.set_meshes({"target-2": make_mesh(size=.04), "target-7": make_mesh(size=.05)})
+    panel = ExportPanel(state)
+    qtbot.addWidget(panel)
+    panel.split_scales.setChecked(True)
+    panel.reframe_groups.setChecked(True)
+    assert "仅有一个尺寸组" in panel.grouping_note.text()
+    assert state.config.scale_grouping.reframe is True

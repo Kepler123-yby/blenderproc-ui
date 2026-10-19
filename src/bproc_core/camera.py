@@ -135,3 +135,103 @@ def fit_distance(bounds_m, camera: CameraSpec, azimuths_deg=(0.,), elevation_deg
         middle = (low + high) / 2
         low, high = (low, middle) if fits(middle) else (middle, high)
     return high
+
+
+@dataclass(frozen=True)
+class FramingWindow:
+    """Allowed pixel rectangle with the same half-pixel convention as ``project_points``."""
+
+    left: float
+    right: float
+    top: float
+    bottom: float
+
+    def contains(self, pixels: np.ndarray) -> bool:
+        pixels = np.asarray(pixels, dtype=float)
+        return bool(np.all(pixels[:, 0] >= self.left) and np.all(pixels[:, 0] <= self.right)
+                    and np.all(pixels[:, 1] >= self.top) and np.all(pixels[:, 1] <= self.bottom))
+
+
+def framing_window(camera: CameraSpec, margin_fraction: float) -> FramingWindow:
+    """Pixel rectangle used by opt-in group reframing.
+
+    ``L/U/T/B`` follow the documented contract; the principal point must lie strictly inside,
+    otherwise no camera change can make the window usable and the caller has to reject it.
+    """
+    margin = float(margin_fraction)
+    if not 0.0 <= margin < 0.45:
+        raise ValueError("取景边距必须位于 0 到 0.45（不含）")
+    width, height = float(camera.width), float(camera.height)
+    window = FramingWindow(left=-0.5 + margin * width, right=width - 0.5 - margin * width,
+                           top=-0.5 + margin * height, bottom=height - 0.5 - margin * height)
+    if not (window.left < camera.cx < window.right and window.top < camera.cy < window.bottom):
+        raise ValueError("主点位于允许的取景矩形之外：无法在不修改内参的前提下重取景")
+    return window
+
+
+def bounds_corners(bounds_m) -> np.ndarray:
+    bounds = np.asarray(bounds_m, dtype=float)
+    if bounds.shape != (2, 3) or not np.isfinite(bounds).all() or (bounds[1] <= bounds[0]).any():
+        raise ValueError("包络必须是有限的 (2, 3) 最小/最大值")
+    return np.array([[x, y, z] for x in bounds[:, 0] for y in bounds[:, 1] for z in bounds[:, 2]])
+
+
+def _pose_at(radius: float, azimuth_deg: float, elevation_deg: float, camera: CameraSpec) -> CameraPose:
+    region = RegionSpec(key="reframe", radius_m=Range(radius, radius),
+                        azimuth=Azimuth(float(azimuth_deg), float(azimuth_deg), False),
+                        elevation_deg=Range(float(elevation_deg), float(elevation_deg)))
+    return sample_camera(region, np.zeros(3), np.eye(3), camera, np.random.default_rng(0))
+
+
+def bounds_fit_window(bounds_m, camera: CameraSpec, azimuth_deg: float, elevation_deg: float,
+                      window: FramingWindow, radius_m: float) -> bool:
+    """Every corner enters the window and passes the existing near/far clip rules."""
+    pose = _pose_at(float(radius_m), azimuth_deg, elevation_deg, camera)
+    pixels, valid = project_points(bounds_corners(bounds_m), pose, camera)
+    return bool(valid.all()) and window.contains(pixels)
+
+
+def fit_bounds_radius(bounds_m, camera: CameraSpec, azimuth_deg: float, elevation_deg: float,
+                      margin_fraction: float, *, iterations: int = 60) -> float:
+    """Smallest orbit radius that keeps the whole box inside the margin window."""
+    window = framing_window(camera, margin_fraction)
+    span = float(np.linalg.norm(np.ptp(np.asarray(bounds_m, dtype=float), axis=0))) or 1.0
+    low = max(1e-9, span * 1e-9)
+    high = max(1.0, span * 50.0)
+    if not bounds_fit_window(bounds_m, camera, azimuth_deg, elevation_deg, window, high):
+        # The far clip grows with the radius, so doubling eventually fits every finite box.
+        for _ in range(80):
+            high *= 2.0
+            if bounds_fit_window(bounds_m, camera, azimuth_deg, elevation_deg, window, high):
+                break
+        else:
+            raise ValueError("无法将目标包络放入取景窗口")
+    for _ in range(iterations):
+        middle = (low + high) / 2.0
+        if bounds_fit_window(bounds_m, camera, azimuth_deg, elevation_deg, window, middle):
+            high = middle
+        else:
+            low = middle
+    return high
+
+
+def envelope_radius(bounds_m) -> float:
+    """Largest corner norm around the anchor origin, used by the random-camera contract."""
+    corners = bounds_corners(bounds_m)
+    return float(np.linalg.norm(corners, axis=1).max())
+
+
+def random_fit_radius(bounds_m, camera: CameraSpec, margin_fraction: float) -> float:
+    """Closed-form radius that keeps every corner in frame from any direction.
+
+    ``h`` converts the four pixel gaps into the tangent of the allowed half-angle;
+    ``R / sin(atan(h))`` is the distance at which a sphere of radius ``R`` fills exactly that
+    angle. It is conservative for the box and never depends on the sampled direction.
+    """
+    window = framing_window(camera, margin_fraction)
+    radius = envelope_radius(bounds_m)
+    h = min((camera.cx - window.left) / camera.fx, (window.right - camera.cx) / camera.fx,
+            (camera.cy - window.top) / camera.fy, (window.bottom - camera.cy) / camera.fy)
+    if not np.isfinite(h) or h <= 0:
+        raise ValueError("取景窗口没有可用的半角")
+    return radius / float(np.sin(np.arctan(h)))

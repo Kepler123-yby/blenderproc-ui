@@ -93,6 +93,7 @@ def test_grouped_export_uses_sibling_job_directories(tmp_path, monkeypatch):
                                         ("large", .04, [(0, 0)] * 3)], anchor="large")
     calls = []
     def fake_export(config, destination):
+        Path(destination).mkdir(parents=True)          # the real exporter reserves the directory
         calls.append((config, Path(destination)))
         return SimpleNamespace(directory=Path(destination), command="echo " + str(destination))
     monkeypatch.setattr(bundle, "export_job", fake_export)
@@ -108,9 +109,12 @@ def test_a_single_group_exports_to_the_requested_directory(tmp_path, monkeypatch
     config, meshes = _config(tmp_path, [("a", .01, [(0, 0)] * 3),
                                         ("b", .02, [(0, 0)] * 3)], anchor="a")
     calls = []
-    monkeypatch.setattr(bundle, "export_job",
-                        lambda config, destination: calls.append(Path(destination)) or
-                        SimpleNamespace(directory=Path(destination), command=""))
+    def fake_export(config, destination):
+        Path(destination).mkdir(parents=True)
+        calls.append(Path(destination))
+        return SimpleNamespace(directory=Path(destination), command="")
+
+    monkeypatch.setattr(bundle, "export_job", fake_export)
     results = bundle.export_grouped_jobs(config, meshes, tmp_path / "one_job")
     assert [Path(call).name for call in calls] == ["one_job"]
     assert len(results) == 1

@@ -131,8 +131,21 @@ class ExportPanel(QWidget):
         form.addRow("新任务目录", row(self.job_path, choose_job))
         self.split_scales = QCheckBox("目标尺寸相差 >10× 时按组导出")
         self.split_scales.setToolTip(
-            "混尺度项目会拆成多个任务，每组只含同一尺寸段的目标；相机、灯光和深度编码保持原配置。")
+            "混尺度项目会拆成多个任务，每组只含同一尺寸段的目标；默认相机、灯光和深度编码保持原配置。")
+        self.split_scales.toggled.connect(lambda: self._update_grouping_note())
         form.addRow(self.split_scales)
+        self.reframe_groups = QCheckBox("分组后自动重取景")
+        self.reframe_groups.setToolTip(
+            "仅在实际分成多个尺寸组时生效：按组包络重算相机距离，点光源距离/能量随尺度缩放；\n"
+            "不修改内参、像素尺寸、稳定 ID、模型、遮挡窗口或深度编码。普通单组项目保持原配置。")
+        self.reframe_groups.toggled.connect(lambda: self._grouping_changed("reframe"))
+        form.addRow(self.reframe_groups)
+        self.framing_margin = number(0.10, minimum=0, maximum=0.4499, decimals=3)
+        self.framing_margin.setToolTip("取景窗口四周留白占画幅的比例；必须小于 0.45。")
+        self.framing_margin.valueChanged.connect(lambda: self._grouping_changed("margin_fraction"))
+        form.addRow("重取景边距", self.framing_margin)
+        self.grouping_note = note("")
+        form.addRow(self.grouping_note)
         check = QPushButton("检查配置")
         check.clicked.connect(self.validate)
         self.export_button = QPushButton("导出脚本与配置")
@@ -196,6 +209,36 @@ class ExportPanel(QWidget):
         if path:
             self.root.setText(path)
             self._output_changed("root")
+
+    def _grouping_changed(self, field):
+        if not self._updating:
+            values = {"reframe": self.reframe_groups.isChecked(),
+                      "margin_fraction": self.framing_margin.value()}
+            self.state.update(scale_grouping=replace(self.state.config.scale_grouping,
+                                                     **{field: values[field]}))
+            self._update_grouping_note()
+
+    def _update_grouping_note(self):
+        grouping = self.state.config.scale_grouping
+        if not grouping.reframe:
+            self.grouping_note.setText("重取景关闭：相机/灯光保持原绝对设置。")
+            return
+        if not self.split_scales.isChecked():
+            self.grouping_note.setText("重取景需要同时勾选上方的按组导出；普通单任务保持原配置。")
+            return
+        missing = self._unloaded_enabled_targets()
+        if missing:
+            self.grouping_note.setText("等待启用目标网格载入后判断尺寸组。")
+            return
+        try:
+            groups = split_by_scale(self.state.config, self.state.meshes)
+        except (ConfigError, ValueError) as error:
+            self.grouping_note.setText(f"无法分组：{error}")
+            return
+        if len(groups) <= 1:
+            self.grouping_note.setText("仅有一个尺寸组：即使勾选重取景，也保持原科学配置不变。")
+        else:
+            self.grouping_note.setText(f"将按 {len(groups)} 个尺寸组重取景；内参、ID、窗口与深度编码不变。")
 
     def _render_changed(self, field):
         if not self._updating:
@@ -438,6 +481,10 @@ class ExportPanel(QWidget):
         self.use_tiling.setChecked(config.render.use_tiling)
         self.tile_size.setValue(config.render.tile_size)
         self.tile_size.setEnabled(config.render.use_tiling)
+        self.reframe_groups.setChecked(config.scale_grouping.reframe)
+        self.framing_margin.setValue(config.scale_grouping.margin_fraction)
+        self.framing_margin.setEnabled(config.scale_grouping.reframe)
+        self._update_grouping_note()
         self.conda_env.setText(config.runtime.conda_env)
         self.blender_dir.setText(str(config.runtime.blender_dir))
         self.blenderproc.setText(str(config.runtime.blenderproc_executable))

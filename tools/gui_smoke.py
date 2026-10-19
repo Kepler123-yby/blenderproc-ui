@@ -152,8 +152,13 @@ def main():
             window._set_workspace(2)
             app.processEvents()
             properties_scroll = window.properties.widget(2)
-            properties_scroll.verticalScrollBar().setValue(properties_scroll.verticalScrollBar().maximum())
-            app.processEvents()
+            bar = properties_scroll.verticalScrollBar()
+            for fraction in (0.0, 0.33, 0.66, 1.0):
+                bar.setValue(int(bar.maximum() * fraction))
+                app.processEvents()
+                name = f"workspace-export-scroll-{int(round(fraction * 100)):03d}.png"
+                window.grab().save(str(destination / name))
+                evidence["screenshots"].append(name)
             window.grab().save(str(destination / "workspace-render-tiling.png"))
             evidence["screenshots"].append("workspace-render-tiling.png")
             evidence["tiling_controls"] = {"use_tiling": state.config.render.use_tiling,

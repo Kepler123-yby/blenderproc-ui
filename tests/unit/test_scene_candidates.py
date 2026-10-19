@@ -6,7 +6,7 @@ import pytest
 from bproc_core.assets import MeshData
 from bproc_core.config import *
 from bproc_core.scene import *
-from bproc_core.scene import (_covered_share, _edge_topology, _maskable, _polygon_area,
+from bproc_core.scene import (_covered_share, _edge_topology, _mask_covered_share, _maskable, _polygon_area,
                               _silhouette, _silhouette_points, _target_shapes,
                               SILHOUETTE_GRID_SIZE, SILHOUETTE_MASK_MAX_FACES,
                               SILHOUETTE_MASK_MAX_VERTICES, SILHOUETTE_POINT_LIMIT,
@@ -1030,3 +1030,193 @@ def test_mixed_targets_route_each_shape_through_its_own_estimator():
     # And the hollow target's proposals still satisfy the window on the shipped camera image.
     shares = _pixel_shares(config, meshes, pose, seeds=range(12))
     assert all(.25 <= share <= .35 for share in shares), shares
+
+
+# -- R5: a dense occluder must use the same streamed triangle union as the target ---------------
+def _dense_double_box(key="o", cells=20):
+    """Two separate, closed, consistently wound boxes whose projections overlap.
+
+    Each part is dense on its own (4,800 faces) so the whole mesh is past the triangle budget;
+    their even-odd outlines cancel the overlap while the true triangle union fills it.
+    """
+    first = _grid_box("part-a", (-.06, -.04, -.005), (.06, .04, .005), cells)
+    second = _grid_box("part-b", (-.02, -.03, -.004), (.10, .05, .004), cells)
+    vertices = np.vstack([first.vertices_m, second.vertices_m])
+    faces = np.vstack([first.faces, second.faces + len(first.vertices_m)])
+    return MeshData(key, vertices, faces, None, np.array([vertices.min(axis=0), vertices.max(axis=0)]))
+
+
+def _dense_overlap_fixture(window=Range(.9, 1.), occluder=None):
+    occluder = occluder if occluder is not None else _dense_double_box()
+    target = make_box("a", (-.08, -.048, -.001), (.08, .048, .001))
+    meshes = {"a": target, "o": occluder}
+    config = ProjectConfig(
+        targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
+        occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
+        regions=(RegionSpec(radius_m=Range(.5, .5), azimuth=Azimuth(0, 0, False),
+                            elevation_deg=Range(90, 90)),),
+        occlusion=OcclusionSpec(none_fraction=0., ratio=window, count=(1, 1),
+                                scale=Range(1., 1.)))
+    pose = CameraPose(np.eye(4), np.array([0., 0., .5]), .5, 0., 0., .005, 50.)
+    return config, meshes, pose
+
+
+def _target_mask(config, meshes, pose):
+    shapes = _target_shapes([(meshes["a"], np.eye(4))], pose, config.camera)
+    return shapes, shapes.shapes[0].mask
+
+
+def _streamed_occluder_share(meshes, pose, config, matrix, target_mask, grid):
+    mask, _ = scene_module.stream_coverage(meshes["o"], matrix, pose, config.camera, grid)
+    assert mask is not None
+    return _mask_covered_share(target_mask, mask), mask
+
+
+def _outline_occluder_share(meshes, pose, config, matrix, target_mask, grid):
+    outline, reason = scene_module._outline_for(meshes["o"], matrix, pose, config.camera)
+    assert outline is not None, reason
+    mask, reason = outline.mask(matrix, pose, config.camera, grid)
+    assert mask is not None, reason
+    return _mask_covered_share(target_mask, mask)
+
+
+def test_dense_overlapping_occluder_is_aimed_by_the_streamed_union(monkeypatch):
+    config, meshes, pose = _dense_overlap_fixture(Range(.9, 1.))
+    assert not _maskable(meshes["o"]) and len(meshes["o"].faces) == 9_600
+    calls = {"stream": 0, "outline": 0}
+    real_stream, real_outline = scene_module.stream_coverage, scene_module._outline_for
+
+    def stream(*args, **kwargs):
+        calls["stream"] += 1
+        return real_stream(*args, **kwargs)
+
+    def outline(*args, **kwargs):
+        calls["outline"] += 1
+        return real_outline(*args, **kwargs)
+
+    monkeypatch.setattr(scene_module, "stream_coverage", stream)
+    monkeypatch.setattr(scene_module, "_outline_for", outline)
+    shapes, target_mask = _target_mask(config, meshes, pose)
+    target_points = transform_points(bounds_corners(meshes["a"].bounds_m), np.eye(4))
+    offset = scene_module._aimed_offset(
+        np.array([0., 0., .25]), np.array([1., 0., 0.]), meshes["o"], 1., shapes, pose,
+        config, np.random.default_rng(0), .02, target_points)
+    assert calls["stream"] > 0 and calls["outline"] == 0
+    matrix = np.eye(4)
+    matrix[:3, 3] = np.array([0., 0., .25]) + np.array([1., 0., 0.]) * offset \
+        - meshes["o"].bounds_m.mean(axis=0)
+    union_share, _ = _streamed_occluder_share(meshes, pose, config, matrix, target_mask,
+                                              shapes.grid)
+    outline_share = _outline_occluder_share(meshes, pose, config, matrix, target_mask,
+                                            shapes.grid)
+    assert .9 <= union_share <= 1., union_share
+    # The old even-odd outline cannot account for this coverage: it cancels the overlap.
+    assert outline_share < .9, outline_share
+
+
+def test_dense_overlapping_occluder_placement_uses_streaming_coverage(monkeypatch):
+    config, meshes, pose = _dense_overlap_fixture(Range(.85, .95))
+    calls = {"outline": 0}
+    real_outline = scene_module._outline_for
+
+    def outline(*args, **kwargs):
+        calls["outline"] += 1
+        return real_outline(*args, **kwargs)
+
+    monkeypatch.setattr(scene_module, "_outline_for", outline)
+    placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(0), ())
+    assert isinstance(placements, list), placements
+    assert calls["outline"] == 0
+    shapes, target_mask = _target_mask(config, meshes, pose)
+    share, _ = _streamed_occluder_share(meshes, pose, config,
+                                        placements[0].world_from_model, target_mask, shapes.grid)
+    assert .85 - .01 <= share <= .95 + .01, share
+
+
+def test_propose_candidate_uses_the_streamed_dense_occluder(monkeypatch):
+    config, meshes, pose = _dense_overlap_fixture(Range(.85, .95))
+    calls = {"outline": 0}
+    real_outline = scene_module._outline_for
+
+    def outline(*args, **kwargs):
+        calls["outline"] += 1
+        return real_outline(*args, **kwargs)
+
+    monkeypatch.setattr(scene_module, "_outline_for", outline)
+    state = propose_scene(config, meshes, 0)
+    assert isinstance(state, SceneState), state
+    shot = propose_candidate(config, meshes, state, 0, 0)
+    assert isinstance(shot, SceneCandidate), shot
+    assert calls["outline"] == 0
+    occluder = next(p for p in shot.placements if p.role == "occluder")
+    shapes, target_mask = _target_mask(config, meshes, shot.camera)
+    share, _ = _streamed_occluder_share(meshes, shot.camera, config,
+                                        occluder.world_from_model, target_mask, shapes.grid)
+    assert .85 - .01 <= share <= .95 + .01, share
+
+
+def test_a_dense_solid_occluder_keeps_a_solid_high_window(monkeypatch):
+    solid = _grid_box("solid", (-.06, -.04, -.005), (.06, .04, .005), 25)
+    assert len(solid.faces) > SILHOUETTE_MASK_MAX_FACES and not _maskable(solid)
+    config, meshes, pose = _dense_overlap_fixture(Range(.8, .9), occluder=solid)
+    calls = {"outline": 0}
+    real_outline = scene_module._outline_for
+
+    def outline(*args, **kwargs):
+        calls["outline"] += 1
+        return real_outline(*args, **kwargs)
+
+    monkeypatch.setattr(scene_module, "_outline_for", outline)
+    placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(1), ())
+    assert isinstance(placements, list), placements
+    assert calls["outline"] == 0
+    shapes, target_mask = _target_mask(config, meshes, pose)
+    share, _ = _streamed_occluder_share(meshes, pose, config,
+                                        placements[0].world_from_model, target_mask, shapes.grid)
+    assert .8 <= share <= .9, share
+
+
+def test_a_dense_hollow_occluder_keeps_its_opening_while_aiming(monkeypatch):
+    hollow = _u_prism("hollow", .05, .03, .005, 60)
+    assert len(hollow.faces) > SILHOUETTE_MASK_MAX_FACES and not _maskable(hollow)
+    target = make_box("a", (.02, .0, -.001), (.05, .03, .001))
+    meshes = {"a": target, "o": hollow}
+    config = ProjectConfig(
+        targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
+        occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
+        regions=(RegionSpec(radius_m=Range(.5, .5), azimuth=Azimuth(0, 0, False),
+                            elevation_deg=Range(90, 90)),),
+        occlusion=OcclusionSpec(none_fraction=0., ratio=Range(.2, .3), count=(1, 1),
+                                scale=Range(1., 1.)))
+    pose = CameraPose(np.eye(4), np.array([0., 0., .5]), .5, 0., 0., .005, 50.)
+    calls = {"outline": 0}
+    real_outline = scene_module._outline_for
+
+    def outline(*args, **kwargs):
+        calls["outline"] += 1
+        return real_outline(*args, **kwargs)
+
+    monkeypatch.setattr(scene_module, "_outline_for", outline)
+    placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(0), ())
+    assert isinstance(placements, list), placements
+    assert calls["outline"] == 0
+    shapes, target_mask = _target_mask(config, meshes, pose)
+    share, _ = _streamed_occluder_share(meshes, pose, config,
+                                        placements[0].world_from_model, target_mask, shapes.grid)
+    assert .2 - .01 <= share <= .3 + .01, share
+
+
+def test_a_low_face_occluder_still_uses_its_triangles(monkeypatch):
+    config, meshes, pose = _frame_fixture(Range(.25, .35))
+    assert _maskable(meshes["o"])
+    calls = {"outline": 0}
+    real_outline = scene_module._outline_for
+
+    def outline(*args, **kwargs):
+        calls["outline"] += 1
+        return real_outline(*args, **kwargs)
+
+    monkeypatch.setattr(scene_module, "_outline_for", outline)
+    placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(3), ())
+    assert isinstance(placements, list), placements
+    assert calls["outline"] == 0

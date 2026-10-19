@@ -840,7 +840,7 @@ def _offset_span(base, direction, mesh, scale, points, pose):
 
 
 def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, config, rng, spread,
-                  target_points=None):
+                  target_points=None, diagnostics_out: list | None = None):
     """Sideways offset that should cover roughly the middle of the occlusion window.
 
     The renderer used to reject most proposals for over-covering: a box three quarters of the
@@ -868,13 +868,26 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
         return matrix
 
     # Convexity is translation invariant, so the occluder is classified once at the search origin
-    # rather than on every probe: a solid box has an exact envelope, a hollow one does not. A part
-    # too dense for its triangles is classified from its silhouette edges, which are picked once
-    # here and only re-projected per probe.
+    # rather than on every probe: a solid box has an exact envelope, a hollow one does not. Dense
+    # parts are measured by the same streamed triangle union as the target, never by the legacy
+    # even-odd outline first: that fill cancels the overlap of separate components.
     grid = shapes.grid
-    outline = None
-    if grid is not None and not _maskable(mesh):
-        outline, _reason = _outline_for(mesh, matrix_at(0.), pose, config.camera)
+    outline_cache: dict = {}
+    reported_stream_failures: set = set()
+    reported_empty_reasons: set = set()
+
+    def record_stream_failure(matrix, diagnostic):
+        if diagnostics_out is None:
+            return
+        reason = diagnostic.fallback_reason or "unavailable"
+        if reason in reported_stream_failures:
+            return
+        reported_stream_failures.add(reason)
+        diagnostics_out.append({
+            "asset_key": mesh.key, "method": "outline", "estimate_only": False,
+            "fallback_reason": f"stream:{reason}", "grid_size": None if grid is None else grid.size,
+            "faces": len(mesh.faces),
+        })
 
     def occluder_real(matrix):
         """The occluder's own surface on the shared grid, or None when only its envelope is left."""
@@ -882,11 +895,30 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
             return None
         if _maskable(mesh):
             return _rasterize_mask(mesh, matrix, pose, config.camera, grid, triangles=True)
-        if outline is not None:
-            return outline.mask(matrix, pose, config.camera, grid)[0]
-        # No cached edge topology (e.g. past the 2M-face cap): stream the real triangles instead
-        # of silently aiming with the convex hull. The work stays bounded per probe.
-        return stream_coverage(mesh, matrix, pose, config.camera, grid)[0]
+        mask, diagnostic = stream_coverage(mesh, matrix, pose, config.camera, grid)
+        if mask is not None:
+            return mask
+        if diagnostic.fallback_reason in ("empty_coverage", "degenerate_surface", "behind_camera"):
+            # The shared grid only has to cover the targets. A probe whose occluder projects
+            # entirely outside it (or behind the camera) cannot cover any target pixel, so an
+            # explicit empty surface is the true answer and no legacy outline needs building.
+            if diagnostics_out is not None and diagnostic.fallback_reason not in reported_empty_reasons:
+                reported_empty_reasons.add(diagnostic.fallback_reason)
+                diagnostics_out.append({
+                    "asset_key": mesh.key, "method": "triangle_stream", "estimate_only": False,
+                    "fallback_reason": None, "grid_size": grid.size, "faces": len(mesh.faces),
+                    "note": diagnostic.fallback_reason,
+                })
+            return np.zeros((grid.size, grid.size), dtype=bool)
+        record_stream_failure(matrix, diagnostic)
+        if "outline" not in outline_cache:
+            # The legacy outline is a fallback for inputs the streaming limits reject, not the
+            # primary dense path. Its topology is still built once per aim.
+            outline_cache["outline"] = _outline_for(mesh, matrix, pose, config.camera)
+        outline, _reason = outline_cache["outline"]
+        if outline is None:
+            return None
+        return outline.mask(matrix, pose, config.camera, grid)[0]
 
     origin = occluder_real(matrix_at(0.))
     occluder_convex = grid is None or (origin is not None and _is_convex_silhouette(
@@ -1070,7 +1102,7 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
             direction = np.cos(angle) * right + np.sin(angle) * up
             center = base + direction * _aimed_offset(
                 base, direction, mesh, scale, target_shapes, pose, config, rng, apparent * ratio,
-                target_points)
+                target_points, diagnostics_out)
             matrix = np.eye(4)
             matrix[:3, :3] *= scale
             matrix[:3, 3] = center - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)

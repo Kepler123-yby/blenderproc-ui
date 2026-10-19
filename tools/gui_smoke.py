@@ -116,6 +116,51 @@ def main():
             evidence["screenshots"].extend(["scene-solid-red.png", "camera-solid-red.png"])
             state.update(material=original_material)
             app.processEvents()
+
+            # Viewport LOD control: full/auto must be display-only and keep canonical meshes.
+            canonical = {key: (len(mesh.faces), id(mesh)) for key, mesh in state.meshes.items()}
+            auto_status = window.lod_status.text()
+            window.lod_mode.setCurrentIndex(window.lod_mode.findData("full"))
+            app.processEvents()
+            full_status = window.lod_status.text()
+            if state.config.viewport.lod_mode != "full" or "原始网格" not in full_status:
+                raise RuntimeError(f"LOD full control did not reach the config/status: {full_status}")
+            if {key: (len(mesh.faces), id(mesh)) for key, mesh in state.meshes.items()} != canonical:
+                raise RuntimeError("LOD mode changed the canonical meshes")
+            window._set_workspace(0)
+            window.grab().save(str(destination / "workspace-lod-full.png"))
+            evidence["screenshots"].append("workspace-lod-full.png")
+            window.lod_mode.setCurrentIndex(window.lod_mode.findData("auto"))
+            app.processEvents()
+            evidence["lod"] = {"auto_status": auto_status, "full_status": full_status,
+                               "canonical_unchanged": True}
+
+            # Cycles image tiling and grouping controls must reach the project and the snapshot.
+            panel = window.export_panel
+            panel.use_tiling.setChecked(False)
+            if state.config.render.use_tiling is not False:
+                raise RuntimeError("tiling checkbox did not reach the render config")
+            panel.use_tiling.setChecked(True)
+            panel.tile_size.setValue(512)
+            panel.split_scales.setChecked(True)
+            panel.reframe_groups.setChecked(True)
+            panel.framing_margin.setValue(0.15)
+            if (state.config.render.use_tiling is not True or state.config.render.tile_size != 512
+                    or state.config.scale_grouping.reframe is not True
+                    or abs(state.config.scale_grouping.margin_fraction - .15) > 1e-9):
+                raise RuntimeError("tiling/grouping controls did not reach the project config")
+            window._set_workspace(2)
+            app.processEvents()
+            properties_scroll = window.properties.widget(2)
+            properties_scroll.verticalScrollBar().setValue(properties_scroll.verticalScrollBar().maximum())
+            app.processEvents()
+            window.grab().save(str(destination / "workspace-render-tiling.png"))
+            evidence["screenshots"].append("workspace-render-tiling.png")
+            evidence["tiling_controls"] = {"use_tiling": state.config.render.use_tiling,
+                                           "tile_size": state.config.render.tile_size}
+            evidence["grouping_controls"] = {"reframe": state.config.scale_grouping.reframe,
+                                             "margin": state.config.scale_grouping.margin_fraction,
+                                             "note": panel.grouping_note.text()}
             canvas = window.camera_preview.canvas
             window.camera_preview.close()
             window.camera_preview.show_preview()
@@ -155,6 +200,11 @@ def main():
                 exported = load_project(receipt.directory / "scene.yaml")
                 if exported.output.format != mode:
                     raise RuntimeError("UI output selection did not reach exported YAML")
+                if (exported.render.use_tiling is not True or exported.render.tile_size != 512
+                        or exported.viewport.lod_mode != "auto"
+                        or exported.scale_grouping.reframe is not True
+                        or abs(exported.scale_grouping.margin_fraction - .15) > 1e-9):
+                    raise RuntimeError("new viewport/tiling/grouping fields did not reach the export snapshot")
                 evidence["exported_jobs"][mode] = str(receipt.directory)
                 window.preview.refresh()
                 properties_scroll = window.properties.widget(2)

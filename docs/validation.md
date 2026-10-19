@@ -355,3 +355,44 @@ R=.artifacts/review14-production-haven/20261019-haven-run2
 **版本约束**：生产verify严格比较记录Git HEAD；文档提交后，旧`batch`会因HEAD变化被拒绝，即使产品文件哈希没变，也不能篡改summary伪造匹配。为此最初文档提交后在`confirmation/`做过4帧最小确认及`complete-index/`七门验证（记录版本`b22ba41`）。独立复核发现上述原始alpha归因错误后，只修正文档；当前版本使用全新`confirmation-corrected/`再次确认4帧，当前复验入口为`verify --destination "$R/confirmation-corrected"`；完整组合索引为`complete-index-corrected/`，其`production`只读指向新确认结果。原确认、旧blocked索引及历史summary均不覆盖。以这些命令的实际输出和本地回交为准，不改原历史workflow REVISE。
 
 **证据限制**：本次只覆盖两个真实BOP模型、一个遮挡物及979个HDRI中的三个、小规模机位/遮挡范围，不等于所有资产或大规模长期稳定性验证；尤其不包含`energy_unit.ply`、透明材质、PBR纹理或任意超显存场景。
+
+## 第十五轮：指定 cores.ply 的最终效果与推送门禁
+
+用户明确最终目标应使用 **`/home/kepler/文档/cores.ply`**，而不是上一轮的BOP目标或`asserts/models/energy_unit.ply`。本轮所有13个真实渲染任务均只有这个目标，稳定ID=1，单位m；BOP `obj_000004.ply` 仅用作专用遮挡物，不是替代目标。
+
+源文件SHA256：`83aa1b451b11ff200a00c493b22b7aee112161cc06f1efceec741c5951d1be2f`。这是binary little-endian PLY，顶点alpha为uchar255，可直接加载：1035顶点、898个原多边形加边元素，转换后1837三角面。保留原点、颜色与约0.15m最长边，没有改源文件、强制改alpha或替换几何。
+
+记录产品版本`e0ddb6b`；后续仅本节等文档提交，当前core/runtime及两个入口模板依然逐文件匹配任务快照。本轮没有产品代码或依赖变更。
+
+| 验证项 | 实测结果 |
+|---|---|
+| 数据集矩阵 | RGB/BOP两格式×随机/固定两种机位×清晨/室内/日落3个真实Haven背景；每任务2scenes×2views，共12任务、**48/48帧** |
+| 最终效果图 | 同一cores、960×720、两固定视角、室内背景、无遮挡，额外**2/2帧**；保留原顶点颜色 |
+| 总计 | **50/50帧，skipped=0**；26帧RGB双mask（含效果图）、24帧BOP；52次预检/真实渲染/checker/audit命令全部退出0 |
+| 遮挡 | 26帧无遮挡、24帧有遮挡；有遮挡实测0.29163–0.39693，均在[0.1,0.5]窗口；6次view提案拒绝、layout拒绝0，最终请求全部保存 |
+| 输出语义 | RGB掩码后缀000001；BOP后缀000000映射GT obj_id=1；双mask仍PNG8/0且visible⊆full，BOP深度16位；真实仓库checker与快照审计逐任务通过 |
+| 设备/参数 | RTX3060Ti OPTIX，CPU渲染设备禁用；64 samples、原生tile=256；数据集640×480，效果图960×720按相机K同比缩放 |
+| 实际桌面 | DISPLAY=:1/xcb执行`gui_smoke.py`，退出0；**17张截图**（单目标不执行切换到其他中心），两视口/原始颜色与统一红色/LOD/tile/分组参数/异步导出和项目保存通过 |
+| 回归 | **699 passed / 52.98s / 退出0** |
+| 输入保护 | cores、遮挡物和3个HDRI共5个文件前后SHA256一致；原文件不改写，所有任务/结果均为新目录 |
+
+证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review15-cores-final/release-check/`。
+
+- `input-provenance.json`、`inputs/*.yaml`证明全部任务的唯一目标路径、单位和ID。
+- `summary.json`、`release-metrics.json`、`logs/`记录每条命令、退出码、状态/journal和实测遮挡率。
+- 正面/斜面效果图：`results/cores-hero/rgb/{000000,000001}.png`。
+- 遮挡实图及对应双mask：`results/cores-rgb_masks-fixed-studio/{rgb,mask,mask_visib}/000002*.png`；full与visible形状、像素子集已核对。
+- `gui/gui-manifest.json`及17张PNG；`full-suite.log`。
+
+示例复验：
+
+```bash
+cd /home/kepler/rm_2027/blenderproc-ui
+R=.artifacts/review15-cores-final/release-check
+.venv/bin/python tests/blender/check_rgb_masks.py "$R/results/cores-hero"
+.venv/bin/python tests/blender/check_bop.py "$R/results/cores-bop-fixed-studio"
+```
+
+这是用户指定**单目标**的效果/发布验证，不将其伪装成通用生产验收器要求的“至少两个不同目标模型”案例，也不降低该通用门槛。上一轮多目标真实资源结果继续按其记录版本保留。本轮覆盖这一个cores文件、三个背景和上述机位/遮挡范围；HDRI不是三维背景，界面仅做几何预览，不承诺与物理渲染同光照或真实地面接触阴影。
+
+**推送门禁**：仅在最终独立复验通过、tracked干净、确认输入哈希未变且远端可快进时，按用户授权正常推送`origin/main`；不force、不改写历史、不上传忽略的原模型或渲染产物。最终终裁和推送结果追加本地`report.md`/`report-handoff.md`。

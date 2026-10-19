@@ -1033,14 +1033,38 @@ def test_mixed_targets_route_each_shape_through_its_own_estimator():
 
 
 # -- R5: a dense occluder must use the same streamed triangle union as the target ---------------
-def _dense_double_box(key="o", cells=20):
-    """Two separate, closed, consistently wound boxes whose projections overlap.
+def _dense_disc(key, center, radius, half_z, sides=1250):
+    """A closed, consistently wound 5,000-face prism (two fan caps plus side quads)."""
+    angles = np.linspace(0., 2. * np.pi, sides, endpoint=False)
+    ring = np.column_stack([center[0] + radius * np.cos(angles),
+                            center[1] + radius * np.sin(angles),
+                            np.zeros(sides)])
+    top_center = np.array([[center[0], center[1], half_z]])
+    bottom_center = np.array([[center[0], center[1], -half_z]])
+    top = np.vstack([top_center, ring + [0., 0., half_z]])
+    bottom = np.vstack([bottom_center, ring + [0., 0., -half_z]])
+    vertices = np.vstack([top, bottom])
+    count = sides + 1
+    faces = []
+    for index in range(sides):
+        nxt = (index + 1) % sides + 1
+        faces.append([0, index + 1, nxt])                       # +z fan
+        faces.append([count, count + nxt, count + index + 1])   # -z fan
+        faces.append([index + 1, count + index + 1, count + nxt])
+        faces.append([index + 1, count + nxt, nxt])
+    return MeshData(key, vertices, np.asarray(faces, dtype=np.int64), None,
+                    np.array([vertices.min(axis=0), vertices.max(axis=0)]))
 
-    Each part is dense on its own (4,800 faces) so the whole mesh is past the triangle budget;
-    their even-odd outlines cancel the overlap while the true triangle union fills it.
+
+def _dense_double_box(key="o"):
+    """Two separate, closed 5,000-face prisms (10,000 total) whose projections overlap.
+
+    Each part is past the triangle budget on its own; their even-odd outlines cancel the
+    overlap while the true triangle union fills it.
     """
-    first = _grid_box("part-a", (-.06, -.04, -.005), (.06, .04, .005), cells)
-    second = _grid_box("part-b", (-.02, -.03, -.004), (.10, .05, .004), cells)
+    first = _dense_disc("part-a", (-.02, 0.), .06, .005)
+    second = _dense_disc("part-b", (.02, 0.), .06, .004)
+    assert len(first.faces) == len(second.faces) == 5_000
     vertices = np.vstack([first.vertices_m, second.vertices_m])
     faces = np.vstack([first.faces, second.faces + len(first.vertices_m)])
     return MeshData(key, vertices, faces, None, np.array([vertices.min(axis=0), vertices.max(axis=0)]))
@@ -1082,7 +1106,7 @@ def _outline_occluder_share(meshes, pose, config, matrix, target_mask, grid):
 
 def test_dense_overlapping_occluder_is_aimed_by_the_streamed_union(monkeypatch):
     config, meshes, pose = _dense_overlap_fixture(Range(.9, 1.))
-    assert not _maskable(meshes["o"]) and len(meshes["o"].faces) == 9_600
+    assert not _maskable(meshes["o"]) and len(meshes["o"].faces) == 10_000
     calls = {"stream": 0, "outline": 0}
     real_stream, real_outline = scene_module.stream_coverage, scene_module._outline_for
 

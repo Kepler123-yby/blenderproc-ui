@@ -247,7 +247,7 @@ E=.artifacts/review12-native-masks/completion-20261019
 
 **关键命令与真实结果**
 
-- 全量回归：`env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p pytestqt.plugin tests/unit tests/ui -q` → **656 passed / 41.12 s / 退出 0**（基线 567）。
+- 全量回归：`env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p pytestqt.plugin tests/unit tests/ui -q` → **659 passed / 41.50 s / 退出 0**（基线 567）。
 - AC-2 配置链路子集 → 退出 0；AC-3/4 LOD、AC-6 tiling、AC-8/9 分组、AC-11 streaming、AC-13 验收工具子集均退出 0（完整命令见 `commands.json`/日志）。
 - 真实 LOD：`tools/benchmark_remaining_geometry.py --case lod --output "$E/lod"` → 退出 0，输入/输出/心跳/截图见上表。
 - 真实轮廓：`tools/benchmark_remaining_geometry.py --case silhouette --output "$E/silhouette"` → 退出 0，2,002,000 面、30/30 通过。

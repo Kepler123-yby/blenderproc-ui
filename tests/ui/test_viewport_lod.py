@@ -173,3 +173,28 @@ def test_main_window_lod_reaches_both_viewports_and_keeps_state_canonical(qtbot,
     assert "原始网格" in window.lod_status.text()
     window._closing = True
     window.close()
+
+
+def test_main_window_keeps_a_mesh_inside_the_threshold_canonical(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr("bproc_ui.panels.resources.AssetLoader",
+                        lambda parent=None: _NoopLoader(parent))
+    project = make_project(tmp_path / "assets")
+    state = ProjectState(project)
+    threshold_mesh = sphere("target-2", rings=151, steps=200)   # 60,000 faces < 100,000
+    assert len(threshold_mesh.faces) == 60_000
+    state.set_meshes({"target-2": threshold_mesh, "target-7": make_mesh("target-7", size=0.05)})
+    scene, camera = RecordingScene(), RecordingCamera()
+    window = MainWindow(state, scene_factory=lambda: scene, camera_factory=lambda parent: camera,
+                        restore_settings=False)
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitUntil(lambda: "target-2" in window._display_meshes, timeout=120_000)
+    display = window._display_meshes["target-2"]
+    assert not display.simplified
+    assert display.vertices_m is threshold_mesh.vertices_m
+    assert display.faces is threshold_mesh.faces
+    assert display.display_faces == 60_000
+    assert window._pending == frozenset()
+    assert "未超过阈值" in window.lod_status.text()
+    window._closing = True
+    window.close()

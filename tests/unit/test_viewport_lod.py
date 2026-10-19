@@ -183,7 +183,9 @@ def test_cache_is_bounded_by_entries_and_bytes(monkeypatch):
     for mesh in meshes:
         assert controller.request(mesh.key, mesh) is not None
     assert controller.cache_entries() <= 2
-    one = simplify_display_mesh(meshes[0], 1000).nbytes
+    # Inside the threshold the canonical arrays are the display, so the byte budget follows
+    # their real size rather than a simplified copy (R1 keeps that mesh unsimplified).
+    one = original_display_mesh(meshes[0]).nbytes
     monkeypatch.setattr(vl, "MAX_CACHE_BYTES", one + 10)
     controller.request("m8", sphere("m8", rings=40, steps=40))
     controller.request("m9", sphere("m9", rings=40, steps=40))
@@ -195,3 +197,182 @@ def test_original_display_mesh_is_independent_of_lod_state():
     display = original_display_mesh(mesh)
     assert isinstance(display, DisplayMesh) and not display.simplified
     assert display.vertices_m is mesh.vertices_m and display.faces is mesh.faces
+
+
+# -- R1: meshes inside the LOD threshold must stay canonical object-for-object -------------------
+def test_a_mesh_inside_the_threshold_is_never_simplified_or_dispatched(monkeypatch):
+    mesh = sphere("threshold", rings=151, steps=200)          # exactly 60,000 faces
+    assert len(mesh.faces) == 60_000
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("a mesh inside the threshold must not be simplified")
+
+    monkeypatch.setattr(vl, "simplify_display_mesh", forbidden)
+    pool = ManualPool()
+    controller = ViewportLodController(pool=pool)
+    controller.set_parameters(50_000, 100_000)
+    display = controller.request("threshold", mesh)
+    assert calls == []
+    assert display is not None and not display.simplified
+    assert display.vertices_m is mesh.vertices_m
+    assert display.faces is mesh.faces
+    assert display.vertex_rgba is mesh.vertex_rgba
+    assert display.bounds_m is mesh.bounds_m
+    assert display.display_faces == display.source_faces == 60_000
+    assert pool.tasks == [] and controller.pending_keys() == ()
+    assert controller.computes == 0
+
+
+def test_full_resolution_display_keeps_the_canonical_hash_for_a_threshold_mesh():
+    mesh = sphere("threshold-full", rings=151, steps=200)
+    before = digest(mesh)
+    display = original_display_mesh(mesh)
+    assert not display.simplified and display.display_faces == 60_000
+    assert display.vertices_m is mesh.vertices_m and display.faces is mesh.faces
+    assert display.vertex_rgba is mesh.vertex_rgba and display.bounds_m is mesh.bounds_m
+    assert digest(mesh) == before
+
+
+# -- R2: a stale in-flight generation must not starve the new pending request --------------------
+def test_a_new_generation_pending_request_starts_after_the_stale_task_finishes(qtbot):
+    mesh_a = sphere("a", rings=201, steps=400)                # 160,000 faces
+    mesh_b = sphere("b", rings=201, steps=400)
+    pool = ManualPool()
+    controller = ViewportLodController(pool=pool)
+    controller.set_parameters(5_000, 10_000)
+    assert controller.request("a", mesh_a) is None
+    stale = pool.tasks[0]
+    controller.set_context(2, 1)                             # invalidate the running generation
+    assert controller.request("b", mesh_b) is None
+    assert controller.pending_keys() == ("a", "b")
+    with qtbot.assertNotEmitted(controller.ready):
+        stale.run()
+    assert len(pool.tasks) == 2, "the new generation must start once the stale task ends"
+    assert pool.tasks[1].request.key == "b"
+    with qtbot.waitSignal(controller.ready, timeout=60_000) as blocker:
+        pool.tasks[1].run()
+    assert blocker.args[0] == "b"
+    assert controller.request("b", mesh_b) is not None
+    assert controller.cache_entries() == 1
+
+
+def test_the_same_mesh_across_generations_is_not_deduplicated_against_a_stale_task(qtbot):
+    mesh = sphere("same", rings=201, steps=400)
+    pool = ManualPool()
+    controller = ViewportLodController(pool=pool)
+    controller.set_parameters(5_000, 10_000)
+    assert controller.request("same", mesh) is None
+    stale = pool.tasks[0]
+    controller.set_context(3, 4)
+    assert controller.request("same", mesh) is None
+    assert controller.pending_keys() == ("same", "same")
+    stale.run()
+    assert len(pool.tasks) == 2
+    assert pool.tasks[1].request.generation == controller._generation
+    with qtbot.waitSignal(controller.ready, timeout=60_000):
+        pool.tasks[1].run()
+    assert controller.request("same", mesh) is not None
+    assert controller.computes == 2
+
+
+def test_parameter_changes_and_repeated_invalidation_replace_the_pending_request(qtbot):
+    mesh_a = sphere("params-a", rings=201, steps=400)
+    mesh_b = sphere("params-b", rings=201, steps=400)
+    pool = ManualPool()
+    controller = ViewportLodController(pool=pool)
+    controller.set_parameters(5_000, 10_000)
+    assert controller.request("params", mesh_a) is None
+    stale = pool.tasks[0]
+    assert controller.request("old-pending", mesh_b) is None  # pending under the old params
+    controller.set_parameters(7_000, 10_000)                  # invalidates and drops the pending
+    controller.invalidate()                                   # repeated invalidation stays valid
+    assert "old-pending" not in controller.pending_keys()
+    assert controller.request("params", mesh_a) is None        # new generation + new params
+    stale.run()
+    assert len(pool.tasks) == 2
+    assert pool.tasks[1].request.params == (vl.ALGORITHM_VERSION, 7_000, 10_000)
+    with qtbot.waitSignal(controller.ready, timeout=60_000):
+        pool.tasks[1].run()
+    assert controller.request("params", mesh_a) is not None
+
+
+def test_close_never_starts_a_pending_request_after_a_stale_finish():
+    mesh_a = sphere("closed-a", rings=201, steps=400)
+    mesh_b = sphere("closed-b", rings=201, steps=400)
+    pool = ManualPool()
+    controller = ViewportLodController(pool=pool)
+    controller.set_parameters(5_000, 10_000)
+    assert controller.request("a", mesh_a) is None
+    stale = pool.tasks[0]
+    assert controller.request("b", mesh_b) is None
+    controller.close()
+    stale.run()
+    assert len(pool.tasks) == 1 and controller.pending_keys() == ()
+    assert controller.cache_entries() == 0
+
+
+def test_an_invalid_generation_error_finishes_without_blocking_the_pending_task(monkeypatch, qtbot):
+    real = vl.simplify_display_mesh
+
+    def flaky(mesh, target_faces, **kwargs):
+        if mesh.key == "a":
+            raise RuntimeError("stale worker exploded")
+        return real(mesh, target_faces, **kwargs)
+
+    monkeypatch.setattr(vl, "simplify_display_mesh", flaky)
+    mesh_a = sphere("a", rings=201, steps=400)
+    mesh_b = sphere("b", rings=201, steps=400)
+    pool = ManualPool()
+    controller = ViewportLodController(pool=pool)
+    controller.set_parameters(5_000, 10_000)
+    assert controller.request("a", mesh_a) is None
+    stale = pool.tasks[0]
+    controller.set_context(9, 9)
+    assert controller.request("b", mesh_b) is None
+    with qtbot.assertNotEmitted(controller.failed), qtbot.assertNotEmitted(controller.ready):
+        stale.run()
+    assert len(pool.tasks) == 2
+    with qtbot.waitSignal(controller.ready, timeout=60_000) as blocker:
+        pool.tasks[1].run()
+    assert blocker.args[0] == "b"
+
+
+# -- R3: the byte ceiling applies to a single entry too ------------------------------------------
+def test_an_oversized_single_display_is_delivered_but_not_cached(monkeypatch, qtbot):
+    monkeypatch.setattr(vl, "MAX_CACHE_BYTES", 4096)          # avoid allocating a 144 MB display
+    mesh = sphere("huge", rings=201, steps=400)
+    pool = ManualPool()
+    controller = ViewportLodController(pool=pool)
+    controller.set_parameters(5_000, 10_000)
+    assert controller.request("huge", mesh) is None
+    with qtbot.waitSignal(controller.ready, timeout=60_000) as blocker:
+        pool.tasks[0].run()
+    key, display = blocker.args
+    assert key == "huge" and display.nbytes > 4096
+    assert controller.cache_entries() == 0
+    assert controller.cache_bytes() == 0 <= vl.MAX_CACHE_BYTES
+    assert controller.computes == 1, "eviction must not schedule another worker by itself"
+
+
+def test_the_byte_cap_evicts_multiple_entries_and_dead_weakrefs(monkeypatch):
+    import gc
+
+    mesh_a = sphere("m-a", rings=30, steps=40)
+    mesh_b = sphere("m-b", rings=30, steps=40)
+    one = original_display_mesh(mesh_a).nbytes
+    monkeypatch.setattr(vl, "MAX_CACHE_BYTES", one + one // 2)
+    controller = ViewportLodController(pool=ManualPool())
+    controller.set_parameters(50_000, 100_000)
+    assert controller.request("a", mesh_a) is not None
+    assert controller.request("b", mesh_b) is not None
+    assert controller.cache_entries() == 1
+    assert controller.cache_bytes() <= vl.MAX_CACHE_BYTES
+    assert controller.request("a", mesh_a) is not None      # the small canonical path is cheap
+    assert controller.cache_bytes() <= vl.MAX_CACHE_BYTES
+    assert controller.cache_entries() <= 1
+    del mesh_a, mesh_b
+    gc.collect()
+    controller._evict()
+    assert controller.cache_entries() == 0 and controller.cache_bytes() == 0

@@ -267,18 +267,26 @@ class ViewportLodController(QObject):
         cached = self.cached(mesh)
         if cached is not None:
             return cached
+        if self.closed:
+            return None
         if len(mesh.faces) <= threshold:
-            display = simplify_display_mesh(mesh, target)
+            # A mesh inside the threshold is already the canonical display: sharing its arrays
+            # keeps face count, colours and framing byte-identical. Only meshes above the
+            # threshold are simplified, and only those run in the background.
+            display = original_display_mesh(mesh)
             self._store(mesh, display)
             return display
         request = LodRequest(key, mesh, target, threshold, self._generation,
                              (ALGORITHM_VERSION, target, threshold))
         if self._inflight:
             running = self._task.request if self._task is not None else None
-            if running is not None and running.mesh is mesh and running.params == request.params:
-                return None                      # the same result is already being produced
+            if (running is not None and running.mesh is mesh
+                    and running.params == request.params
+                    and running.generation == request.generation):
+                return None                      # the same current-generation result is running
             if (self._pending is not None and self._pending.mesh is mesh
-                    and self._pending.params == request.params):
+                    and self._pending.params == request.params
+                    and self._pending.generation == request.generation):
                 return None
             self._pending = request              # only the newest pending request survives
             self.status.emit(key, "waiting")
@@ -315,8 +323,13 @@ class ViewportLodController(QObject):
             self.ready.emit(request.key, display)
         elif error is not None and valid:
             self.failed.emit(request.key, error)
-        if valid and self._pending is not None:
-            pending, self._pending = self._pending, None
+        # A stale generation must still release whatever the *current* generation queued while
+        # its task was running; otherwise invalidate-then-request leaves the new mesh waiting
+        # forever with no worker. The pending request is judged on its own generation/params.
+        pending, self._pending = self._pending, None
+        params = (ALGORITHM_VERSION, self.target_faces, self.threshold_faces)
+        if (pending is not None and not self.closed and pending.generation == self._generation
+                and pending.params == params):
             self._start(pending)
 
     def _store(self, mesh: MeshData, display: DisplayMesh) -> None:
@@ -325,17 +338,20 @@ class ViewportLodController(QObject):
                             (ALGORITHM_VERSION, self.target_faces, self.threshold_faces), display)
         self._cache.move_to_end(key)
         self._evict()
-        self.status.emit(display.key, "cached")
+        if key in self._cache:       # an oversized single display is delivered, not cached
+            self.status.emit(display.key, "cached")
 
     def _evict(self) -> None:
-        while len(self._cache) > MAX_CACHE_MESHES:
-            self._cache.popitem(last=False)
-        while len(self._cache) > 1 and self.cache_bytes() > MAX_CACHE_BYTES:
-            self._cache.popitem(last=False)
         for key in list(self._cache):
             entry = self._cache[key]
             if entry[0]() is None:
                 del self._cache[key]
+        while len(self._cache) > MAX_CACHE_MESHES:
+            self._cache.popitem(last=False)
+        # The byte cap is absolute: an entry larger than the whole budget is evicted even when it
+        # is the only one. The caller still receives that display through the ready signal.
+        while self._cache and self.cache_bytes() > MAX_CACHE_BYTES:
+            self._cache.popitem(last=False)
 
     def cache_bytes(self) -> int:
         return sum(entry[2].nbytes for entry in self._cache.values())

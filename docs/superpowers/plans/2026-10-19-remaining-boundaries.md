@@ -139,5 +139,5 @@ AC-14 仍未完成，不能据此称整体生产验收 PASS。状态在对应真
 
 - [x] 用户提供的真实资源已出现；只读记录979个HDRI、所选2模型/1遮挡物/3背景的来源和SHA256，不给fixture改标签。
 - [x] 真实BOP小试跑4/4、随机/固定两机位小批量36/36，run和verify在`fafbfd2`均退出0；真实RGB双mask2/2，checker/audit通过；699项回归通过。
-- [x] 资源实测的输入缺失阻塞已对上述选定资源解除；`energy_unit.ply`因alpha全0仍拒绝，另行列出，不冒充通过。不因此把全部979背景或所有模型标成已验收。
-- 文档提交后执行全新4帧confirmation、完整组合门和独立终验；最终执行状态以`review14-production-haven/20261019-haven-run2/`与本地报告为准，不为补写勾选再次改变已验收Git HEAD，也不得改旧summary的Git HEAD或原workflow终裁。
+- [x] 资源实测的输入缺失阻塞已对上述选定资源解除；`energy_unit.ply`的原始`int8 alpha=-1`被当前读取器裁剪为0后仍拒绝（并非原始alpha为0，不能据此认定源资产透明）；兼容问题另列，不冒充通过。不因此把全部979背景或所有模型标成已验收。
+- 原`b22ba41`的4帧confirmation及七门通过记录保留；独立复核对raw/decoded alpha归因给REVISE，新增`alpha-audit.json`后修正文档。修正提交后在全新`confirmation-corrected/`和`complete-index-corrected/`确认并复核，实际执行结果写本地报告；不改原资源、解码器、历史summary或原workflow终裁。

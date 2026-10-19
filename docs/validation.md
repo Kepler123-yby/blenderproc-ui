@@ -334,7 +334,7 @@ env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFOR
 | 背景确实不同 | 同seed/相机首帧的三背景RGB两两RMSE约120.72、20.91、107.83；亲看室内与清晨样张，背景与照明变化可见，无黑图占位 |
 | 回归 | **699 passed / 49.70s / 退出0**；本轮无产品代码改动 |
 
-**未通过的具体资产**：`models/energy_unit.ply` 顶点alpha全部为0，现有不透明网格契约拒绝加载（`AssetError`）。原SHA256 `f8b91afb97cb666e92cad5ae39f031d477637d805fa8adf2f219b4714373f55d`保持不变，未擅自设alpha255，也没有把该模型计入成功目标。要验证它，需提供不透明副本或另行明确透明处理策略。Haven PBR材质纹理也没有被本轮背景验证覆盖。
+**未通过的具体资产及勘误**：`models/energy_unit.ply` 声明 `int8 alpha`，1035个顶点的**原始值全部为−1**；当前 `bproc_core/ply.py` 将负颜色通道裁剪到0，读取后的alpha才全部为0，继而触发不透明策略的 `AssetError`。不能由此断言源模型原本透明，更不能要求用户为这个归因擅改原文件。原SHA256 `f8b91afb97cb666e92cad5ae39f031d477637d805fa8adf2f219b4714373f55d`保持不变，本次未修改模型或解码器，也没有将它计入通过目标。该模型仍有有符号颜色解码/策略兼容问题待明确处理。`alpha-audit.json` 独立读取ASCII原始字段并与当前解码结果对照，纠正了此前“原始alpha全0”的错误说法；历史`prepare.py`变量`raw`及`resource-before.json`的`alpha_unique=[0]`实际指应用解码结果，原报告不篡改。Haven PBR材质纹理也未被本轮背景验证覆盖。
 
 证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review14-production-haven/20261019-haven-run2/`：
 
@@ -352,6 +352,6 @@ R=.artifacts/review14-production-haven/20261019-haven-run2
 .venv/bin/python tests/blender/check_rgb_masks.py "$R/rgb-datasets/haven-rgb"
 ```
 
-**版本约束**：生产verify严格比较记录Git HEAD；文档提交后，旧`batch`会因HEAD变化被拒绝，即使产品文件哈希没变，也不能篡改summary伪造匹配。为此文档提交后使用相同真实资源在全新`confirmation/`再做4帧最小确认，当前复验入口为`verify --destination "$R/confirmation"`；完整剩余项组合索引放`complete-index/`，其`production`只读指向确认结果，旧blocked索引不覆盖。以这些命令的实际输出和本地回交为准，不改原历史workflow REVISE。
+**版本约束**：生产verify严格比较记录Git HEAD；文档提交后，旧`batch`会因HEAD变化被拒绝，即使产品文件哈希没变，也不能篡改summary伪造匹配。为此最初文档提交后在`confirmation/`做过4帧最小确认及`complete-index/`七门验证（记录版本`b22ba41`）。独立复核发现上述原始alpha归因错误后，只修正文档；当前版本使用全新`confirmation-corrected/`再次确认4帧，当前复验入口为`verify --destination "$R/confirmation-corrected"`；完整组合索引为`complete-index-corrected/`，其`production`只读指向新确认结果。原确认、旧blocked索引及历史summary均不覆盖。以这些命令的实际输出和本地回交为准，不改原历史workflow REVISE。
 
 **证据限制**：本次只覆盖两个真实BOP模型、一个遮挡物及979个HDRI中的三个、小规模机位/遮挡范围，不等于所有资产或大规模长期稳定性验证；尤其不包含`energy_unit.ply`、透明材质、PBR纹理或任意超显存场景。

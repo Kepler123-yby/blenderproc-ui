@@ -744,37 +744,49 @@ def test_a_dense_hollow_target_is_aimed_through_its_opening():
     assert all(.25 <= share <= .35 for share in shares), shares
 
 
-def test_a_part_above_the_topology_budget_records_its_hull_fallback(monkeypatch):
-    """The support limit is reported, not confused with the shape."""
+def test_a_part_above_the_topology_budget_is_streamed_not_hulled(monkeypatch):
+    """The old topology cap still applies, but it now routes to true triangle union coverage."""
     monkeypatch.setattr(scene_module, "SILHOUETTE_MASK_MAX_FACES", 64)
     monkeypatch.setattr(scene_module, "SILHOUETTE_TOPOLOGY_MAX_FACES", 100)
     mesh = _grid_box("over", (-.05, -.05, -.005), (.05, .05, .005), 4)
     assert not _maskable(mesh) and len(mesh.faces) > 100
+    assert scene_module._edge_topology(mesh)[1] == "topology_budget"    # protection kept
     shapes = _shape_counts(mesh)
-    assert (len(shapes.hulls), len(shapes.masks)) == (1, 0)
-    assert shapes.fallbacks == ("topology_budget",)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1)
+    assert shapes.fallbacks == ()
+    assert shapes.shapes[0].method == "triangle_stream"
+    assert shapes.diagnostics[0]["faces"] == len(mesh.faces)
+    assert shapes.diagnostics[0]["estimate_only"] is False
 
 
-def test_a_part_above_the_scanline_budget_records_its_hull_fallback(monkeypatch):
-    """A bounded scan stops and says so instead of filling an unbounded outline."""
+def test_a_part_above_the_scanline_budget_is_streamed_not_hulled(monkeypatch):
+    """The crossing cap still protects the legacy outline; streaming no longer hits it."""
     monkeypatch.setattr(scene_module, "SILHOUETTE_MASK_MAX_FACES", 64)
     monkeypatch.setattr(scene_module, "SILHOUETTE_SCANLINE_MAX_CROSSINGS", 4)
+    grid = scene_module._silhouette_grid([(_flat_u_mesh("probe"), np.eye(4))], _top_pose(), CameraSpec())
+    segments = np.array([[-100., -100., 100., 100.], [100., -100., -100., 100.]])
+    assert scene_module._scanline_fill(segments, grid) is None       # legacy budget retained
     mesh = _u_prism("over", .05, .03, .005, 40)
     shapes = _shape_counts(mesh)
-    assert (len(shapes.hulls), len(shapes.masks)) == (1, 0)
-    assert shapes.fallbacks == ("scanline_budget",)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1)
+    assert shapes.fallbacks == ()
+    assert shapes.shapes[0].method == "triangle_stream"
+    _assert_u_opening(shapes.masks[0], shapes.shapes[0].envelope_mask)
 
 
-def test_a_mesh_without_a_consistent_winding_is_not_guessed(monkeypatch):
-    """A flipped triangle has no front or back; the envelope is the safe answer."""
+def test_a_mesh_without_a_consistent_winding_keeps_its_true_union(monkeypatch):
+    """Winding still blocks the legacy outline, but a surface union does not need one."""
     monkeypatch.setattr(scene_module, "SILHOUETTE_MASK_MAX_FACES", 64)
     mesh = _grid_box("flipped", (-.05, -.05, -.005), (.05, .05, .005), 6)
     faces = mesh.faces.copy()
     faces[7] = faces[7][[0, 2, 1]]
     flipped = MeshData("flipped", mesh.vertices_m, faces, None, mesh.bounds_m)
+    assert scene_module._edge_topology(flipped)[1] == "inconsistent_winding"
     shapes = _shape_counts(flipped)
-    assert (len(shapes.hulls), len(shapes.masks)) == (1, 0)
-    assert shapes.fallbacks == ("inconsistent_winding",)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1)
+    assert shapes.fallbacks == ()
+    assert shapes.shapes[0].method == "triangle_stream"
+    assert np.array_equal(shapes.masks[0], _shape_counts(mesh).masks[0])
 
 
 def test_a_mesh_without_faces_keeps_its_envelope():

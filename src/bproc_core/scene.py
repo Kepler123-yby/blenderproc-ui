@@ -15,6 +15,7 @@ from .assets import MeshData
 from .camera import CameraPose, project_points, sample_camera
 from .config import MaterialState, ProjectConfig
 from .sampling import camera_for_view, scene_rng, unoccluded_scenes, view_rng
+from .silhouette import stream_coverage
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class SceneCandidate:
     camera_kind: str = "random"
     material: MaterialState = MaterialState(.65, .5)
     layout_attempt_index: int = 0
+    silhouette_diagnostics: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -657,6 +659,8 @@ class _TargetShape:
     envelope_mask: np.ndarray | None
     convex: bool
     fallback: str | None = None
+    method: str = "triangles"
+    diagnostic: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -681,6 +685,11 @@ class _TargetShapes:
         """Why each unmasked target kept its envelope: a support limit, never a shape verdict."""
         return tuple(shape.fallback for shape in self.shapes
                      if shape.mask is None and shape.fallback is not None)
+
+    @property
+    def diagnostics(self) -> tuple[dict, ...]:
+        """Public per-target measurements, including the reason a dense path was unavailable."""
+        return tuple(shape.diagnostic for shape in self.shapes if shape.diagnostic is not None)
 
 
 def _is_convex_silhouette(mask: np.ndarray, envelope_mask: np.ndarray) -> bool:
@@ -721,17 +730,31 @@ def _target_shapes(entries, pose: CameraPose, camera) -> _TargetShapes:
                 shapes.append(_TargetShape(hull, None, None, True, 'no_projection'))
         return _TargetShapes(tuple(shapes), None)
     for mesh, matrix, hull, triangles in masked:
+        method, diagnostic = "triangles", None
         if triangles:
             mask, reason = _rasterize_mask(mesh, matrix, pose, camera, grid, triangles=True), None
         else:
-            mask, reason = _outline_mask(mesh, matrix, pose, camera, grid)
+            # Past the triangle raster budget, true block-wise triangle union is the primary
+            # path: it keeps holes/repeated/overlapping components and needs no whole topology.
+            mask, diagnostic = stream_coverage(mesh, matrix, pose, camera, grid)
+            method = "triangle_stream"
+            reason = None if mask is not None else f"stream:{diagnostic.fallback_reason}"
+            if mask is None:
+                # Cached edge outlines stay a fallback for meshes the streaming limits reject.
+                mask, outline_reason = _outline_mask(mesh, matrix, pose, camera, grid)
+                method = "outline"
+                reason = None if mask is not None else f"{reason}/{outline_reason}"
         if mask is None:
             if hull is not None:
-                shapes.append(_TargetShape(hull, None, None, True, reason))
+                shapes.append(_TargetShape(hull, None, None, True, reason, "hull",
+                                           {"asset_key": mesh.key, "method": "hull",
+                                            "estimate_only": True, "fallback_reason": reason,
+                                            "grid_size": grid.size, "faces": len(mesh.faces)}))
             continue
         envelope_mask = _rasterize_mask(mesh, matrix, pose, camera, grid, triangles=False)
         shapes.append(_TargetShape(hull, mask, envelope_mask,
-                                   _is_convex_silhouette(mask, envelope_mask), reason))
+                                   _is_convex_silhouette(mask, envelope_mask), reason,
+                                   method, None if diagnostic is None else diagnostic.as_dict()))
     return _TargetShapes(tuple(shapes), grid)
 
 
@@ -859,7 +882,11 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
             return None
         if _maskable(mesh):
             return _rasterize_mask(mesh, matrix, pose, config.camera, grid, triangles=True)
-        return None if outline is None else outline.mask(matrix, pose, config.camera, grid)[0]
+        if outline is not None:
+            return outline.mask(matrix, pose, config.camera, grid)[0]
+        # No cached edge topology (e.g. past the 2M-face cap): stream the real triangles instead
+        # of silently aiming with the convex hull. The work stays bounded per probe.
+        return stream_coverage(mesh, matrix, pose, config.camera, grid)[0]
 
     origin = occluder_real(matrix_at(0.))
     occluder_convex = grid is None or (origin is not None and _is_convex_silhouette(
@@ -962,7 +989,8 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
 
 
 def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], pose: CameraPose,
-                        anchor_key: str, rng, targets: Sequence[Placement] = ()) -> list[Placement] | Rejection:
+                        anchor_key: str, rng, targets: Sequence[Placement] = (),
+                        diagnostics_out: list | None = None) -> list[Placement] | Rejection:
     """Occluders for one camera: inside its segment to the target, offset sideways so the cover is partial.
 
     They used to be placed at a fraction of the scene-wide nominal radius, which put them behind the
@@ -998,6 +1026,8 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
     target_entries = [(meshes[p.asset_key], p.world_from_model)
                       for p in targets if p.asset_key in meshes]
     target_shapes = _target_shapes(target_entries, pose, config.camera)
+    if diagnostics_out is not None:
+        diagnostics_out.extend(target_shapes.diagnostics)
     # World corners bound where the occluder may have to travel: the offset search scans this span
     # so hollow targets are reachable at their rim, not only near their centre.
     target_points = (np.vstack([transform_points(bounds_corners(mesh.bounds_m), matrix)
@@ -1078,16 +1108,19 @@ def propose_candidate(config: ProjectConfig, meshes: Mapping[str, MeshData], sce
                 or np.any(uv[:, 1] < -.5) or np.any(uv[:, 1] > config.camera.height - .5)):
             return Rejection('out_of_frame', placement.asset_key)
     placements = list(scene.placements)
+    diagnostics: list = []
     if not scene.wants_unoccluded and config.occluders:
         occluders = occluder_placements(config, meshes, pose, config.anchor_key, rng,
-                                        targets=[p for p in scene.placements if p.role == 'target'])
+                                        targets=[p for p in scene.placements if p.role == 'target'],
+                                        diagnostics_out=diagnostics)
         if isinstance(occluders, Rejection):
             return occluders
         placements.extend(occluders)
     return SceneCandidate(scene.scene_index, view_index, attempt_index, region_key, config.anchor_key, pose,
                           tuple(placements), scene.hdri_path, scene.hdri_strength, scene.hdri_rotation_deg,
                           scene.light, scene.wants_unoccluded, kind, material=scene.material,
-                          layout_attempt_index=scene.layout_attempt_index)
+                          layout_attempt_index=scene.layout_attempt_index,
+                          silhouette_diagnostics=tuple(diagnostics))
 
 
 def candidate_to_dict(candidate: SceneCandidate) -> dict:
@@ -1131,4 +1164,5 @@ def candidate_from_dict(payload: Mapping) -> SceneCandidate:
         MaterialState(float((payload.get("material") or {}).get("roughness", .65)),
                       float((payload.get("material") or {}).get("specular", .5)),
                       float((payload.get("material") or {}).get("metallic", 0.))),
-        int(payload.get("layout_attempt_index", 0)))
+        int(payload.get("layout_attempt_index", 0)),
+        tuple(payload.get("silhouette_diagnostics") or ()))

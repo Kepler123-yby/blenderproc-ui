@@ -18,6 +18,7 @@ import resource
 import sys
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
@@ -200,8 +201,148 @@ def lod_case(output: Path) -> int:
     return 0 if ok else 2
 
 
+def hollow_fixture(radial=1002, angular=1000, inner=.10, outer=.30):
+    rings = np.linspace(inner, outer, radial)
+    angles = np.linspace(0, 2 * np.pi, angular, endpoint=False)
+    radius, theta = np.meshgrid(rings, angles, indexing="ij")
+    points = np.column_stack([(radius * np.cos(theta)).ravel(),
+                              (radius * np.sin(theta)).ravel(),
+                              np.zeros(radial * angular)])
+    index = np.arange(radial * angular).reshape(radial, angular)
+    a, b = index[:-1, :], np.roll(index[:-1, :], -1, axis=1)
+    c, d = np.roll(index[1:, :], -1, axis=1), index[1:, :]
+    faces = np.concatenate([np.stack([a, b, c], -1).reshape(-1, 3),
+                            np.stack([a, c, d], -1).reshape(-1, 3)]).astype(np.int64)
+    return points, faces
+
+
 def silhouette_case(output: Path) -> int:
-    raise SystemExit("silhouette case is implemented by the streaming silhouette task")
+    import tracemalloc
+    from dataclasses import replace
+    from PIL import Image
+    from bproc_core.assets import MeshData
+    from bproc_core.camera import CameraPose
+    from bproc_core import silhouette as sil
+    from bproc_core import scene as scene_module
+    from bproc_core.config import (CameraSpec, OcclusionSpec, OutputSpec, ProjectConfig, Range,
+                                   TargetSpec, AssetSpec, Box)
+    from bproc_core.scene import Placement, occluder_placements
+    from tests.factories import make_box
+
+    output.mkdir(parents=True, exist_ok=False)
+    points, faces = hollow_fixture()
+    assert len(faces) > 2_000_000
+    fixture = output / "hollow-fixture.npz"
+    np.savez_compressed(fixture, vertices=points, faces=faces)
+    mesh = MeshData("hollow", points, faces, None,
+                    np.array([points.min(axis=0), points.max(axis=0)]))
+    camera = CameraSpec()
+    pose = CameraPose(np.array([[1., 0, 0, 0], [0, 1., 0, 0], [0, 0, 1., 1.], [0, 0, 0, 1.]]),
+                      np.array([0., 0., 1.]), 1., 0., 90., 1e-3, 100.)
+    grid = scene_module._silhouette_grid([(mesh, np.eye(4))], pose, camera)
+
+    rss_before = peak_rss_mib()
+    tracemalloc.start()
+    tracemalloc.reset_peak()
+    started = time.perf_counter()
+    mask, diagnostic = sil.stream_coverage(mesh, np.eye(4), pose, camera, grid)
+    cold_seconds = time.perf_counter() - started
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    rss_after = peak_rss_mib()
+    if mask is None:
+        raise SystemExit(diagnostic.fallback_reason)
+    started = time.perf_counter()
+    cached_mask, cached_diagnostic = sil.stream_coverage(mesh, np.eye(4), pose, camera, grid)
+    cached_seconds = time.perf_counter() - started
+    assert cached_mask is mask and cached_diagnostic.cached
+
+    def cell(point):
+        from bproc_core.camera import project_points
+        pixels, valid = project_points(np.atleast_2d(point), pose, camera)
+        assert valid.all()
+        mapped = grid.map(pixels)[0]
+        return int(round(mapped[1])), int(round(mapped[0]))
+
+    row, column = cell((0., 0., 0.))
+    hole_empty = not bool(mask[row - 4:row + 5, column - 4:column + 5].any())
+    row, column = cell((.2, 0., 0.))
+    solid_covered = bool(mask[row - 3:row + 4, column - 3:column + 4].all())
+    Image.fromarray((mask.astype(np.uint8) * 255), mode="L").save(output / "hole-mask-256.png")
+
+    # 30 CPU proposals scored against an independent 512x512 raster of the same geometry.
+    occluder = make_box("occ", (-.02, -.02, -.02), (.02, .02, .02))
+    target = TargetSpec(AssetSpec("hollow", output / "hollow.ply", "m"), "hollow", 2, True)
+    config = ProjectConfig(
+        targets=(target,), anchor_key="hollow", camera_mode="fixed",
+        fixed_cameras=(), regions=(), scene_count=1, views_per_scene=1,
+        camera=camera,
+        occluders=(AssetSpec("occ", output / "occ.ply", "m"),),
+        occlusion=OcclusionSpec(ratio=Range(0.10, 0.60), max_attempts=30, count=(1, 1),
+                                scale=Range(0.30, 0.60)),
+        output=OutputSpec(root=output / "renders", dataset_name="silhouette"))
+    config = replace(config, fixed_cameras=(), regions=())
+    meshes = {"hollow": mesh, "occ": occluder}
+    placements = (Placement("hollow", "hollow", 2, np.eye(4), "target"),)
+    low_grid = grid
+    low_uv = np.array([low_grid.left_px, low_grid.top_px])
+    high_uv = low_uv + (low_grid.size - 1) / low_grid.pixels_per_px
+    high_scale = (512 - 5) / float(np.max(high_uv - low_uv))
+    high_pose_grid = sil.CoverageGrid(float(low_uv[0] - 2 / high_scale),
+                                      float(low_uv[1] - 2 / high_scale), high_scale, 512)
+    high_target, _ = sil.stream_coverage(mesh, np.eye(4), pose, camera, high_pose_grid)
+    proposals = []
+    rejected = 0
+    rng = np.random.default_rng(7)
+    target_mask_512 = high_target
+    for index in range(30):
+        for _attempt in range(20):
+            result = occluder_placements(config, meshes, pose, "hollow", rng, targets=placements)
+            if not isinstance(result, list) or not result:
+                rejected += 1
+                continue
+            occluder_placement = result[0]
+            occ_mask, _ = sil.stream_coverage(occluder, occluder_placement.world_from_model,
+                                              pose, camera, high_pose_grid)
+            share = (float(np.count_nonzero(target_mask_512 & occ_mask))
+                     / float(np.count_nonzero(target_mask_512))) if occ_mask is not None else 0.0
+            proposals.append({"index": index, "coverage_512": share,
+                              "inside_declared_window": 0.10 - 1e-12 <= share <= 0.60 + 1e-12,
+                              "occluder_offset_m": occluder_placement.world_from_model[:3, 3].tolist()})
+            break
+        else:
+            proposals.append({"index": index, "coverage_512": None,
+                              "inside_declared_window": False, "error": "no placement"})
+    passed = sum(1 for row in proposals if row["inside_declared_window"])
+    Image.fromarray((target_mask_512.astype(np.uint8) * 255), mode="L").save(
+        output / "hole-mask-512.png")
+    result = {
+        "case": "silhouette",
+        "fixture": {"vertices": int(len(points)), "faces": int(len(faces)),
+                    "canonical_bytes": int(points.nbytes + faces.nbytes),
+                    "path": str(fixture)},
+        "cold": {"seconds": cold_seconds, "diagnostic": diagnostic.as_dict(),
+                 "working_peak_mib": peak / (1024 * 1024)},
+        "cached": {"seconds": cached_seconds},
+        "rss": {"before_mib": rss_before, "after_mib": rss_after,
+                "extra_mib": max(0.0, rss_after - rss_before)},
+        "hole": {"centre_empty": hole_empty, "solid_covered": solid_covered,
+                 "mask_256": str(output / "hole-mask-256.png"),
+                 "mask_512": str(output / "hole-mask-512.png")},
+        "proposals": proposals,
+        "proposal_summary": {"requested": 30, "measured": len(proposals),
+                             "inside_window": passed, "sampler_rejections": rejected,
+                             "window": [0.10, 0.60], "high_res_grid": 512},
+        "command": " ".join(sys.argv),
+    }
+    _write_json(output / "silhouette.json", result)
+    print(json.dumps({k: result[k] for k in ("fixture", "cold", "cached", "rss", "hole",
+                                             "proposal_summary")}, ensure_ascii=False, indent=2))
+    ok = (len(faces) > 2_000_000 and cold_seconds <= 120.0
+          and peak <= sil.STREAM_WORK_BUDGET_BYTES
+          and max(0.0, rss_after - rss_before) <= 256.0
+          and hole_empty and solid_covered and passed == 30)
+    return 0 if ok else 2
 
 
 def main(argv=None) -> int:

@@ -443,8 +443,18 @@ class MainWindow(QMainWindow):
                 self.camera_preview.setWindowTitle(f"相机视角 · {anchor.name} · {label} · 候选机位构图预览")
             pose = candidate.camera
             kind = "固定" if getattr(candidate, "camera_kind", "random") == "fixed" else "随机"
-            self.viewport_caption.setText(f"  场景 {candidate.scene_index + 1} · 视角 {candidate.view_index + 1} · {kind}   r {pose.radius_m:.3f} m   φ {pose.azimuth_deg:.1f}°   α {pose.elevation_deg:.1f}°"
-                                          "    |    左键旋转 / Shift + 左键平移 / 滚轮缩放")
+            caption = (f"  场景 {candidate.scene_index + 1} · 视角 {candidate.view_index + 1} · {kind}   "
+                       f"r {pose.radius_m:.3f} m   φ {pose.azimuth_deg:.1f}°   α {pose.elevation_deg:.1f}°")
+            diagnostics = getattr(candidate, "silhouette_diagnostics", ()) or ()
+            if diagnostics:
+                row = diagnostics[0]
+                faces = row.get("faces")
+                faces_text = f"{faces:,} 面" if isinstance(faces, int) else "面数未知"
+                caption += (f"    |    轮廓 {row.get('method', '?')} {faces_text}"
+                            f" · 网格 {row.get('grid_size', '?')}²")
+                if row.get("estimate_only"):
+                    caption += "（估计，需像素验收）"
+            self.viewport_caption.setText(caption + "    |    左键旋转 / Shift + 左键平移 / 滚轮缩放")
         else:
             self.viewport_caption.setText("  用户透视 · 辅助网格不参与输出")
 

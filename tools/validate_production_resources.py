@@ -390,6 +390,10 @@ def run(manifest_path: Path, destination: Path, *, num_scenes: int | None = None
     summary = {"schema_version": 1, "status": "running", "manifest": str(manifest.path),
                "manifest_sha256": _sha256(manifest.path), "classification": classification,
                "production_verified": False, "device": _device_snapshot(),
+               "resources": [{"path": str(resource.path), "role": resource.role,
+                              "sha256": resource.sha256, "source": resource.source,
+                              "classification": resource.classification}
+                             for resource in manifest.resources],
                "source": snapshot, "cases": [], "started_at": datetime.now(timezone.utc).isoformat()}
     _atomic_json(summary_path, summary)
     forwarder = forwarder or SignalForwarder()
@@ -496,6 +500,25 @@ def verify(destination: Path, *, checker=None) -> int:
         recorded_device = summary.get("device")
         if not recorded_device or recorded_device == "unavailable":
             problems.append("device evidence is missing")
+    resources = summary.get("resources") or []
+    production_resources = [row for row in resources if row.get("classification") == "production"]
+    models = {row.get("sha256") for row in production_resources if row.get("role") == "model"}
+    hdris = {row.get("sha256") for row in production_resources if row.get("role") == "hdri"}
+    if len(models) < 2:
+        problems.append("production evidence needs at least two real target models")
+    if len(hdris) < 2:
+        problems.append("production evidence needs at least two real HDRI resources")
+    for row in resources:
+        path = Path(row.get("path", ""))
+        if not path.is_file() or _sha256(path) != row.get("sha256"):
+            problems.append(f"resource hash mismatch: {path}")
+    for entry in summary.get("cases", []):
+        config = entry.get("config") or {}
+        if int(config.get("scene_count", 0)) * int(config.get("views", 0)) < 2:
+            problems.append(f"case {entry.get('case')} has fewer than two views")
+        for job_entry in entry.get("jobs", []):
+            if (job_entry.get("counters") or {}).get("saved") != (job_entry.get("counters") or {}).get("requested"):
+                problems.append(f"case {entry.get('case')} is not fully saved")
     current = _source_snapshot()
     recorded = summary.get("source") or {}
     if recorded.get("git_head") != current.get("git_head"):

@@ -133,4 +133,11 @@ AC-14 仍未完成，不能据此称整体生产验收 PASS。状态在对应真
 
 - [x] 最终独立复核代码`b8c55c4`：R1–R7全部PASS；亲跑699 passed/48.09s/退出0，统一门有效JSON、仅production失败、其余六门通过；记录`continuation-20261019-final/arbiter-final.md`。后续签收仅改文档。
 
-原full-cycle REVISE与被中断build-verify的CHILD_ABORTED分别保留为历史；代码修复的独立复核PASS与完整生产门失败分开记录。
+原full-cycle REVISE与被中断build-verify的CHILD_ABORTED分别保留为历史；当时的代码修复PASS与生产门失败分开记录。
+
+### 第十四轮：补齐真实资源后的验证
+
+- [x] 用户提供的真实资源已出现；只读记录979个HDRI、所选2模型/1遮挡物/3背景的来源和SHA256，不给fixture改标签。
+- [x] 真实BOP小试跑4/4、随机/固定两机位小批量36/36，run和verify在`fafbfd2`均退出0；真实RGB双mask2/2，checker/audit通过；699项回归通过。
+- [x] 资源实测的输入缺失阻塞已对上述选定资源解除；`energy_unit.ply`因alpha全0仍拒绝，另行列出，不冒充通过。不因此把全部979背景或所有模型标成已验收。
+- 文档提交后执行全新4帧confirmation、完整组合门和独立终验；最终执行状态以`review14-production-haven/20261019-haven-run2/`与本地报告为准，不为补写勾选再次改变已验收Git HEAD，也不得改旧summary的Git HEAD或原workflow终裁。

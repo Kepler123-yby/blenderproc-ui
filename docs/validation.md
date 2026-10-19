@@ -313,4 +313,45 @@ env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFOR
 
 **仍未完成：真实生产模型/Haven批量实测。** 指定的`/home/kepler/bproc_project/dataset_rendering/asserts/`再次确认为空，记录在新索引`production/blocked.json`。这不是代码缺失，也不是总体PASS；原full-cycle REVISE和生产AC-14阻塞保留。代码修复的独立终验单独记录，不放宽完整生产验收门。
 
-**最终独立终验（`b8c55c4`）：R1–R7 全部 PASS。** arbiter 亲跑全量 **699 passed / 48.09 s / 退出0**；在内存中运行统一验收CLI，stdout可解析、退出1且失败集合恰为`['production']`，其余六门及两个新BOP checker/源码审计通过。另独立复现dead weakref清理并核对真实clamps、fallback、GUI清单与来源。完整摘录在新索引`arbiter-final.md`。这个局部代码PASS不改变原full-cycle整体REVISE或生产AC14 BLOCKED；此后签收提交只改文档。
+**最终独立终验（`b8c55c4`）：R1–R7 全部 PASS。** arbiter 亲跑全量 **699 passed / 48.09 s / 退出0**；在内存中运行统一验收CLI，stdout可解析、退出1且失败集合恰为`['production']`，其余六门及两个新BOP checker/源码审计通过。另独立复现dead weakref清理并核对真实clamps、fallback、GUI清单与来源。完整摘录在新索引`arbiter-final.md`。这个局部代码PASS不改变当时原full-cycle整体REVISE或生产AC14 BLOCKED；此后签收提交只改文档。生产资源后来补齐后的实测见下一节，历史阻塞记录不改写。
+
+## 第十四轮：用户提供的真实 Haven / BOP 资源验证
+
+此前空目录的记录只对当时成立。用户随后在 `/home/kepler/bproc_project/dataset_rendering/asserts/` 提供模型和 Haven 资源；本次只读枚举 `haven/hdris/*/*` 得到 **979 个 HDRI**，没有执行参考 `render.py`、下载资源或修改原文件。
+
+**真实输入与范围**：目标使用 `bop/models/obj_000001.ply`、`obj_000007.ply`（按 BOP 毫米单位加载，项目稳定 ID 为2/7）；专用遮挡物 `obj_000004.ply`。选择三种真实背景：`kloofendal_misty_morning_puresky_2k.hdr`、`blue_photo_studio_2k.hdr`、`industrial_sunset_02_puresky_2k.hdr`。manifest 对每个文件记录来源、角色、单位及 SHA256，明确为用户提供的真实资源，而不是给旧 fixture 改标签。
+
+结果记录版本为 `fafbfd2`，生产代码没有修改：
+
+| 检查 | 实际结果 |
+|---|---|
+| BOP 试跑 | 2目标×2 HDRI×1 scene×2 views，共 **4/4帧**；run/verify均退出0 |
+| BOP 小批量 | 随机/固定两种机位×3 HDRI×2 scenes×3 views，共6任务、**36/36帧**；run/verify均退出0；written=saved=requested=36、skipped=0、counter_errors=0 |
+| 提案与出图 | view遮挡拒绝6次、layout拒绝0次；36/42=**85.71%提案接受率**，36/36=**100%出图率**；两者不混用 |
+| 遮挡类别 | 18帧无遮挡、18帧有遮挡；有遮挡实际比例0.1144–0.4601，均在配置窗口[0.1,0.5]内 |
+| RGB＋双掩码 | 室内studio背景、两个同样的真实模型，**2/2帧**；预检/GPU/checker/audit四步退出0；journal/final manifest一致，PNG8/0，stable obj_id后缀 |
+| 资源只读与快照 | 参与验证的6个资源和被拒绝模型共7个文件前后SHA256相同；任务core/runtime及入口模板逐文件匹配，未使用修改过的参考脚本 |
+| 背景确实不同 | 同seed/相机首帧的三背景RGB两两RMSE约120.72、20.91、107.83；亲看室内与清晨样张，背景与照明变化可见，无黑图占位 |
+| 回归 | **699 passed / 49.70s / 退出0**；本轮无产品代码改动 |
+
+**未通过的具体资产**：`models/energy_unit.ply` 顶点alpha全部为0，现有不透明网格契约拒绝加载（`AssetError`）。原SHA256 `f8b91afb97cb666e92cad5ae39f031d477637d805fa8adf2f219b4714373f55d`保持不变，未擅自设alpha255，也没有把该模型计入成功目标。要验证它，需提供不透明副本或另行明确透明处理策略。Haven PBR材质纹理也没有被本轮背景验证覆盖。
+
+证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review14-production-haven/20261019-haven-run2/`：
+
+- `inputs/{pilot,batch}-manifest.json`、项目YAML和`resource-before.json`；`resources-after.json`。
+- `pilot/`、`batch/`保存任务、数据集、全链路`commands.json`及日志；`pilot-verify.json`、`batch-verify.json`是在记录版本上实际执行的通过报告。
+- `rgb-job/`、`rgb-datasets/haven-rgb/`、`rgb-commands.json`、`rgb-audit.json`。
+- `hdri-visual-check.json`、`full-suite.log`。首个准备目录`20261019-haven/`的配置key冲突失败记录保留，换全新run2修正后才开始渲染，不覆盖失败历史。
+
+复验入口：
+
+```bash
+cd /home/kepler/rm_2027/blenderproc-ui
+R=.artifacts/review14-production-haven/20261019-haven-run2
+.venv/bin/python tools/validate_production_resources.py verify --destination "$R/batch"
+.venv/bin/python tests/blender/check_rgb_masks.py "$R/rgb-datasets/haven-rgb"
+```
+
+**版本约束**：生产verify严格比较记录Git HEAD；文档提交后，旧`batch`会因HEAD变化被拒绝，即使产品文件哈希没变，也不能篡改summary伪造匹配。为此文档提交后使用相同真实资源在全新`confirmation/`再做4帧最小确认，当前复验入口为`verify --destination "$R/confirmation"`；完整剩余项组合索引放`complete-index/`，其`production`只读指向确认结果，旧blocked索引不覆盖。以这些命令的实际输出和本地回交为准，不改原历史workflow REVISE。
+
+**证据限制**：本次只覆盖两个真实BOP模型、一个遮挡物及979个HDRI中的三个、小规模机位/遮挡范围，不等于所有资产或大规模长期稳定性验证；尤其不包含`energy_unit.ply`、透明材质、PBR纹理或任意超显存场景。

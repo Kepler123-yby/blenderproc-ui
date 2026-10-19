@@ -267,7 +267,7 @@ E=.artifacts/review12-native-masks/completion-20261019
 | R2 失效代际不饿死 | `384903b` | 旧 A 运行→invalidate→新 B 等待→A 结束→B 启动/完成；同 mesh 跨代不误去重，参数变更/连续 invalidate/关闭/错误完成均有回归 |
 | R3 单项缓存上限 | `384903b` | 单项超限不缓存但 ready 仍交付；`cache_bytes <= MAX_CACHE_BYTES`、entries 上限和 weakref 死项清理均有测试 |
 | R4 随机钳位记录 | `771a5eb` | 原 `[1e-5,2e-5]` 两端点、单端点、不需钳位、多组、固定相机、`grouping.json` 真实导出均记录 `region/endpoint/requested_m/safe_m/reason` |
-| R5 dense 遮挡物真实并集 | `c9231b4` | 9,600 面双组件：原点中心 union=true、even-odd outline=false；瞄准链路走 `triangle_stream` 且不再先建 outline；孔洞/单组件/凸实体/低面数及固定窗口回归通过；fallback 诊断 `ae5f04d` |
+| R5 dense 遮挡物真实并集 | `c9231b4` | 10,000 面双组件：原点中心 union=true、even-odd outline=false；瞄准链路走 `triangle_stream` 且不再先建 outline；孔洞/单组件/凸实体/低面数及固定窗口回归通过；fallback 诊断 `ae5f04d` |
 | R6 信号计数与布局统计 | `646856f` | SIGINT/SIGTERM 当前 job 在 finalize 后都有 counters；requested/written/saved/skipped/exit 与 status 一致；layout 与 view 拒绝分栏且 proposal 分母不含 layout |
 | R7 文档/证据 | 本节 | 404.4 MiB 更正为 970.066 MiB；新增最终版本 LOD/轮廓/重取景/GUI 证据；生产 AC-14 仍 BLOCKED |
 
@@ -277,7 +277,7 @@ E=.artifacts/review12-native-masks/completion-20261019
 - LOD：百万面 → 39,798 面，0.228 s，心跳最大 18.38 ms，RSS **970.941 MiB**；真实 GL 截图 13.96% / 86.07%；阈值内 60,000 面检查见 `$F/lod/threshold-check.json`。
 - 超限轮廓：2,002,000 面，冷 0.935 s，工作峰值 3.82 MiB，额外 RSS 0 MiB，30/30 提案入窗（`$F/silhouette/silhouette.json`）。
 - 重取景：从最终源码重新导出两组 BOP（`$F/reframe/jobs/render_job-size-{1,2}`），各 2 帧、GPU OPTIX、`check_bop.py` 与 `audit_dataset()` 均 PASS；`$F/reframe/consistency.json` 记录真实 journal 半径/灯光区间。随机紧半径的真实导出见 `$F/reframe-clamps/jobs/*/grouping.json`，两端点均记录钳位。
-- dense 遮挡物：`$F/occluder/occluder.json` 记录 9,600 面双组件原点中心 union=true/outline=false，实际瞄准 union share 0.897、outline 0.502。
+- dense 遮挡物：`$F/occluder/occluder.json` 记录 10,000 面双组件原点中心 union=true/outline=false，实际瞄准 union share 0.877、outline 0.502，placement share 0.895。
 - 真实桌面：`DISPLAY=:1` 的 `gui_smoke.py` 退出 0，18 张 PNG 在 `$F/gui/`，导出 YAML 含 tile/reframe/LOD 字段。
 - 统一证据门：`$F/verify-remaining.json` 仅 `production=false`（verify 退出 2，缺少生产 summary），其余 preflight/lod/tiles/reframe/silhouette/fixture_guard 为 true；`$F/logs/verify-summary.log` 退出 1。tile 复用 `$E` 的明确版本证据（算法未改），旧任务哈希不迎合新源码；重取景使用新源码任务。
 

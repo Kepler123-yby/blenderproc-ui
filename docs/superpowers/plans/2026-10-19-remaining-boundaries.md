@@ -114,7 +114,7 @@ signals `ready(key, display)`, `failed(key, reason)`, `status(key, text)`.
 | R2 失效代际 pending | `384903b` | 交错/同 mesh 跨代/参数/关闭/错误完成 | unit + Qt 23/5 |
 | R3 单项缓存上限 | `384903b` | 单项/多项/weakref，bytes/entries 上限 | unit |
 | R4 随机钳位记录 | `771a5eb` | 两端点/单端点/无钳位/多组/固定/导出 | `fixes-20261019-r1r7/reframe-clamps` |
-| R5 dense 遮挡物并集 | `c9231b4`,`ae5f04d` | 9,600 面双组件瞄准/孔洞/单组件/凸实体/低面数 | `fixes-20261019-r1r7/occluder/occluder.json` |
+| R5 dense 遮挡物并集 | `c9231b4`,`ae5f04d` | 10,000 面双组件瞄准/孔洞/单组件/凸实体/低面数 | `fixes-20261019-r1r7/occluder/occluder.json` |
 | R6 信号计数/布局统计 | `646856f` | 两种信号、失败/partial、多 case/HDRI/group | `test_production_validation.py` 20 项 |
 | R7 文档与证据 | docs commit | 全量 687 passed；新旧证据分栏 | `fixes-20261019-r1r7/` |
 

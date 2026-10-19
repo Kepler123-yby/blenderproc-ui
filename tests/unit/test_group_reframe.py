@@ -267,3 +267,94 @@ def test_cli_reframe_flags_change_the_exported_group_configuration(tmp_path, cap
     payload = json.loads(capsys.readouterr().out)
     assert payload["groups"][0]["reframe"] is False
     assert payload["groups"][0]["cameras_before_after"] == []
+
+
+# -- R4: safe clamps in random regions must be recorded, not silently forced to [] --------------
+def _tight_random_project(tmp_path, region):
+    project = two_scale_project(tmp_path, mode="random", margin=.1)
+    return replace(project, regions=(region,))
+
+
+def _clamps_by_endpoint(report):
+    return {row.get("endpoint"): row for row in report["clamps"]}
+
+
+def test_random_reframe_records_both_clamped_endpoints_for_every_group(tmp_path):
+    region = RegionSpec(key="tight", radius_m=Range(1e-5, 2e-5))
+    project = _tight_random_project(tmp_path, region)
+    groups = split_by_scale(project, meshes_for(project))
+    assert len(groups) == 2
+    safe_values = []
+    for group in groups:
+        report = group.grouping
+        fit_reference = report["cameras"][0]["fit_reference_m"]
+        clamps = _clamps_by_endpoint(report)
+        assert set(clamps) == {"minimum", "maximum"}, report["clamps"]
+        for endpoint, requested in (("minimum", 1e-5), ("maximum", 2e-5)):
+            row = clamps[endpoint]
+            assert row["requested_m"] == pytest.approx(requested)
+            assert row["safe_m"] == pytest.approx(report["cameras"][0]["new_radius_m"][
+                0 if endpoint == "minimum" else 1])
+            assert row["reason"] and row["region"] == "tight"
+            assert requested < fit_reference
+        safe_values.append((group.config.regions[0].radius_m.minimum,
+                            group.config.regions[0].radius_m.maximum))
+    assert len(groups[0].grouping["clamps"]) == len(groups[1].grouping["clamps"]) == 2
+    # The 2 mm and 40 mm groups clamp to their own safe fits, not to the same number.
+    assert safe_values[0][0] < safe_values[1][0]
+
+
+def test_random_reframe_records_only_the_endpoint_that_was_clamped(tmp_path):
+    region = RegionSpec(key="mixed", radius_m=Range(1e-5, 100.0))
+    project = _tight_random_project(tmp_path, region)
+    for group in split_by_scale(project, meshes_for(project)):
+        report = group.grouping
+        clamps = _clamps_by_endpoint(report)
+        assert set(clamps) == {"minimum"}, report["clamps"]
+        assert clamps["minimum"]["requested_m"] == pytest.approx(1e-5)
+        assert clamps["minimum"]["safe_m"] > clamps["minimum"]["requested_m"]
+        output = group.config.regions[0].radius_m
+        assert output.maximum > output.minimum
+
+
+def test_random_reframe_records_no_clamp_when_the_request_is_already_safe(tmp_path):
+    region = RegionSpec(key="safe", radius_m=Range(1.0, 2.0))
+    project = _tight_random_project(tmp_path, region)
+    for group in split_by_scale(project, meshes_for(project)):
+        report = group.grouping
+        assert report["clamps"] == []
+        output = group.config.regions[0].radius_m
+        assert output.minimum == pytest.approx(
+            group.grouping["cameras"][0]["new_radius_m"][0])
+        assert output.minimum < output.maximum
+
+
+def test_fixed_reframe_keeps_its_existing_clamp_record(tmp_path):
+    project = two_scale_project(tmp_path, mode="fixed", margin=.1)
+    project = replace(project, fixed_cameras=(
+        FixedCameraSpec("cam-a", "正面", 1e-5, -90., 25.),
+        FixedCameraSpec("cam-b", "侧面", 1e-5, 0., 15.)))
+    for group in split_by_scale(project, meshes_for(project)):
+        report = group.grouping
+        assert report["clamps"], "a fixed camera tighter than its fit must be recorded"
+        assert {row["camera"] for row in report["clamps"]} == {"cam-a", "cam-b"}
+        for row in report["clamps"]:
+            assert row["requested_m"] == pytest.approx(1e-5)
+            assert row["safe_m"] > row["requested_m"]
+            assert row["reason"]
+
+
+def test_grouping_json_exports_random_clamp_metadata(tmp_path):
+    region = RegionSpec(key="tight", radius_m=Range(1e-5, 2e-5))
+    project = _tight_random_project(tmp_path, region)
+    meshes = meshes_for(project)
+    groups = split_by_scale(project, meshes)
+    results = bundle.export_grouped_jobs(project, meshes, tmp_path / "jobs" / "render_job")
+    assert len(results) == 2
+    for group, result in zip(groups, results):
+        document = json.loads((Path(result.directory) / "grouping.json").read_text(encoding="utf-8"))
+        assert document["clamps"] == group.grouping["clamps"]
+        assert len(document["clamps"]) == 2
+        assert json.loads(json.dumps(document))["clamps"] == document["clamps"]
+        assert document["clamps"][0]["requested_m"] == pytest.approx(1e-5)
+        assert document["clamps"][0]["safe_m"] > document["clamps"][0]["requested_m"]

@@ -226,11 +226,24 @@ def _framing_report(config: ProjectConfig, reference_bounds: np.ndarray,
         fit_ref = random_fit_radius(reference_bounds, camera, margin)
         fit_group = random_fit_radius(group_bounds, camera, margin)
         regions = []
+        random_clamps = []
         for region in config.regions:
             radii = []
-            for endpoint in (region.radius_m.minimum, region.radius_m.maximum):
+            requested = (("minimum", region.radius_m.minimum),
+                         ("maximum", region.radius_m.maximum))
+            for endpoint_name, endpoint in requested:
                 looseness = max(1.0, endpoint / fit_ref)
-                radii.append(looseness * fit_group)
+                safe = looseness * fit_group
+                radii.append(safe)
+                if endpoint < fit_ref:
+                    # The requested endpoint would place the reference framing closer than its
+                    # own fit. The camera is clamped up to the safe fit; record the request,
+                    # the effective value, the reason and the exact region endpoint.
+                    random_clamps.append({
+                        "region": region.key, "endpoint": endpoint_name,
+                        "requested_m": float(endpoint), "safe_m": float(safe),
+                        "reason": "requested radius is tighter than the reference fit",
+                    })
             radius_min, radius_max = radii
             if radius_min > radius_max:      # never expected; keeps the configuration valid
                 radius_min = radius_max = max(radii)
@@ -240,11 +253,7 @@ def _framing_report(config: ProjectConfig, reference_bounds: np.ndarray,
                                       "fit_reference_m": fit_ref, "fit_group_m": fit_group,
                                       "new_radius_m": [float(radius_min), float(radius_max)]})
         config = replace(config, regions=tuple(regions))
-    report["clamps"] = report["clamps"] if "clamps" in report else []
-    if config.camera_mode == "fixed":
-        report["clamps"] = clamped
-    else:
-        report["clamps"] = []
+    report["clamps"] = clamped if config.camera_mode == "fixed" else random_clamps
     # Point lights follow the same scale as the geometry, preserving their angles and colour.
     scale = group_radius / reference_radius
     before_light = config.light

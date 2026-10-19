@@ -131,4 +131,6 @@ AC-14 仍未完成，不能据此称整体生产验收 PASS。状态在对应真
 - [x] 统一门亲自重跑，JSON有效，只有production失败，退出1；两新分组checker及源码审计通过。
 - [ ] 真正生产资源实测：缺少有来源的生产模型与Haven资源，生产AC-14 BLOCKED，不能勾选或由fixture替代。
 
-原full-cycle REVISE与被中断build-verify的CHILD_ABORTED分别保留为历史；代码修复的独立复核结论与完整生产门结果分开记录。
+- [x] 最终独立复核代码`b8c55c4`：R1–R7全部PASS；亲跑699 passed/48.09s/退出0，统一门有效JSON、仅production失败、其余六门通过；记录`continuation-20261019-final/arbiter-final.md`。后续签收仅改文档。
+
+原full-cycle REVISE与被中断build-verify的CHILD_ABORTED分别保留为历史；代码修复的独立复核PASS与完整生产门失败分开记录。

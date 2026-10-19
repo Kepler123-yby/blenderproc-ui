@@ -312,3 +312,5 @@ env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFOR
 ```
 
 **仍未完成：真实生产模型/Haven批量实测。** 指定的`/home/kepler/bproc_project/dataset_rendering/asserts/`再次确认为空，记录在新索引`production/blocked.json`。这不是代码缺失，也不是总体PASS；原full-cycle REVISE和生产AC-14阻塞保留。代码修复的独立终验单独记录，不放宽完整生产验收门。
+
+**最终独立终验（`b8c55c4`）：R1–R7 全部 PASS。** arbiter 亲跑全量 **699 passed / 48.09 s / 退出0**；在内存中运行统一验收CLI，stdout可解析、退出1且失败集合恰为`['production']`，其余六门及两个新BOP checker/源码审计通过。另独立复现dead weakref清理并核对真实clamps、fallback、GUI清单与来源。完整摘录在新索引`arbiter-final.md`。这个局部代码PASS不改变原full-cycle整体REVISE或生产AC14 BLOCKED；此后签收提交只改文档。

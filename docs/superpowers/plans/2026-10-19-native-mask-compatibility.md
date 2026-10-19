@@ -63,8 +63,8 @@
 - [x] Audit native output format, object mapping, metadata and packaged-source hashes.
 - [x] Correct bit-depth terminology and actual BOP tolerance; document finite evidence and absence of production rendering changes.
 - [x] Run complete unit/Qt regression: 567 passed in 36.81 s, exit 0.
-- [ ] Commit only authorized files with an English conventional message; do not push.
-- [ ] Obtain bounded author-independent verification of final artifacts; preserve the original full-cycle REVISE as history, not as a passing run.
+- [x] Commit only authorized files: `26a824b test: verify native instance mask compatibility`; no push.
+- [x] Bounded independent arbiter: **VERDICT: PASS**, all AC-1–10; independently reran 567 tests (35.33 s, exit 0), both real checkers and in-memory audits. Original full-cycle REVISE remains historical. This checklist/sign-off update is documentation-only.
 
 ## Verification commands
 

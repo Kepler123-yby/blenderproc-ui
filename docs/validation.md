@@ -228,4 +228,6 @@ E=.artifacts/review12-native-masks/completion-20261019
 .venv/bin/python tests/blender/check_bop.py "$E/results/native-bop"
 ```
 
+**独立终验：** `26a824b` 经有界 arbiter 复核，AC-1–10 全部 PASS；独立全量 **567 passed / 35.33 s / 退出 0**，两种真实 checker 退出 0。审阅者直接调用审计函数在内存中重算事实和哈希，未创建新的 arbiter JSON；CLI 报告生成/拒绝覆盖由其亲跑的单测验证。本次 `full-cycle` 原三阶段因预算到限停在 REVISE；父会话补齐后进行了单次、缩窄的独立终验，不能把原三阶段结果改记为 PASS。最终复核摘录在证据根 `arbiter-review.md`。
+
 范围限制：8 张参考、每种格式 2 帧只证明这组有限样本与当前接口；不能推导任意实例数量的 GPU 性能、完整生产 Haven 验收或所有遮挡窗口的成功率。RGB 精确分割与 BOP 深度容差可见性不要求逐像素一致。

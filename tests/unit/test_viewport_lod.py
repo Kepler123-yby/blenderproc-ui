@@ -187,8 +187,9 @@ def test_cache_is_bounded_by_entries_and_bytes(monkeypatch):
     # their real size rather than a simplified copy (R1 keeps that mesh unsimplified).
     one = original_display_mesh(meshes[0]).nbytes
     monkeypatch.setattr(vl, "MAX_CACHE_BYTES", one + 10)
-    controller.request("m8", sphere("m8", rings=40, steps=40))
-    controller.request("m9", sphere("m9", rings=40, steps=40))
+    m8, m9 = sphere("m8", rings=40, steps=40), sphere("m9", rings=40, steps=40)
+    assert controller.request("m8", m8) is not None
+    assert controller.request("m9", m9) is not None
     assert controller.cache_entries() == 1
 
 

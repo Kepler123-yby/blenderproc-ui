@@ -249,7 +249,10 @@ class ViewportLodController(QObject):
     # -- requests ----------------------------------------------------------------------------
     def cached(self, mesh: MeshData) -> DisplayMesh | None:
         entry = self._cache.get(id(mesh))
-        if entry is None or entry[0]() is not mesh:
+        if entry is None:
+            return None
+        if entry[0]() is not mesh:
+            self._purge_dead()
             return None
         params = (ALGORITHM_VERSION, self.target_faces, self.threshold_faces)
         if entry[1] != params:
@@ -341,11 +344,13 @@ class ViewportLodController(QObject):
         if key in self._cache:       # an oversized single display is delivered, not cached
             self.status.emit(display.key, "cached")
 
-    def _evict(self) -> None:
+    def _purge_dead(self) -> None:
         for key in list(self._cache):
-            entry = self._cache[key]
-            if entry[0]() is None:
+            if self._cache[key][0]() is None:
                 del self._cache[key]
+
+    def _evict(self) -> None:
+        self._purge_dead()
         while len(self._cache) > MAX_CACHE_MESHES:
             self._cache.popitem(last=False)
         # The byte cap is absolute: an entry larger than the whole budget is evicted even when it
@@ -354,7 +359,9 @@ class ViewportLodController(QObject):
             self._cache.popitem(last=False)
 
     def cache_bytes(self) -> int:
+        self._purge_dead()
         return sum(entry[2].nbytes for entry in self._cache.values())
 
     def cache_entries(self) -> int:
+        self._purge_dead()
         return len(self._cache)

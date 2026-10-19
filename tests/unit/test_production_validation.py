@@ -231,6 +231,10 @@ def test_a_partial_dataset_fails(tmp_path):
     summary = json.loads((tmp_path / "evidence" / "summary.json").read_text())
     assert summary["status"] == "failed"
     assert "partial" in summary["cases"][0]["error"]
+    counters = summary["cases"][0]["jobs"][0]["counters"]
+    assert counters["readable"] is True and counters["status"] == "partial"
+    assert counters["requested"] == 2 and counters["saved"] == 1
+    assert counters["skipped"] == 1 and counters["frame_yield"] == pytest.approx(.5)
 
 
 @pytest.mark.parametrize("signum,expected", [(signal.SIGINT, 130), (signal.SIGTERM, 143)])

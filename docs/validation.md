@@ -253,7 +253,7 @@ E=.artifacts/review12-native-masks/completion-20261019
 - 真实轮廓：`tools/benchmark_remaining_geometry.py --case silhouette --output "$E/silhouette"` → 退出 0，2,002,000 面、30/30 通过。
 - 真实 tile：`tools/render_demo.py ... --run` 四个数据集全部退出 0，`check_bop.py` 四个退出 0；`tiles/commands.json` 与 `tiles/compare.json` 保存命令、tile 调度和逐像素比较。
 - 真实分组：两组导出、`--check-only`、GPU 渲染、`check_bop.py`、`tools/audit_native_masks.py dataset` 全部退出 0；证据 `reframe/consistency.json`、`reframe/logs/audit-final-*.json`。
-- 真实桌面：`DISPLAY=:1 tools/gui_smoke.py --project .artifacts/demo/demo.yaml --output "$E/gui-final"` → 退出 0（较早同配置的 `$E/gui` 也退出 0），包含 LOD 控制/状态、tile 设置、分组重取景设置截图，并核验这些字段进入导出的 `scene.yaml`。
+- 真实桌面：`DISPLAY=:1 tools/gui_smoke.py --project .artifacts/demo/demo.yaml --output "$E/gui-final2"` → 退出 0，18 张 PNG 含 LOD 控制/状态、Cycles/分组滚动设置截图，并核验这些字段进入导出的 `scene.yaml`；同配置的 `$E/gui`、`$E/gui-final` 也退出 0。
 - 统一证据门：`tools/verify_remaining_evidence.py --evidence "$E"` → 退出 1；LOD/tiles/reframe/silhouette/fixture_guard 通过，`production` 因缺少真实 Haven/生产资源证据而失败。这是当前唯一未达成的验收项，**不能据此总体 PASS**。
 
 **证据限制**：tile 只证明图像缓冲；LOD 只影响视口；分组重取景不改变科学标定；超限轮廓不是逐输出像素真值；生产验收未用合成资源冒充。所有真实渲染均为 RTX 3060 Ti / OPTIX / NVIDIA EGL，未使用 CPU 渲染回退。

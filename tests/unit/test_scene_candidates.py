@@ -1220,3 +1220,21 @@ def test_a_low_face_occluder_still_uses_its_triangles(monkeypatch):
     placements = occluder_placements(config, meshes, pose, "a", np.random.default_rng(3), ())
     assert isinstance(placements, list), placements
     assert calls["outline"] == 0
+
+
+def test_a_dense_occluder_stream_failure_is_reported_with_the_outline_fallback(monkeypatch):
+    from bproc_core.silhouette import SilhouetteDiagnostic
+    config, meshes, pose = _dense_overlap_fixture(Range(.9, 1.))
+    diagnostic = SilhouetteDiagnostic("o", "unavailable", 256, len(meshes["o"].faces), 0,
+                                      "invalid_faces", False, 0, 0.0, 0)
+    monkeypatch.setattr(scene_module, "stream_coverage", lambda *args, **kwargs: (None, diagnostic))
+    monkeypatch.setattr(scene_module, "_outline_for", lambda *args, **kwargs: (None, "open_outline"))
+    shapes, _target_mask_result = _target_mask(config, meshes, pose)
+    target_points = transform_points(bounds_corners(meshes["a"].bounds_m), np.eye(4))
+    diagnostics: list = []
+    scene_module._aimed_offset(
+        np.array([0., 0., .25]), np.array([1., 0., 0.]), meshes["o"], 1., shapes, pose,
+        config, np.random.default_rng(0), .02, target_points, diagnostics)
+    assert diagnostics and diagnostics[0]["asset_key"] == "o"
+    assert diagnostics[0]["fallback_reason"] == "stream:invalid_faces"
+    assert diagnostics[0]["estimate_only"] is False

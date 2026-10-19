@@ -1,10 +1,13 @@
 """Geometry-only proposals shared by the desktop preview and render runtime."""
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 from itertools import product
+from threading import Lock
+import weakref
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -199,6 +202,19 @@ SILHOUETTE_MASK_MAX_FACES = 6000
 SILHOUETTE_MASK_MAX_VERTICES = 20000
 SILHOUETTE_POINT_LIMIT = 4096
 SILHOUETTE_GRID_SIZE = 256
+# Past the triangle budget a mesh is not abandoned to its hull: its visible outline is the set of
+# projected edges where a front-facing face meets a back-facing one, plus every boundary edge of an
+# open surface. Those edges are built once per mesh (vectorised sort, no per-edge Python) and kept in
+# a bounded cache, so every pose only reruns the facing test and one scanline fill through the shared
+# grid. These caps are explicit support limits, and hitting one is recorded as a hull fallback
+# instead of being confused with real geometry.
+SILHOUETTE_TOPOLOGY_MAX_FACES = 2_000_000    # faces one cached edge topology may cover
+SILHOUETTE_TOPOLOGY_MAX_EDGES = 4_000_000    # undirected edges one cached topology may cover
+SILHOUETTE_TOPOLOGY_CACHE_MESHES = 4         # meshes kept in the edge-topology cache
+SILHOUETTE_TOPOLOGY_CACHE_FACES = 2_000_000  # faces the whole edge-topology cache may hold
+SILHOUETTE_SCANLINE_MAX_CROSSINGS = 1_000_000  # edge/scanline pairs one pose may rasterise
+SILHOUETTE_FACING_BLOCK = 1 << 18           # faces/edges per pass, bounding temporary memory
+SILHOUETTE_WELD_TOLERANCE = 1e-6             # of the mesh extent: joins split PLY/OBJ vertices
 # A projection whose true outline fills this much of its own convex envelope is treated as convex,
 # where the envelope *is* the silhouette and the polygon ratio is exact. Below it the shape has a
 # real opening, the envelope over-states the area, and only the rasterised outline can be trusted.
@@ -257,6 +273,193 @@ def _silhouette_points(mesh: MeshData) -> np.ndarray:
 
 
 @dataclass(frozen=True)
+class _EdgeTopology:
+    """Undirected edge -> adjacent faces for one mesh, built once and cached.
+
+    ``faces`` are welded triangles in model space and ``edges`` every undirected welded edge with
+    its first two adjacent faces (``face_b`` is -1 on an open boundary). The rare edges shared by
+    three or more faces keep their whole incidence in ``multi_*`` so a non-manifold junction is
+    decided from all of its faces instead of from a guessed pair. Everything is built with one
+    sort and one grouping pass, so a million-face part pays for it once, not once per pose.
+    """
+    vertices_m: np.ndarray
+    faces: np.ndarray
+    edges: np.ndarray
+    face_a: np.ndarray
+    face_b: np.ndarray
+    multi_edges: np.ndarray
+    multi_offsets: np.ndarray
+    multi_faces: np.ndarray
+    multi_counts: np.ndarray
+
+
+def _weld_vertices(vertices: np.ndarray, faces: np.ndarray):
+    """Remap faces onto coincident vertices, so a PLY that split its vertices still has topology.
+
+    ``trimesh.load(process=False)`` keeps duplicated vertices, and every edge between two
+    separately stored copies then looks like an open boundary: the visible outline would become a
+    lattice of cell borders instead of one loop. Coincident positions are merged on a grid of
+    ``SILHOUETTE_WELD_TOLERANCE`` times the mesh extent, which is far below any real feature and
+    far above the float noise of a written PLY.
+    """
+    extent = float(np.max(np.ptp(vertices, axis=0))) if len(vertices) else 0.
+    if not extent > 0:
+        return vertices, faces
+    tolerance = extent * SILHOUETTE_WELD_TOLERANCE
+    keys = np.rint((vertices - vertices.min(axis=0)) / tolerance).astype(np.int64)
+    keys -= keys.min(axis=0)
+    # Fold the three integer axes into one sortable key. The span of each axis is extent/tolerance
+    # = 1e6 by construction, so the key stays inside int64 instead of overflowing.
+    linear = (keys[:, 0] * 1_000_003 + keys[:, 1]) * 1_000_003 + keys[:, 2]
+    _, first, inverse = np.unique(linear, return_index=True, return_inverse=True)
+    return vertices[first], inverse[faces]
+
+
+def _build_edge_topology(mesh: MeshData):
+    """Build the edge/face incidence of one mesh, or explain why it is not supported."""
+    faces = np.asarray(mesh.faces)
+    vertices = np.asarray(mesh.vertices_m, dtype=float)
+    if faces.ndim != 2 or len(faces) == 0:
+        return None, 'no_faces'
+    if faces.shape[1] != 3:
+        return None, 'non_triangular'
+    if faces.max() >= len(vertices) or faces.min() < 0:
+        return None, 'invalid_faces'
+    if len(faces) > SILHOUETTE_TOPOLOGY_MAX_FACES:
+        return None, 'topology_budget'
+    points, welded = _weld_vertices(vertices, faces)
+    welded = np.asarray(welded, dtype=np.int32)
+    # Which way each corner traverses its edge: two triangles that share an edge with a coherent
+    # surface orientation must walk it in opposite directions. A mesh that fails this has no
+    # well-defined front and back, so its outline is undecidable rather than merely expensive.
+    forward = np.concatenate([welded[:, 0] < welded[:, 1], welded[:, 1] < welded[:, 2],
+                              welded[:, 2] < welded[:, 0]])
+    pairs = np.concatenate([welded[:, [0, 1]], welded[:, [1, 2]], welded[:, [2, 0]]])
+    pairs.sort(axis=1)
+    owner = np.tile(np.arange(len(welded), dtype=np.int32), 3)
+    keys = pairs[:, 0].astype(np.int64) * np.int64(len(points)) + pairs[:, 1]
+    del pairs
+    order = np.argsort(keys, kind='stable')
+    keys = keys[order]
+    owner = owner[order]
+    forward = forward[order]
+    # The keys are sorted, so grouping is one comparison pass instead of a second sort.
+    starts = np.empty(len(keys), dtype=bool)
+    starts[0] = True
+    np.not_equal(keys[1:], keys[:-1], out=starts[1:])
+    start = np.nonzero(starts)[0]
+    counts = np.diff(np.append(start, len(keys)))
+    unique = keys[start]
+    del keys, starts
+    if len(unique) > SILHOUETTE_TOPOLOGY_MAX_EDGES:
+        return None, 'topology_budget'
+    edges = np.stack([unique // len(points), unique % len(points)], axis=1).astype(np.int32)
+    del unique
+    paired = np.nonzero(counts == 2)[0]
+    paired = paired[edges[paired, 0] != edges[paired, 1]]
+    if np.any(forward[start[paired]] == forward[start[paired] + 1]):
+        return None, 'inconsistent_winding'
+    face_a = owner[start].astype(np.int32)
+    face_b = np.where(counts > 1, owner[np.minimum(start + 1, len(owner) - 1)], -1).astype(np.int32)
+    # Keep the full incidence of the edges shared by three or more faces; everything else needs at
+    # most the two faces already stored. The compressed arrays cost nothing on a manifold mesh.
+    multi = counts > 2
+    multi_edges = np.nonzero(multi)[0].astype(np.int32)
+    multi_counts = counts[multi].astype(np.int32)
+    multi_faces = owner[np.repeat(multi, counts)].astype(np.int32)
+    multi_offsets = np.zeros(len(multi_edges) + 1, dtype=np.int64)
+    if len(multi_edges):
+        np.cumsum(multi_counts, out=multi_offsets[1:])
+    return _EdgeTopology(points, welded, edges, face_a, face_b, multi_edges, multi_offsets,
+                         multi_faces, multi_counts), None
+
+
+_TOPOLOGY_CACHE: "OrderedDict[int, tuple]" = OrderedDict()
+_TOPOLOGY_LOCK = Lock()
+
+
+def _trim_topology_cache() -> None:
+    """Evict least-recently-used topologies until both cache ceilings hold. Caller holds the lock."""
+    def cached_faces():
+        return sum(len(entry[1].faces) for entry in _TOPOLOGY_CACHE.values()
+                   if entry[1] is not None)
+
+    while len(_TOPOLOGY_CACHE) > 1:
+        if (len(_TOPOLOGY_CACHE) <= SILHOUETTE_TOPOLOGY_CACHE_MESHES
+                and cached_faces() <= SILHOUETTE_TOPOLOGY_CACHE_FACES):
+            return
+        _TOPOLOGY_CACHE.popitem(last=False)
+
+
+def _edge_topology(mesh: MeshData):
+    """Cached :func:`_build_edge_topology` result for one live mesh object.
+
+    The key is the object identity, validated through a weak reference: a collected mesh whose id
+    is later reused rebuilds instead of silently reusing another mesh's edges. Failures are cached
+    too, so an over-budget part is not re-sorted on every pose.
+    """
+    key = id(mesh)
+    with _TOPOLOGY_LOCK:
+        entry = _TOPOLOGY_CACHE.get(key)
+        if entry is not None and entry[0]() is mesh:
+            _TOPOLOGY_CACHE.move_to_end(key)
+            return entry[1], entry[2]
+        if entry is not None:
+            del _TOPOLOGY_CACHE[key]
+    topology, reason = _build_edge_topology(mesh)
+    with _TOPOLOGY_LOCK:
+        _TOPOLOGY_CACHE[key] = (weakref.ref(mesh), topology, reason)
+        _TOPOLOGY_CACHE.move_to_end(key)
+        _trim_topology_cache()
+    return topology, reason
+
+
+def _front_facing(topology: _EdgeTopology, world_from_model: np.ndarray, pose: CameraPose) -> np.ndarray:
+    """Per-face front/back verdict for one pose, from the model-space camera position.
+
+    The camera is moved into model space once, so the test only needs the mesh normals and a dot
+    product: it stays exact for any rigid placement, including a rotation, and needs no stored
+    world-space normals. A zero-area face has no side and counts as back-facing, which makes its
+    neighbours report a transition and keeps the edge instead of dropping real geometry.
+    """
+    inverse = np.linalg.inv(np.asarray(world_from_model, dtype=float))
+    camera_model = inverse[:3, :3] @ np.asarray(pose.position_m, dtype=float) + inverse[:3, 3]
+    points, faces = topology.vertices_m, topology.faces
+    front = np.zeros(len(faces), dtype=bool)
+    for start in range(0, len(faces), SILHOUETTE_FACING_BLOCK):
+        stop = min(start + SILHOUETTE_FACING_BLOCK, len(faces))
+        block = faces[start:stop]
+        first = points[block[:, 0]]
+        normal = np.cross(points[block[:, 1]] - first, points[block[:, 2]] - first)
+        front[start:stop] = np.einsum('ij,ij->i', normal, camera_model - first) > 0.
+    return front
+
+
+def _outline_edges(topology: _EdgeTopology, front: np.ndarray) -> np.ndarray:
+    """Edges on the visible boundary of the surface: the outline even-odd filling needs.
+
+    An edge between a front and a back face is where the surface turns away from the camera; an
+    open boundary belongs to the outline whatever its side, so a one-sided plate still shows its
+    real shape. An edge shared by three or more faces is kept only when *some* of its faces are
+    front-facing and some are not, which is the same transition rule applied to its whole
+    incidence rather than to an arbitrary pair.
+    """
+    selected = np.zeros(len(topology.edges), dtype=bool)
+    open_boundary = topology.face_b < 0
+    selected[open_boundary] = True
+    paired = topology.face_b >= 0
+    if len(topology.multi_edges):
+        paired[topology.multi_edges] = False
+    selected[paired] = (front[topology.face_a[paired]] != front[topology.face_b[paired]])
+    if len(topology.multi_edges):
+        incidence = front[topology.multi_faces].astype(np.int64)
+        front_count = np.add.reduceat(incidence, topology.multi_offsets[:-1])
+        selected[topology.multi_edges] = ((front_count > 0)
+                                          & (front_count < topology.multi_counts))
+    return selected
+
+
+@dataclass(frozen=True)
 class _SilhouetteGrid:
     """A square screen-space grid that target and occluder masks share."""
     left_px: float
@@ -272,7 +475,12 @@ def _silhouette_grid(entries, pose: CameraPose, camera) -> _SilhouetteGrid | Non
     """Grid covering every mesh that will be compared as a rasterised mask."""
     boxes = []
     for mesh, matrix in entries:
-        uv, valid = project_points(transform_points(mesh.vertices_m, matrix), pose, camera)
+        # A mesh past the vertex budget is bounded by its box corners instead of every vertex. The
+        # pinhole projection of a convex box contains the projection of everything inside it, so
+        # the grid still covers the mask without touching half a million vertices on every pose.
+        points = (mesh.vertices_m if len(mesh.vertices_m) <= SILHOUETTE_MASK_MAX_VERTICES
+                  else bounds_corners(mesh.bounds_m))
+        uv, valid = project_points(transform_points(points, matrix), pose, camera)
         if not valid.all():
             return None
         if len(uv):
@@ -288,6 +496,110 @@ def _silhouette_grid(entries, pose: CameraPose, camera) -> _SilhouetteGrid | Non
     scale = (SILHOUETTE_GRID_SIZE - 1 - 2 * margin) / span
     return _SilhouetteGrid(float(low[0]) - margin / scale, float(low[1]) - margin / scale,
                            scale)
+
+
+def _scanline_fill(segments: np.ndarray, grid: _SilhouetteGrid,
+                   budget: int | None = None) -> np.ndarray | None:
+    """Even-odd fill of one grid mask from projected outline segments.
+
+    A pixel is inside when the number of outline crossings to its left is odd, so a hole stays a
+    hole and two touching outlines do not invent an overlap. The work is the number of
+    edge/scanline pairs, counted while walking the edges in bounded blocks: past ``budget`` the
+    fill returns ``None`` instead of running away, and the caller keeps its envelope.
+    """
+    if budget is None:
+        budget = SILHOUETTE_SCANLINE_MAX_CROSSINGS
+    size = grid.size
+    flips = np.zeros((size, size + 1), dtype=np.int64)
+    crossings = 0
+    for start in range(0, len(segments), SILHOUETTE_FACING_BLOCK):
+        block = np.asarray(segments[start:start + SILHOUETTE_FACING_BLOCK], dtype=float)
+        x0, y0, x1, y1 = block[:, 0], block[:, 1], block[:, 2], block[:, 3]
+        low = np.minimum(y0, y1)
+        high = np.maximum(y0, y1)
+        # Half-open [low, high) on pixel-centre rows: an edge through a vertex is counted once.
+        first = np.ceil(np.clip(low - .5, -2., size + 2.)).astype(np.int64)
+        last = np.ceil(np.clip(high - .5, -2., size + 2.)).astype(np.int64)
+        rows = np.clip(first, 0, size)
+        counts = np.maximum(np.clip(last, 0, size) - rows, 0)
+        total = int(counts.sum())
+        crossings += total
+        if crossings > budget:
+            return None
+        if not total:
+            continue
+        index = np.repeat(np.arange(len(block)), counts)
+        offsets = np.cumsum(counts) - counts
+        row = rows[index] + (np.arange(total) - np.repeat(offsets, counts))
+        delta_y = (y1 - y0)[index]
+        fraction = ((row + .5) - y0[index]) / delta_y
+        column = np.floor(np.clip(x0[index] + fraction * (x1 - x0)[index] + .5,
+                                  -1., size + 1.)).astype(np.int64)
+        flat = row * (size + 1) + np.clip(column, 0, size)
+        flips += np.bincount(flat, minlength=size * (size + 1)).reshape(size, size + 1)
+    inside = (np.cumsum(flips, axis=1)[:, :size] & 1).astype(bool)
+    return inside
+
+
+@dataclass(frozen=True)
+class _SilhouetteOutline:
+    """The model-space edges that outline one mesh from one viewpoint.
+
+    The edge set is chosen once with a single facing pass on the cached topology, so a translating
+    occluder re-projects a few thousand endpoints per probe instead of rebuilding its topology or
+    restating which of its faces face the camera. A rigid translation keeps each face's side fixed
+    except for the faces that are exactly edge-on, which is why this is used inside one aim only.
+    """
+    vertices_m: np.ndarray
+    edges: np.ndarray
+
+    def mask(self, world_from_model, pose: CameraPose, camera,
+             grid: _SilhouetteGrid) -> tuple:
+        """Fill this outline on ``grid``, or say why the fill is not available."""
+        pixels, valid = project_points(transform_points(self.vertices_m, world_from_model),
+                                       pose, camera)
+        if not valid.all():
+            return None, 'behind_camera'
+        mapped = grid.map(pixels)
+        segments = np.concatenate([mapped[self.edges[:, 0]], mapped[self.edges[:, 1]]], axis=1)
+        filled = _scanline_fill(segments, grid)
+        if filled is None:
+            return None, 'scanline_budget'
+        return (filled, None) if filled.any() else (None, 'empty_outline')
+
+
+def _outline_for(mesh: MeshData, world_from_model, pose: CameraPose, camera) -> tuple:
+    """Outline of ``mesh`` as seen from ``pose``, or ``(None, reason)`` when it is undecidable.
+
+    The outline must close: every welded vertex carries an even number of selected edges. An odd
+    degree means the visible boundary has a loose end, and an even-odd fill would then invent or
+    erase area, so the caller's envelope is the safe answer.
+    """
+    topology, reason = _edge_topology(mesh)
+    if topology is None:
+        return None, reason or 'no_topology'
+    front = _front_facing(topology, world_from_model, pose)
+    selected = _outline_edges(topology, front)
+    if not selected.any():
+        return None, 'empty_outline'
+    edges = topology.edges[selected]
+    degree = np.bincount(edges.ravel(), minlength=len(topology.vertices_m))
+    if np.any(degree & 1):
+        return None, 'open_outline'
+    used = np.unique(edges)
+    if len(used) < 3:
+        return None, 'degenerate_outline'
+    local = np.searchsorted(used, edges)
+    return _SilhouetteOutline(topology.vertices_m[used], local), None
+
+
+def _outline_mask(mesh: MeshData, world_from_model, pose: CameraPose, camera,
+                  grid: _SilhouetteGrid) -> tuple:
+    """Rasterised outline of a mesh too dense for its triangles, or ``(None, reason)``."""
+    outline, reason = _outline_for(mesh, world_from_model, pose, camera)
+    if outline is None:
+        return None, reason
+    return outline.mask(world_from_model, pose, camera, grid)
 
 
 def _rasterize_mask(mesh: MeshData, world_from_model: np.ndarray, pose: CameraPose, camera,
@@ -336,12 +648,15 @@ class _TargetShape:
     true outline on the shared grid (``None`` when the part is too heavy to rasterise);
     ``envelope_mask`` is that same envelope filled on the grid. ``convex`` says the outline *is* its
     envelope, measured from this pair of real projections, so a solid box is convex and a frame or
-    U-shaped plate is not, without a face-count threshold.
+    U-shaped plate is not, without a face-count threshold. ``fallback`` names why a mesh that could
+    have been rasterised was not, so a support limit is reported instead of silently changing the
+    measured shape.
     """
     hull: np.ndarray | None
     mask: np.ndarray | None
     envelope_mask: np.ndarray | None
     convex: bool
+    fallback: str | None = None
 
 
 @dataclass(frozen=True)
@@ -352,7 +667,7 @@ class _TargetShapes:
 
     @property
     def hulls(self) -> tuple[np.ndarray, ...]:
-        """Targets measurable only by their convex hull: too dense, or not projectable."""
+        """Targets measurable only by their convex hull: not supported, or not projectable."""
         return tuple(shape.hull for shape in self.shapes
                      if shape.mask is None and shape.hull is not None)
 
@@ -360,6 +675,12 @@ class _TargetShapes:
     def masks(self) -> tuple[np.ndarray, ...]:
         """Rasterised true outlines, without the envelopes measured alongside them."""
         return tuple(shape.mask for shape in self.shapes if shape.mask is not None)
+
+    @property
+    def fallbacks(self) -> tuple[str, ...]:
+        """Why each unmasked target kept its envelope: a support limit, never a shape verdict."""
+        return tuple(shape.fallback for shape in self.shapes
+                     if shape.mask is None and shape.fallback is not None)
 
 
 def _is_convex_silhouette(mask: np.ndarray, envelope_mask: np.ndarray) -> bool:
@@ -374,29 +695,43 @@ def _is_convex_silhouette(mask: np.ndarray, envelope_mask: np.ndarray) -> bool:
 
 
 def _target_shapes(entries, pose: CameraPose, camera) -> _TargetShapes:
-    """Measure each target silhouette once per pose: exact outline, envelope, and convexity."""
+    """Measure each target silhouette once per pose: exact outline, envelope, and convexity.
+
+    Triangles are rasterised while they fit the mask budget. Past it the part is not abandoned to
+    its envelope: its cached silhouette edges are filled with the even-odd scanline, so a hollow
+    high-face frame still keeps its hole. The envelope stays the answer only when the topology or
+    the scan budget says no, and that reason travels with the shape.
+    """
     masked, shapes = [], []
     for mesh, matrix in entries:
         hull = _silhouette(_silhouette_points(mesh), matrix, pose, camera)
         if _maskable(mesh):
-            masked.append((mesh, matrix, hull))
+            masked.append((mesh, matrix, hull, True))
+        elif len(mesh.faces):
+            masked.append((mesh, matrix, hull, False))
         elif hull is not None:
-            # Past the mask budget the envelope is the only measurement available.
-            shapes.append(_TargetShape(hull, None, None, True))
-    grid = (_silhouette_grid([(mesh, matrix) for mesh, matrix, _ in masked], pose, camera)
+            shapes.append(_TargetShape(hull, None, None, True, 'no_faces'))
+    grid = (_silhouette_grid([(mesh, matrix) for mesh, matrix, _, _ in masked], pose, camera)
             if masked else None)
     if grid is None:
         # A mesh behind the camera (or a degenerate projection) cannot be masked; keep the
         # affine hull fallback rather than rejecting an otherwise valid target.
-        for mesh, matrix, hull in masked:
+        for mesh, matrix, hull, _ in masked:
             if hull is not None:
-                shapes.append(_TargetShape(hull, None, None, True))
+                shapes.append(_TargetShape(hull, None, None, True, 'no_projection'))
         return _TargetShapes(tuple(shapes), None)
-    for mesh, matrix, hull in masked:
-        mask = _rasterize_mask(mesh, matrix, pose, camera, grid, triangles=True)
+    for mesh, matrix, hull, triangles in masked:
+        if triangles:
+            mask, reason = _rasterize_mask(mesh, matrix, pose, camera, grid, triangles=True), None
+        else:
+            mask, reason = _outline_mask(mesh, matrix, pose, camera, grid)
+        if mask is None:
+            if hull is not None:
+                shapes.append(_TargetShape(hull, None, None, True, reason))
+            continue
         envelope_mask = _rasterize_mask(mesh, matrix, pose, camera, grid, triangles=False)
         shapes.append(_TargetShape(hull, mask, envelope_mask,
-                                   _is_convex_silhouette(mask, envelope_mask)))
+                                   _is_convex_silhouette(mask, envelope_mask), reason))
     return _TargetShapes(tuple(shapes), grid)
 
 
@@ -510,11 +845,25 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
         return matrix
 
     # Convexity is translation invariant, so the occluder is classified once at the search origin
-    # rather than on every probe: a solid box has an exact envelope, a hollow one does not.
-    occluder_convex = shapes.grid is None or _is_convex_silhouette(
-        _rasterize_mask(mesh, matrix_at(0.), pose, config.camera, shapes.grid,
-                        triangles=_maskable(mesh)),
-        _rasterize_mask(mesh, matrix_at(0.), pose, config.camera, shapes.grid, triangles=False))
+    # rather than on every probe: a solid box has an exact envelope, a hollow one does not. A part
+    # too dense for its triangles is classified from its silhouette edges, which are picked once
+    # here and only re-projected per probe.
+    grid = shapes.grid
+    outline = None
+    if grid is not None and not _maskable(mesh):
+        outline, _reason = _outline_for(mesh, matrix_at(0.), pose, config.camera)
+
+    def occluder_real(matrix):
+        """The occluder's own surface on the shared grid, or None when only its envelope is left."""
+        if grid is None:
+            return None
+        if _maskable(mesh):
+            return _rasterize_mask(mesh, matrix, pose, config.camera, grid, triangles=True)
+        return None if outline is None else outline.mask(matrix, pose, config.camera, grid)[0]
+
+    origin = occluder_real(matrix_at(0.))
+    occluder_convex = grid is None or (origin is not None and _is_convex_silhouette(
+        origin, _rasterize_mask(mesh, matrix_at(0.), pose, config.camera, grid, triangles=False)))
 
     def estimate(offset):
         """Covered share of the best-covered target: exact polygons when convex, else real masks.
@@ -534,23 +883,31 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
             return regions["hull"]
 
         def occluder_region():
-            key = "convex" if occluder_convex else "mask"
-            if key not in regions:
-                regions[key] = _rasterize_mask(
-                    mesh, matrix, pose, config.camera, shapes.grid,
-                    triangles=False if occluder_convex else _maskable(mesh))
-            return regions[key]
+            """The occluder's exact envelope when it is convex, else its real surface."""
+            if occluder_convex:
+                if "convex" not in regions:
+                    regions["convex"] = _rasterize_mask(mesh, matrix, pose, config.camera, grid,
+                                                        triangles=False)
+                return regions["convex"]
+            if "mask" not in regions:
+                regions["mask"] = occluder_real(matrix)
+            return regions["mask"]
 
         shares = []
         for shape in shapes.shapes:
             target_mask = shape.envelope_mask if shape.convex else shape.mask
             if shape.convex and occluder_convex and envelope() is not None:
+                # Both envelopes are the shapes themselves: an exact polygon ratio, no grid quantum.
                 shares.append(_covered_share(shape.hull, envelope()))
-            elif target_mask is not None and shapes.grid is not None:
-                shares.append(_mask_covered_share(target_mask, occluder_region()))
-            elif envelope() is not None and shape.hull is not None:
-                # Nothing was rasterised for this pose: the envelopes are all that is left.
-                shares.append(_covered_share(shape.hull, envelope()))
+                continue
+            region = occluder_region() if target_mask is not None and grid is not None else None
+            if region is not None:
+                shares.append(_mask_covered_share(target_mask, region))
+                continue
+            hull = envelope()
+            if hull is not None and shape.hull is not None:
+                # Nothing could be rasterised for this pose: the envelopes are all that is left.
+                shares.append(_covered_share(shape.hull, hull))
         return max(shares, default=0.)
 
     span = _offset_span(base, direction, mesh, scale, target_points, pose)

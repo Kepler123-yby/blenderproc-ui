@@ -6,10 +6,13 @@ import pytest
 from bproc_core.assets import MeshData
 from bproc_core.config import *
 from bproc_core.scene import *
-from bproc_core.scene import (_covered_share, _maskable, _polygon_area, _silhouette,
-                              _silhouette_points, _target_shapes, SILHOUETTE_GRID_SIZE,
-                              SILHOUETTE_MASK_MAX_FACES, SILHOUETTE_MASK_MAX_VERTICES,
-                              SILHOUETTE_POINT_LIMIT)
+from bproc_core.scene import (_covered_share, _edge_topology, _maskable, _polygon_area,
+                              _silhouette, _silhouette_points, _target_shapes,
+                              SILHOUETTE_GRID_SIZE, SILHOUETTE_MASK_MAX_FACES,
+                              SILHOUETTE_MASK_MAX_VERTICES, SILHOUETTE_POINT_LIMIT,
+                              SILHOUETTE_SCANLINE_MAX_CROSSINGS, SILHOUETTE_TOPOLOGY_CACHE_MESHES,
+                              SILHOUETTE_TOPOLOGY_MAX_FACES)
+import bproc_core.scene as scene_module
 from tests.factories import BOX_FACES, box_surface, make_box
 
 
@@ -548,6 +551,21 @@ def _u_fixture(window):
     return config, meshes, pose
 
 
+def _u_prism_fixture(window):
+    """The same U and occluder, but the target is a 8160-face closed shell past the mask budget."""
+    meshes = {"a": _u_prism("a", .05, .03, .005, 60),
+              "o": make_box("o", (-.02, -.02, -.002), (.02, .02, .002))}
+    config = ProjectConfig(
+        targets=(TargetSpec(AssetSpec("a", Path("a.ply")), "A", 2),), anchor_key="a",
+        occluders=(AssetSpec("o", Path("o.ply")),), hdri=HdriSpec(),
+        regions=(RegionSpec(radius_m=Range(.5, .5), azimuth=Azimuth(0, 0, False),
+                            elevation_deg=Range(90, 90)),),
+        occlusion=OcclusionSpec(none_fraction=1., ratio=window, count=(1, 1),
+                                scale=Range(1., 1.)))
+    pose = CameraPose(np.eye(4), np.array([0., 0., .5]), .5, 0., 0., .005, 50.)
+    return config, meshes, pose
+
+
 def test_a_six_face_u_target_is_rasterised_by_its_real_outline():
     """The reviewer's counterexample: six faces, a real opening, a hull that hides it."""
     mesh = _flat_u_mesh()
@@ -582,19 +600,230 @@ def test_a_solid_box_target_is_masked_with_the_same_area_as_its_hull():
     assert .93 < share < 1.02, f"solid box mask covers {share:.2%} of its hull"
 
 
-def test_only_meshes_beyond_the_mask_budget_fall_back_to_the_hull():
-    """The hull is a cost fallback for oversized parts, never a substitute for a low-face surface."""
-    bounds = np.array([[-.05, -.05, -.05], [.05, .05, .05]])
-    corners = bounds_corners(bounds)
-    repeated = np.tile(BOX_FACES, (SILHOUETTE_MASK_MAX_FACES // 12 + 1, 1))
-    over_faces = MeshData("faces", corners, repeated[:SILHOUETTE_MASK_MAX_FACES + 1], None, bounds)
-    over_vertices = MeshData("vertices", np.repeat(corners, SILHOUETTE_MASK_MAX_VERTICES // 8 + 1, axis=0),
-                             BOX_FACES.copy(), None, bounds)
-    no_surface = MeshData("none", corners, np.zeros((0, 3), int), None, bounds)
-    for mesh in (over_faces, over_vertices, no_surface):
-        assert not _maskable(mesh), mesh.key
-        shapes = _shape_counts(mesh)
-        assert (len(shapes.hulls), len(shapes.masks)) == (1, 0), (mesh.key, len(shapes.hulls), len(shapes.masks))
+def _grid_box(key, lo, hi, cells):
+    """A closed, consistently wound box whose six faces are each a ``cells x cells`` grid.
+
+    ``BOX_FACES`` cannot simply be tiled into a high-face part: four of its twelve triangles are
+    diagonal planes, so its triangles do not share the box's six normals and the surface has no
+    well-defined front. A silhouette edge is exactly where a face turns away from the camera, so a
+    >6000-face fixture needs a real closed surface, one outward normal per face.
+    """
+    lo, hi = np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)
+    size = hi - lo
+    vertices, faces, offset = [], [], 0
+    # (in-plane u, in-plane v) per face, chosen so that u x v is that face's outward normal.
+    for plane, (u, v) in enumerate([(2, 1), (1, 2), (0, 2), (2, 0), (1, 0), (0, 1)]):
+        axis, high = divmod(plane, 2)
+        origin = lo.copy()
+        if high:
+            origin[axis] = hi[axis]
+        grid_u, grid_v = np.meshgrid(np.arange(cells + 1) / cells, np.arange(cells + 1) / cells,
+                                     indexing="ij")
+        grid = np.repeat(origin[None, :], grid_u.size, axis=0)
+        grid[:, u] += grid_u.ravel() * size[u]
+        grid[:, v] += grid_v.ravel() * size[v]
+        vertices.append(grid)
+        index = np.arange((cells + 1) ** 2).reshape(cells + 1, cells + 1) + offset
+        offset += (cells + 1) ** 2
+        a, b = index[:-1, :-1], index[1:, :-1]
+        c, d = index[1:, 1:], index[:-1, 1:]
+        faces.append(np.stack([a.ravel(), b.ravel(), c.ravel()], axis=1))
+        faces.append(np.stack([a.ravel(), c.ravel(), d.ravel()], axis=1))
+    vertices, faces = np.vstack(vertices), np.vstack(faces)
+    return MeshData(key, vertices, faces, None,
+                    np.array([vertices.min(axis=0), vertices.max(axis=0)]))
+
+
+def _u_prism(key, half, notch, half_z, cells):
+    """A closed, consistently wound U-shaped prism on a ``cells x cells`` grid of the square.
+
+    One shell, so the opening is a real hole in a decided outline. Four touching bars would leave
+    coincident interior walls whose mismatched tessellation has no well-defined front, which is a
+    different (also handled) case: it is refused rather than guessed.
+    """
+    step = 2 * half / cells
+    assert abs(notch / step - round(notch / step)) < 1e-9, "the opening must land on a grid line"
+    lines = -half + step * np.arange(cells + 1)
+    grid_x, grid_y = np.meshgrid(lines, lines, indexing="ij")
+    top = np.stack([grid_x.ravel(), grid_y.ravel(), np.full(grid_x.size, half_z)], axis=1)
+    bottom = top.copy()
+    bottom[:, 2] = -half_z
+    count = grid_x.size
+    index = np.arange(count).reshape(cells + 1, cells + 1)
+    centres = lines[:-1] + step / 2
+    centre_x, centre_y = np.meshgrid(centres, centres, indexing="ij")
+    inside = (centre_y <= -notch) | (centre_x <= -notch) | (centre_x >= notch)
+    i, j = np.nonzero(inside)
+    a, b = index[i, j], index[i + 1, j]
+    c, d = index[i + 1, j + 1], index[i, j + 1]
+    faces = [np.stack([a, b, c], axis=1), np.stack([a, c, d], axis=1)]                    # +z cap
+    faces += [np.stack([a, c, b], axis=1) + count, np.stack([a, d, c], axis=1) + count]    # -z cap
+    walls = []
+    for di, dj, axis, sign in ((1, 0, 0, 1), (-1, 0, 0, -1), (0, 1, 1, 1), (0, -1, 1, -1)):
+        neighbour = np.zeros_like(inside)
+        neighbour[max(0, -di):cells + min(0, -di), max(0, -dj):cells + min(0, -dj)] = \
+            inside[max(0, di):cells + min(0, di), max(0, dj):cells + min(0, dj)]
+        for row, column in zip(*np.nonzero(inside & ~neighbour)):
+            if axis == 0:
+                first, second = index[row + (sign > 0), column], index[row + (sign > 0), column + 1]
+            else:
+                first, second = index[row, column + (sign > 0)], index[row + 1, column + (sign > 0)]
+            outward = np.zeros(3)
+            outward[axis] = sign
+            skirting = np.array([[top[first], top[second], bottom[second]],
+                                 [top[first], bottom[second], bottom[first]]])
+            normal = np.cross(skirting[0][1] - skirting[0][0], skirting[0][2] - skirting[0][0])
+            if normal @ outward < 0:
+                walls.append(np.array([[first, second + count, second],
+                                       [first, first + count, second + count]]))
+            else:
+                walls.append(np.array([[first, second, second + count],
+                                       [first, second + count, first + count]]))
+    vertices = np.vstack([top, bottom])
+    faces = np.vstack([np.vstack(faces), np.vstack(walls)])
+    return MeshData(key, vertices, faces, None,
+                    np.array([vertices.min(axis=0), vertices.max(axis=0)]))
+
+
+def _assert_u_opening(mask, envelope_mask):
+    """The projected U: arms and base filled, its opening empty, using the grid's own extent."""
+    rows = np.nonzero(envelope_mask.any(axis=1))[0]
+    columns = np.nonzero(envelope_mask.any(axis=0))[0]
+    top, left = rows.min(), columns.min()
+    height, width = rows.max() - top, columns.max() - left
+
+    def rows_at(start, stop):
+        return slice(top + int(height * start), top + int(height * stop))
+
+    def columns_at(start, stop):
+        return slice(left + int(width * start), left + int(width * stop))
+
+    assert not mask[rows_at(.05, .70), columns_at(.25, .75)].any(), "the U's opening must stay empty"
+    assert mask[rows_at(.85, .95), columns_at(.25, .75)].all(), "the U's base must be filled"
+    for start, stop in ((.03, .15), (.85, .97)):
+        assert mask[rows_at(.20, .70), columns_at(start, stop)].all(), "the U's arms must be filled"
+
+
+def test_a_dense_closed_target_is_measured_by_its_real_outline():
+    """Past the triangle budget a solid part must not be collapsed to a hull sample."""
+    mesh = _grid_box("dense", (-.05, -.05, -.005), (.05, .05, .005), 23)
+    assert len(mesh.faces) > SILHOUETTE_MASK_MAX_FACES and not _maskable(mesh)
+    shapes = _shape_counts(mesh)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1), (len(shapes.hulls), len(shapes.masks))
+    assert shapes.fallbacks == ()
+    shape = shapes.shapes[0]
+    assert shape.convex, "a dense block's outline is still its envelope"
+    share = float(shape.mask.sum()) / _hull_pixels(mesh, shapes)
+    assert .95 < share < 1.02, f"dense block covers {share:.2%} of its hull"
+
+
+def test_a_dense_hollow_target_keeps_its_opening():
+    """The remaining boundary: a >6000-face concave part keeps a hole instead of a hull."""
+    mesh = _u_prism("dense-u", .05, .03, .005, 60)
+    assert len(mesh.faces) > SILHOUETTE_MASK_MAX_FACES and not _maskable(mesh)
+    shapes = _shape_counts(mesh)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1), (len(shapes.hulls), len(shapes.masks))
+    assert shapes.fallbacks == ()
+    shape = shapes.shapes[0]
+    assert not shape.convex, "a dense U must not be judged by its envelope"
+    assert float(shape.mask.sum()) / shape.envelope_mask.sum() < .65
+    assert (shape.envelope_mask & ~shape.mask).sum() > 0, "the opening must be a real hole"
+    _assert_u_opening(shape.mask, shape.envelope_mask)
+    share = float(shape.mask.sum()) / _hull_pixels(mesh, shapes)
+    assert .45 < share < .62, f"the dense U covers {share:.2%} of its hull"
+
+
+def test_a_dense_hollow_target_is_aimed_through_its_opening():
+    """Acceptance for the last silhouette boundary: 25-35 % on 30/30 seeds at 8160 faces."""
+    config, meshes, pose = _u_prism_fixture(Range(.25, .35))
+    shapes = _target_shapes([(meshes["a"], np.eye(4))], pose, config.camera)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1), (len(shapes.hulls), len(shapes.masks))
+    _assert_u_opening(shapes.masks[0], shapes.shapes[0].envelope_mask)
+    shares = _pixel_shares(config, meshes, pose)
+    assert len(shares) == 30
+    assert all(.25 <= share <= .35 for share in shares), shares
+
+
+def test_a_part_above_the_topology_budget_records_its_hull_fallback(monkeypatch):
+    """The support limit is reported, not confused with the shape."""
+    monkeypatch.setattr(scene_module, "SILHOUETTE_MASK_MAX_FACES", 64)
+    monkeypatch.setattr(scene_module, "SILHOUETTE_TOPOLOGY_MAX_FACES", 100)
+    mesh = _grid_box("over", (-.05, -.05, -.005), (.05, .05, .005), 4)
+    assert not _maskable(mesh) and len(mesh.faces) > 100
+    shapes = _shape_counts(mesh)
+    assert (len(shapes.hulls), len(shapes.masks)) == (1, 0)
+    assert shapes.fallbacks == ("topology_budget",)
+
+
+def test_a_part_above_the_scanline_budget_records_its_hull_fallback(monkeypatch):
+    """A bounded scan stops and says so instead of filling an unbounded outline."""
+    monkeypatch.setattr(scene_module, "SILHOUETTE_MASK_MAX_FACES", 64)
+    monkeypatch.setattr(scene_module, "SILHOUETTE_SCANLINE_MAX_CROSSINGS", 4)
+    mesh = _u_prism("over", .05, .03, .005, 40)
+    shapes = _shape_counts(mesh)
+    assert (len(shapes.hulls), len(shapes.masks)) == (1, 0)
+    assert shapes.fallbacks == ("scanline_budget",)
+
+
+def test_a_mesh_without_a_consistent_winding_is_not_guessed(monkeypatch):
+    """A flipped triangle has no front or back; the envelope is the safe answer."""
+    monkeypatch.setattr(scene_module, "SILHOUETTE_MASK_MAX_FACES", 64)
+    mesh = _grid_box("flipped", (-.05, -.05, -.005), (.05, .05, .005), 6)
+    faces = mesh.faces.copy()
+    faces[7] = faces[7][[0, 2, 1]]
+    flipped = MeshData("flipped", mesh.vertices_m, faces, None, mesh.bounds_m)
+    shapes = _shape_counts(flipped)
+    assert (len(shapes.hulls), len(shapes.masks)) == (1, 0)
+    assert shapes.fallbacks == ("inconsistent_winding",)
+
+
+def test_a_mesh_without_faces_keeps_its_envelope():
+    """No surface is a real answer, not a budget: there is nothing to rasterise."""
+    corners = bounds_corners(np.array([[-.05, -.05, -.05], [.05, .05, .05]]))
+    shapes = _shape_counts(MeshData("none", corners, np.zeros((0, 3), int), None,
+                                    np.array([-.05, -.05, -.05])[None, :].repeat(2, 0)))
+    assert (len(shapes.hulls), len(shapes.masks)) == (1, 0)
+    assert shapes.fallbacks == ("no_faces",)
+
+
+def test_a_vertex_count_over_the_mask_budget_is_not_a_quality_gate():
+    """A dense vertex list with few faces gets a real outline; only the triangle budget decides."""
+    box = _grid_box("b", (-.05, -.05, -.05), (.05, .05, .05), 6)
+    padding = np.vstack([box.vertices_m, np.repeat(box.vertices_m, SILHOUETTE_MASK_MAX_VERTICES,
+                                                   axis=0)])
+    padded = MeshData("padded", padding, box.faces, None, box.bounds_m)
+    assert len(padded.vertices_m) > SILHOUETTE_MASK_MAX_VERTICES and not _maskable(padded)
+    shapes = _shape_counts(padded)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1), (len(shapes.hulls), len(shapes.masks))
+    assert shapes.fallbacks == ()
+    assert float(shapes.masks[0].sum()) / _hull_pixels(box, shapes) > .93
+
+
+def test_split_vertices_are_welded_before_the_outline_is_built():
+    """A PLY that stores every triangle's vertices separately still has one outline."""
+    mesh = _u_prism("split", .05, .03, .005, 60)
+    split = MeshData("split", mesh.vertices_m[mesh.faces].reshape(-1, 3),
+                     np.arange(len(mesh.faces) * 3).reshape(-1, 3), None, mesh.bounds_m)
+    welded = _shape_counts(mesh)
+    shapes = _shape_counts(split)
+    assert (len(shapes.hulls), len(shapes.masks)) == (0, 1), (len(shapes.hulls), len(shapes.masks))
+    assert shapes.fallbacks == ()
+    _assert_u_opening(shapes.masks[0], shapes.shapes[0].envelope_mask)
+    welded_share = float(welded.masks[0].sum()) / _hull_pixels(mesh, welded)
+    split_share = float(shapes.masks[0].sum()) / _hull_pixels(mesh, shapes)
+    assert abs(welded_share - split_share) < .03, (welded_share, split_share)
+
+
+def test_the_edge_topology_is_cached_per_mesh(monkeypatch):
+    """One build per mesh, and the cache stays inside its declared ceiling."""
+    mesh = _grid_box("cached", (-.05, -.05, -.005), (.05, .05, .005), 6)
+    first, reason = _edge_topology(mesh)
+    assert reason is None and first is not None
+    assert _edge_topology(mesh)[0] is first
+    monkeypatch.setattr(scene_module, "SILHOUETTE_TOPOLOGY_CACHE_MESHES", 1)
+    other = _grid_box("other", (-.05, -.05, -.005), (.05, .05, .005), 4)
+    assert _edge_topology(other)[0] is not None
+    assert _edge_topology(mesh)[0] is not first
 
 
 def _pixel_shares(config, meshes, pose, seeds=range(30)):

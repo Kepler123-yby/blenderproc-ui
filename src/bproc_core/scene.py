@@ -876,7 +876,7 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
     reported_stream_failures: set = set()
     reported_empty_reasons: set = set()
 
-    def record_stream_failure(matrix, diagnostic, method):
+    def record_stream_failure(matrix, diagnostic):
         if diagnostics_out is None:
             return
         reason = diagnostic.fallback_reason or "unavailable"
@@ -884,7 +884,7 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
             return
         reported_stream_failures.add(reason)
         diagnostics_out.append({
-            "asset_key": mesh.key, "method": method, "estimate_only": False,
+            "asset_key": mesh.key, "method": "outline", "estimate_only": False,
             "fallback_reason": f"stream:{reason}", "grid_size": None if grid is None else grid.size,
             "faces": len(mesh.faces),
         })
@@ -910,17 +910,15 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
                     "note": diagnostic.fallback_reason,
                 })
             return np.zeros((grid.size, grid.size), dtype=bool)
+        record_stream_failure(matrix, diagnostic)
         if "outline" not in outline_cache:
             # The legacy outline is a fallback for inputs the streaming limits reject, not the
             # primary dense path. Its topology is still built once per aim.
             outline_cache["outline"] = _outline_for(mesh, matrix, pose, config.camera)
         outline, _reason = outline_cache["outline"]
         if outline is None:
-            record_stream_failure(matrix, diagnostic, "unavailable")
             return None
-        result = outline.mask(matrix, pose, config.camera, grid)[0]
-        record_stream_failure(matrix, diagnostic, "outline")
-        return result
+        return outline.mask(matrix, pose, config.camera, grid)[0]
 
     origin = occluder_real(matrix_at(0.))
     occluder_convex = grid is None or (origin is not None and _is_convex_silhouette(

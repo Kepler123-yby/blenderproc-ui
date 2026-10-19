@@ -164,3 +164,27 @@ dataset/
 `run_metadata/status.json` 记录 requested、written_frames、saved、skipped 和失败原因。每帧提交时先向 `run_metadata/frames.jsonl` 追加并落盘一行（相机、位姿、环境、光源、遮挡率），整轮结束时再一次性写 `manifest.json`；因此写入量随帧数线性增长，中断后 journal 仍可逐行读取，末尾未写完的一行默认报错、只允许显式按"可恢复"方式忽略。BOP 只有后处理完成才计入 saved。退出码：完成 0、部分完成 2、失败 1、SIGINT 130、SIGTERM 143。
 
 已有任务或输出目录（包括空目录、软链接、断链）均拒绝覆盖。中断保留已有结果供检查，下次换新目录；不做断点续跑。
+
+## 视口 LOD、图像分块与分组重取景（2026-10-19）
+
+这些设置只改变视口显示、图像缓冲或可选的按组导出；采样、碰撞、稳定 ID、模型、掩码和深度语义不变。
+
+- **视口 LOD**：三维视口标题栏的“自动 LOD / 原始网格”。`auto` 在网格超过 100,000 面时于后台生成不超过 50,000 面的显示网格；结果未就绪时只画包围盒代理，不会先上传全量几何。切换为“原始网格”会直接绘制全分辨率数组，百万面模型可能明显卡顿。视口下方的状态行显示输入面数、绘制面数及生成/缓存/失败状态。`project.viewport.lod_mode/lod_threshold_faces/lod_target_faces` 可写入 YAML；删除整块即回到默认。
+- **Cycles 图像分块**：脚本面板 Cycles 区域的“图像分块”和“分块尺寸”（8–8192）。它设置 Blender 4.2 原生 `scene.cycles.use_auto_tile/tile_size`，只降低高分辨率图像缓冲；整个场景和几何仍完整驻留，**不是**超显存几何分块。默认开启、尺寸 2048，与本机 Blender 默认一致。`tools/render_demo.py --tile-size 512` 或 `--no-tiling` 可覆盖 YAML。
+- **分组后自动重取景**：脚本面板“目标尺寸相差 >10× 时按组导出”下方的同名开关与边距，或 `tools/export_by_scale.py ... --reframe-groups --framing-margin 0.10`。默认关闭；只有实际分成多个尺寸组时才重算每组相机距离，并按 `s=R_group/R_reference` 缩放点光源距离与能量。内参、像素尺寸、稳定 ID、模型、遮挡窗口和 `depth_scale_mm` 不自动改变。普通单组项目勾选后仍按原配置导出。每组任务写入 `grouping.json`，记录来源项目哈希、包络、相机/灯光前后值、钳位和未改动字段。
+- **BOP 深度容量**：重取景后若某组完整深度包络超过 `65535 × depth_scale_mm / 1000` 米，导出在创建任何任务目录前拒绝并指出组与所需容量；不会自动改 `depth_scale_mm`。
+- **超限模型的真实轮廓**：超过旧 2M 面/1M 交叉限制的目标与遮挡物改用分块三角形并集覆盖（真实孔洞、凹形与重叠组件并集），并在视口标题行显示方法/面数/网格；无法处理时给出稳定原因，凸包回退标记为估计。不同输出格式与阈值不变。
+
+## 真实资源批量验收（2026-10-19）
+
+`tools/validate_production_resources.py` 是离线入口，不下载资源、不运行参考 `render.py`、不扫描历史数据集：
+
+```bash
+.venv/bin/python tools/validate_production_resources.py run \
+  --manifest /abs/manifest.json --destination /abs/new-evidence [--num-scenes 1] [--case ID]
+.venv/bin/python tools/validate_production_resources.py verify --destination /abs/new-evidence
+```
+
+manifest schema 1 的 `resources` 显式列出路径、role（model/occluder/hdri）、SHA256、来源和 `production|fixture` 分类；`cases` 列出唯一 id、项目 YAML、HDRI 列表、场景数、seed、是否分组/重取景。相对路径相对 manifest 文件解析；项目引用的每个实际资源都必须覆盖。缺文件、哈希不符、重复 case、非法计数、目标目录已存在（含空目录/软链接/断链）都会在启动任何任务前失败。
+
+每个 (case, HDRI) 派生一个确定性任务，强制 `hdri.randomize=false` 并保持项目内启用目标完整；依次执行新导出、`--check-only`、GPU 渲染、仓库真实 `check_bop.py` 与原生掩码审计。`summary.json` 保存 requested/written/saved/skipped、提案接受率、出图率、错误、耗时、GPU、资源来源、源码快照和每步命令/退出码。SIGINT/SIGTERM 转发给当前任务并等待其收尾，未启动的 case 记为 `not_started`，退出 130/143。失败或 partial 时入口非零，但证据保留；重跑必须换新目录。`fixture` 资源生成的 summary 永远不会得到 `production_verified: true`，`verify` 也会返回非零。`verify` 只读复核，只重跑真实 checker/哈希/快照，不重新导出或渲染。

@@ -231,3 +231,29 @@ E=.artifacts/review12-native-masks/completion-20261019
 **独立终验：** `26a824b` 经有界 arbiter 复核，AC-1–10 全部 PASS；独立全量 **567 passed / 35.33 s / 退出 0**，两种真实 checker 退出 0。审阅者直接调用审计函数在内存中重算事实和哈希，未创建新的 arbiter JSON；CLI 报告生成/拒绝覆盖由其亲跑的单测验证。本次 `full-cycle` 原三阶段因预算到限停在 REVISE；父会话补齐后进行了单次、缩窄的独立终验，不能把原三阶段结果改记为 PASS。最终复核摘录在证据根 `arbiter-review.md`。
 
 范围限制：8 张参考、每种格式 2 帧只证明这组有限样本与当前接口；不能推导任意实例数量的 GPU 性能、完整生产 Haven 验收或所有遮挡窗口的成功率。RGB 精确分割与 BOP 深度容差可见性不要求逐像素一致。
+
+## 剩余边界：视口 LOD、原生图像分块、分组重取景、超限轮廓、生产验收（2026-10-19）
+
+基线 `c2433b5`（本地此前提交 `26a824b` 保留；`origin/main` 仍 `c6ee5c6`）。本轮按五个独立子项目实现并本地提交，未安装依赖、未联网、未改原生/conda、未改写参考或历史产物。证据根：
+`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review13-remaining/20261019-remaining-builder/`。
+
+| 子项 | 已编写 | 已测试 | 真实 GPU / 规模 | 仍有限制 |
+|---|---|---|---|---|
+| 视口 LOD | `src/bproc_ui/viewport_lod.py`、`ViewportSpec`、两视口 display mesh、后台 controller/缓存、中文状态与控制、`tools/benchmark_remaining_geometry.py --case lod` | 单测 14 + Qt 4；小网格数组不变、百万面目标面数、颜色/alpha、缓存/失效/过期结果/非 GUI 线程、两视口与导出快照 | 1,000,000 面 → 39,798 面，墙钟 0.226 s，主线程 10 ms 心跳最大间隔 18.26 ms，进程 RSS 404.4 MiB；两个真实 GL 截图非背景占比 13.96% / 86.07%，切到原始网格 13.78% | 单级 LOD，无连续屏幕空间 LOD；`full` 仍会上传全分辨率；缓存 8 项 / 128 MiB |
+| Cycles 原生图像分块 | `src/bproc_runtime/render_tiling.py`、backend 每个原生 RGB/分割边界重新应用、原生 `render_stats` 证据、`render_tiling.json`、UI/`render_demo.py` 开关 | 14 项 tiling 测试 + backend/runtime 回归：应用/读回/恢复、分割 undo 后重应用、异常恢复、非法尺寸、元数据 | 1025×769/tile=256：20 tiles、298 条真实 `Rendered a/20 Tiles`；512×512/tile=256：4 tiles；320×240/tile=2048：图像小于 tile，无 tile 调度；不开 tile 无调度。tile 开/关同 seed：相机/位姿完全一致、depth/mask 逐像素一致，RGB RMSE 0.0104、最大差 2；4 个新数据集 checker 全 PASS/0 | 只降低图像缓冲，几何仍完整驻留；不声称任意超显存场景；小于 tile 时 Cycles 不启用调度 |
+| 分组自动重取景 | `ScaleGroupingSpec`、`camera.py` 取景窗口/固定与随机数学、`scale_groups.py` 组包络/灯光 s/s²、`bundle.py` staging 发布与 `grouping.json`、CLI/UI 链路 | `test_group_reframe.py` 12 项 + 既有 80 项：默认关闭/单组不变、2mm/40mm、固定 30/30 窗口、100 随机方向、偏移/非 anchor/非连续 ID、灯光、深度容量拒绝、后续组失败无 `launch.json`、快照往返 | 2mm/40mm 两组随机机位各 2 帧真实 BOP：组 1 半径 0.00746–0.01193 m、组 2 0.14911–0.23858 m，灯光尺度 0.0149 / 0.2982；两数据集 checker 与审计均 0，requested=written=saved=2、skipped=0；`grouping.json` 的半径/灯光区间与实际 journal 一致 | 2mm 组的点光源能量按 `s²` 降到 0.018 W 量级，属契约结果；HDRI 不随组变化；不自动改 `depth_scale_mm`；单组项目不重取景 |
+| 超限真实轮廓 | `src/bproc_core/silhouette.py` 分块三角形并集；`scene.py` 目标/遮挡物接入、公开诊断、candidate 序列化与 UI 状态 | `test_streaming_silhouette.py` 12 项 + scene 回归 67 项：>2M 中空、>1M 交叉、重复/分离/重叠并集、非法索引/非有限/无面/退化/相机后诊断、旧上限不变、U/frame/1e-4 回归 | 2,002,000 面中空环：冷覆盖 0.96–0.99 s，额外工作数组峰值 3.8 MiB（<64 MiB），计算阶段额外 RSS 0 MiB（<256 MiB）；孔洞为空、实体区全覆盖；30/30 CPU 提案在 512² 高分辨率并集覆盖上落入声明窗口 [0.10, 0.60] | 采样器仍使用 256² 网格；高分辨率核验同样是几何并集（512²），不是逐输出像素真值；极重遮挡物在无缓存边拓扑时逐 probe 流式计算，成本高 |
+| 生产资源验收 | `tools/validate_production_resources.py`（run/verify、manifest schema 1、哈希/覆盖校验、信号、summary/命令/源码快照）、`tools/verify_remaining_evidence.py` | `test_production_validation.py` 14 项 + 统一证据门 6 项：坏 manifest/缺资源/哈希不符/重复 case/非法计数、目录拒绝、成功、各步骤失败、partial、SIGINT/SIGTERM、重跑新目录、fixture 不能通过、真实 checker 负例 | 真实夹具入口跑通：demo 资源明确标 `fixture`，1 scene×1 view，导出/预检/GPU/checker/审计全 0，summary `completed` 但 `production_verified=false`，`verify` 退出 1 并列出原因 | **生产资源实测阻塞/未完成**：`~/bproc_project/dataset_rendering/asserts/` 为空，限定目录内未找到 Haven HDRI 或可证明来源的生产模型；合成 `studio.hdr` 与 demo 模型只作 fixture，不构成生产验收 |
+
+**关键命令与真实结果**
+
+- 全量回归：`env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_API=pyside6 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p pytestqt.plugin tests/unit tests/ui -q` → **656 passed / 41.12 s / 退出 0**（基线 567）。
+- AC-2 配置链路子集 → 退出 0；AC-3/4 LOD、AC-6 tiling、AC-8/9 分组、AC-11 streaming、AC-13 验收工具子集均退出 0（完整命令见 `commands.json`/日志）。
+- 真实 LOD：`tools/benchmark_remaining_geometry.py --case lod --output "$E/lod"` → 退出 0，输入/输出/心跳/截图见上表。
+- 真实轮廓：`tools/benchmark_remaining_geometry.py --case silhouette --output "$E/silhouette"` → 退出 0，2,002,000 面、30/30 通过。
+- 真实 tile：`tools/render_demo.py ... --run` 四个数据集全部退出 0，`check_bop.py` 四个退出 0；`tiles/commands.json` 与 `tiles/compare.json` 保存命令、tile 调度和逐像素比较。
+- 真实分组：两组导出、`--check-only`、GPU 渲染、`check_bop.py`、`tools/audit_native_masks.py dataset` 全部退出 0；证据 `reframe/consistency.json`、`reframe/logs/audit-final-*.json`。
+- 真实桌面：`DISPLAY=:1 tools/gui_smoke.py --project .artifacts/demo/demo.yaml --output "$E/gui"` → 退出 0，包含 LOD 控制/状态、tile 设置、分组重取景设置截图，并核验这些字段进入导出的 `scene.yaml`。
+- 统一证据门：`tools/verify_remaining_evidence.py --evidence "$E"` → 退出 1；LOD/tiles/reframe/silhouette/fixture_guard 通过，`production` 因缺少真实 Haven/生产资源证据而失败。这是当前唯一未达成的验收项，**不能据此总体 PASS**。
+
+**证据限制**：tile 只证明图像缓冲；LOD 只影响视口；分组重取景不改变科学标定；超限轮廓不是逐输出像素真值；生产验收未用合成资源冒充。所有真实渲染均为 RTX 3060 Ti / OPTIX / NVIDIA EGL，未使用 CPU 渲染回退。

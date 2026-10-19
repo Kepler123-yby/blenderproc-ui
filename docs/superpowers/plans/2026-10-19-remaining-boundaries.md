@@ -99,12 +99,12 @@ signals `ready(key, display)`, `failed(key, reason)`, `status(key, text)`.
 
 | Task | Code | Unit/UI | Real-scale evidence | Commit |
 | --- | --- | --- | --- | --- |
-| S1 LOD | pending | pending | pending | pending |
-| S2 tiling | pending | pending | pending | pending |
-| S3 reframe | pending | pending | pending | pending |
-| S4 silhouette | pending | pending | pending | pending |
-| S5 production | pending | pending | blocked (no Haven HDRI) | pending |
-| Evidence/docs | pending | pending | pending | pending |
+| S1 LOD | done | 18 passed (14 unit + 4 Qt) | 1,000,000→39,798 faces, 0.226 s, heartbeat 18.26 ms, two GL screenshots | `7e0384d` |
+| S2 tiling | done | 132 relevant passed; 14 dedicated | 20 tiles @1025×769/256, 4 @512/256; masks/depth exact, RGB RMSE .0104; 4 checkers PASS | `9ab5447` |
+| S3 reframe | done | 80 relevant passed; 12 dedicated | 2mm/40mm two groups, 2 frames each, checkers/audits 0 | `4d1ba37` |
+| S4 silhouette | done | 98 relevant passed; 12 dedicated | 2,002,000 faces, 0.96 s cold, 3.8 MiB working, 30/30 high-res | `68d86d3` |
+| S5 production | done | 37 relevant passed; 14 dedicated | fixture end-to-end real run completed, verify correctly rejects; **production blocked (no Haven HDRI)** | `aec72cb`,`1f22ec2` |
+| Evidence/docs | done | verifier 6 tests + full 656 passed | evidence gate fails only on blocked production | final docs commit |
 
 Status is updated after the matching real command has produced its exit code; a pending row is
 never reported as done.

@@ -281,14 +281,49 @@ def ui_lifecycle(app, window, destination, phase):
     saved = Path(destination) / 'ui' / f'project-{phase}.yaml'
     state.save(saved)
     saved_selection = _selected_keys(panel)
+    probe_asset = state.config.occluders[0]
+    old_generation = panel._generations[probe_asset.key]
+    old_epoch = getattr(state, 'asset_load_epoch', None)
+    old_preview_token = window.preview._token
+    old_lod_generation = window.lod._generation
+    # A labelled synthetic stale completion tests the real signal path, not source geometry.
+    source_mesh = state.meshes[target_key]
+    stale_mesh = replace(source_mesh, key=probe_asset.key,
+                         vertices_m=source_mesh.vertices_m * 1000.,
+                         bounds_m=source_mesh.bounds_m * 1000.)
     state.load(saved)
-    _wait(app, lambda: all(a.key in state.meshes for a in state.config.occluders), 300)
+    reload_probe = {}
+    if phase == 'after':
+        current_mesh = state.meshes.get(probe_asset.key)
+        revision = state.mesh_revision
+        panel.loader.loaded.emit(probe_asset.key, old_generation, stale_mesh)
+        panel.loader.failed.emit(probe_asset.key, old_generation, 'STALE_RELOAD_PROBE')
+        reload_probe = {
+            'synthetic_completion': True,
+            'old_generation': old_generation, 'new_generation': panel._generations[probe_asset.key],
+            'old_epoch': old_epoch, 'new_epoch': state.asset_load_epoch,
+            'stale_success_rejected': state.meshes.get(probe_asset.key) is current_mesh,
+            'stale_failure_rejected': 'STALE_RELOAD_PROBE' not in panel.error_label.text(),
+            'mesh_revision_unchanged_by_stale_results': state.mesh_revision == revision,
+            'candidate_invalidated': state.candidate is None,
+            'preview_invalidated': window.preview._token > old_preview_token,
+            'lod_invalidated': window.lod._generation > old_lod_generation,
+        }
+        if not (reload_probe['new_epoch'] > old_epoch
+                and reload_probe['new_generation'] > old_generation
+                and all(reload_probe[key] for key in (
+                    'stale_success_rejected', 'stale_failure_rejected',
+                    'mesh_revision_unchanged_by_stale_results', 'candidate_invalidated',
+                    'preview_invalidated', 'lod_invalidated'))):
+            raise RuntimeError(f'project reload accepted stale work: {reload_probe}')
+    if not _wait(app, lambda: all(a.key in state.meshes for a in state.config.occluders), 300):
+        raise RuntimeError('project reload did not finish fresh asset loads')
     step('save-reload', path=str(saved), units=[a.unit for a in state.config.occluders[:3]],
          count=len(state.config.occluders),
          reloaded_matches=load_project(saved).occluders == state.config.occluders,
          saved_selection=saved_selection,
          selection_after_reload=_selected_keys(panel),
-         target_unit=state.config.targets[0].asset.unit)
+         target_unit=state.config.targets[0].asset.unit, reload_probe=reload_probe)
 
     # Feed every occluder back to mm before rendering; the run is about the fixed behaviour.
     _select_rows(panel, list(range(panel.occluders.count())))
@@ -505,7 +540,7 @@ def complete_library_count_record(config, meshes):
             'small_multiplier': attempt(replace(config.occlusion.physical_scale, minimum=.2, maximum=.35))}
 
 
-def run(destination, phase):
+def run(destination, phase='after'):
     from bproc_ui.app import create_app
     from bproc_ui.main_window import MainWindow
     from bproc_ui.state import ProjectState
@@ -698,7 +733,8 @@ def verify(destination):
         problems.append('the verification tool changed since the recorded run')
     payload = {'ok': not problems, 'problems': problems, 'destination': str(destination),
                'cases': [case['name'] for case in summary['cases']]}
-    write_json(destination / 'verify.json', payload)
+    # Verification is read-only: callers may explicitly redirect stdout to a new report.
+    # In particular, never replace an earlier verify.json or touch its metadata.
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if not problems else 1
 
@@ -708,7 +744,8 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='command', required=True)
     run_parser = sub.add_parser('run', help='capture the UI reproduction and render fresh datasets')
     run_parser.add_argument('--destination', type=Path, required=True)
-    run_parser.add_argument('--phase', choices=('before', 'after'), required=True)
+    run_parser.add_argument('--phase', choices=('before', 'after'), default='after',
+                            help='defaults to the repaired after stage; before is explicit')
     verify_parser = sub.add_parser('verify', help='read-only re-check of recorded inputs and datasets')
     verify_parser.add_argument('--destination', type=Path, required=True)
     args = parser.parse_args(argv)

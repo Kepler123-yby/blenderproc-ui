@@ -220,3 +220,62 @@ def test_viewport_tiling_and_grouping_defaults_and_roundtrip(tmp_path):
 ])
 def test_new_boundary_settings_have_specific_error_fields(tmp_path, change, expected):
     assert expected in error_fields(change(make_project(tmp_path)))
+
+
+def test_occlusion_spec_keeps_the_historical_aimed_view_default():
+    from bproc_core.config import OcclusionSpec
+    spec = OcclusionSpec()
+    assert spec.strategy == "aimed_view"
+    assert spec.scale == Range(0.25, 0.8)
+    assert spec.physical_scale == Range(1.0, 1.0)
+    assert spec.count == (1, 3)
+
+
+def test_old_yaml_without_strategy_loads_as_aimed_view(tmp_path):
+    from bproc_core.config import OcclusionSpec
+    payload = project_to_dict(make_project(tmp_path))
+    payload["occlusion"].pop("strategy", None)
+    payload["occlusion"].pop("physical_scale", None)
+    from bproc_core.project_io import project_from_dict
+    loaded = project_from_dict(payload, base_dir=tmp_path)
+    assert loaded.occlusion.strategy == "aimed_view"
+    assert loaded.occlusion.scale == Range(0.25, 0.8)
+    assert loaded.occlusion.physical_scale == Range(1.0, 1.0)
+    # Saving the upgraded document keeps both strategies' numbers verbatim.
+    save_project(loaded, tmp_path / "upgraded.yaml")
+    text = (tmp_path / "upgraded.yaml").read_text(encoding="utf-8")
+    assert "strategy: aimed_view" in text and "physical_scale" in text
+
+
+def test_new_project_defaults_to_physical_view(tmp_path):
+    draft = new_project(tmp_path)
+    assert draft.occlusion.strategy == "physical_view"
+    assert draft.occlusion.count == (1, 1)
+    assert draft.occlusion.physical_scale == Range(1.0, 1.0)
+    assert draft.occlusion.scale == Range(0.25, 0.8)
+
+
+def _physical(project, count=(1, 1), none_fraction=.2, occluders=0, physical_scale=Range(1., 1.)):
+    from bproc_core.config import OcclusionSpec
+    assets = tuple(AssetSpec(f"occ-{index}", Path(f"occ-{index}.ply"), "mm") for index in range(occluders))
+    return replace(project, occluders=assets,
+                   occlusion=OcclusionSpec(none_fraction=none_fraction, count=count,
+                                           strategy="physical_view", physical_scale=physical_scale))
+
+
+def test_physical_validation_requires_a_library_count_and_scale(tmp_path):
+    project = make_project(tmp_path)
+    assert "occluders" in error_fields(_physical(project, occluders=0))
+    assert "occlusion.count" in error_fields(_physical(project, count=(0, 1), occluders=1))
+    assert "occlusion.count" not in error_fields(_physical(project, count=(1, 1), occluders=1))
+    # 15 unique paths are enough for a [5, 8] request; 8 are not.
+    assert not ({"occlusion.count"} & error_fields(_physical(project, count=(5, 8), occluders=15)))
+    assert "occlusion.count" in error_fields(_physical(project, count=(5, 8), occluders=7))
+    assert any(field.startswith("occlusion.physical_scale") for field in
+               error_fields(_physical(project, occluders=1, physical_scale=Range(0., 1.))))
+    assert "occlusion.physical_scale" in error_fields(_physical(project, occluders=1, physical_scale=Range(2., 1.)))
+    # A fully unoccluded dataset needs no library; the same project with occlusion does.
+    assert "occluders" not in error_fields(_physical(project, occluders=0, none_fraction=1.))
+    assert "occlusion.strategy" in error_fields(replace(
+        _physical(project, occluders=1), occlusion=replace(
+            _physical(project, occluders=1).occlusion, strategy="scene_stable")))

@@ -36,9 +36,14 @@ def effective_occlusion_range(config: ProjectConfig, wants_unoccluded: bool) -> 
     Only the targets themselves and the dedicated occluders can cover the anchor. When there is
     no dedicated occluder and no second target, requiring ``occlusion.ratio`` would reject every
     sample, so the category degrades to "no occlusion" instead of pretending it is satisfiable.
+    The physical strategy deliberately does not degrade: an unreachable physical request must
+    stay a rejection (and validation refuses such a project) rather than be accepted as a
+    zero-occlusion frame.
     """
     if wants_unoccluded:
         return ZERO_OCCLUSION
+    if getattr(config.occlusion, "strategy", "aimed_view") == "physical_view":
+        return config.occlusion.ratio
     if enabled_target_count(config) < 2 and not has_dedicated_occluder(config):
         return ZERO_OCCLUSION
     return config.occlusion.ratio

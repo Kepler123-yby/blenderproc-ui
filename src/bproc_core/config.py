@@ -150,11 +150,22 @@ class MaterialSpec:
 
 @dataclass(frozen=True)
 class OcclusionSpec:
+    """Occluder sampling contract.
+
+    ``aimed_view`` keeps the historical meaning of ``scale``: the occluder's *apparent* size
+    relative to the target in the current view, with the physical metres derived from the depth
+    actually drawn. ``physical_view`` places the canonical metre-sized mesh scaled by
+    ``physical_scale`` and rotated by a uniform SO3 sample, so the same project keeps the same
+    object size across near and far views. A document without the new fields therefore stays on
+    the historical behaviour instead of silently changing what a saved ``scale`` means.
+    """
     none_fraction: float = 0.2
     ratio: Range = Range(0.1, 0.5)
     max_attempts: int = 30
     count: tuple[int, int] = (1, 3)
     scale: Range = Range(0.25, 0.8)
+    strategy: Literal["aimed_view", "physical_view"] = "aimed_view"
+    physical_scale: Range = Range(1.0, 1.0)
 
 
 @dataclass(frozen=True)
@@ -254,8 +265,14 @@ class ValidationIssue:
 
 
 def new_project(base_dir: Path) -> ProjectConfig:
-    """Create a saveable draft; resources are deliberately not invented."""
-    return ProjectConfig(output=OutputSpec(root=Path(base_dir).expanduser().resolve() / "renders"))
+    """Create a saveable draft; resources are deliberately not invented.
+
+    New drafts start from the reference-like physical-size occluder policy, one occluder and a
+    unit multiplier of one. Historical project files keep their stored strategy.
+    """
+    return ProjectConfig(output=OutputSpec(root=Path(base_dir).expanduser().resolve() / "renders"),
+                         occlusion=OcclusionSpec(strategy="physical_view", count=(1, 1),
+                                                 physical_scale=Range(1.0, 1.0)))
 
 
 def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tuple[ValidationIssue, ...]:
@@ -418,6 +435,20 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
             integer(f"occlusion.count[{i}]", value, 0)
         if all(isinstance(v, int) and not isinstance(v, bool) for v in occ.count) and occ.count[0] > occ.count[1]:
             issue("occlusion.count", "遮挡物数量下限不能大于上限")
+        if occ.strategy == "physical_view" and all(
+                isinstance(v, int) and not isinstance(v, bool) for v in occ.count):
+            unique = {asset.path.resolve() for asset in config.occluders}
+            if occ.none_fraction < 1:
+                if not config.occluders:
+                    issue("occluders", "物理遮挡策略需要至少一个遮挡物资源")
+                elif occ.count[0] < 1:
+                    issue("occlusion.count", "需要遮挡帧时物理遮挡数量下限至少为 1")
+                if occ.count[1] > len(unique):
+                    issue("occlusion.count",
+                          f"物理遮挡策略的数量上限不能超过唯一遮挡资源数（{len(unique)}）")
+    if occ.strategy not in ("aimed_view", "physical_view"):
+        issue("occlusion.strategy", "遮挡策略只能是 aimed_view 或 physical_view")
+    interval("occlusion.physical_scale", occ.physical_scale, positive=True)
     interval("occlusion.scale", occ.scale, positive=True)
     if occ.ratio.minimum > 0:
         from bproc_core.occlusion import effective_occlusion_range

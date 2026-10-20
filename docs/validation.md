@@ -396,3 +396,52 @@ R=.artifacts/review15-cores-final/release-check
 这是用户指定**单目标**的效果/发布验证，不将其伪装成通用生产验收器要求的“至少两个不同目标模型”案例，也不降低该通用门槛。上一轮多目标真实资源结果继续按其记录版本保留。本轮覆盖这一个cores文件、三个背景和上述机位/遮挡范围；HDRI不是三维背景，界面仅做几何预览，不承诺与物理渲染同光照或真实地面接触阴影。
 
 **推送门禁**：仅在最终独立复验通过、tracked干净、确认输入哈希未变且远端可快进时，按用户授权正常推送`origin/main`；不force、不改写历史、不上传忽略的原模型或渲染产物。最终终裁和推送结果追加本地`report.md`/`report-handoff.md`。
+
+## 第十六轮：遮挡物导入、单位与参考式物理策略（2026-10-20，基线 2d84815）
+
+用户反馈“导入遮挡物进行遮挡渲染的状态不对”。本轮先在**不改生产代码**的前提下用真实控件复现，再修复并做修复后对照。证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review16-occluder-reference/run-20261020-141959/`（`before/`、`after/`；两次工具中间产物在 `attempts/`，不覆盖）。
+
+### 复现方式
+
+`tools/verify_occluder_import_rendering.py run --phase before|after` 在 `DISPLAY=:1` 的真实 Qt/OpenGL 桌面上，通过 `ResourcesPanel`/`ProjectState`/`AssetLoader` 执行同一套操作：目标 `cores.ply`（m）→ 导入 5 个真实 BOP 文件（含同批重复与软链接别名）→ 选行换 cm/mm → 混合单位 → 移除/目录导入/清空 → 保存重载；再预览两个 GL 画布、切固定机位、none/partial 切换，最后导出并调用真实 BlenderProc/OPTIX 渲染。没有手写“正确 mm 的 YAML”替代导入。
+
+### 修改前实测（`before/ui/lifecycle.json`、`before/logs/`）
+
+| 操作 | 实测异常 |
+|---|---|
+| 目标 m 后导入遮挡物 | 无独立遮挡物单位控件；默认沿用 `import_unit=m`；`obj_000001` canonical bounds ±37.9343 m（应 ±0.0379343 m） |
+| 同批 7 条路径（含重复/别名） | 生成 7 个资源，同一 `obj_000001` 三个 key |
+| 选中 2 行后改 cm | 列表重建后选中集为空；`_sync_occluder_unit` 抛 `StopIteration` traceback |
+| 混合单位多选 | 控件静默显示 `mm`，无混合提示 |
+| 目录导入 15 文件 | 已有重复被再次加入：17 个资源 / 15 条唯一路径 |
+| 清空后保存/重载 | 选择集为空；单位链残留 cm/m |
+| 修复前 aimed 渲染 | RGB 4 帧遮挡 0/0/0.18724/0.30314；BOP 4 帧 0/0/0.18084/0.37760；checker/audit 退出 0。图像上遮挡物是轴对齐缩放的尖片，像从目标顶盖伸出、与目标轮廓粘连 |
+
+未收到用户原截图，因此只声明本轮实际复现的问题，不声称与用户画面逐像素相同。
+
+### 修复后实测（`after/ui/`、`after/results/`、`after/logs/`）
+
+- 导入控件独立，默认 `mm`；同批 7 条 → 5 个资源；目录 15 → 15 个资源、单位全为 mm；改单位后选中集保持；混合单位显示“混合单位（请选择）”；清空无 traceback；保存重载后 15 个资源与单位一致。
+- 目标始终保持 `cores.ply`、单位 m、obj_id 1、1035 顶点/1837 三角面、alpha 255；遮挡物 mm bounds = 原数值 × `.001`，只换算一次。
+- 预览：aimed 仍是标量 0.186 的无旋转矩阵；physical 是均匀尺度 × 旋转的完整矩阵（示例线性部分 `[[0.889,-0.069,0.452],[-0.02,0.982,0.19],[-0.457,-0.178,0.872]]`）。真实 UI 策略下拉切到 physical 后 `state.config.occlusion.strategy == physical_view`；固定机位近/远两个视角都能出候选。
+- 同一 aimed 配置修复前后：mask/mask_visib 逐字节相同，RGB 最大差 1 个 8 位步长（Cycles 舍入），说明导入/单位修复没有改变历史算法结果；画面差异来自单独标记的 physical 策略。
+
+| 数据集（after） | 格式/机位 | 帧 | 实测遮挡 | 选用资源 | 多遮挡帧 |
+|---|---|---|---|---|---|
+| cores-rgb-aimed | rgb_masks / random | 4/4 | 0/0/0.18724/0.30314 | 3 | 1 |
+| cores-bop-aimed | BOP / fixed 近+远 | 4/4 | 0/0/0.18084/0.37760 | 3 | 1 |
+| cores-rgb-physical | rgb_masks / random | 4/4 | 0/0/0.29706/0.49617 | 3 | 2 |
+| cores-bop-physical | BOP / fixed 近+远 | 4/4 | 0/0/0.29650/0.28638 | 3 | 2 |
+| cores-rgb-physical-multi | rgb_masks / fixed | 4/4 | 0/0/0.30025/0.36148 | 4 | 2 |
+
+全部 20/20 帧保存、skipped=0；checker 与 `tools/audit_native_masks.py dataset` 逐数据集退出 0；none 帧原生遮挡率精确 0；有遮挡帧都在预记录窗口 `[0.1, 0.5]`。物理样本每帧被接受的遮挡物都完整位于 near clip 与最近目标表面之间，保守 AABB 不与目标或其他遮挡物相交（`logs/*-report.json.safety.problems == []`），线性部分奇异值三轴相等。真实 Haven 覆盖室外清晨纯天空与室内蓝色摄影棚两个 2k HDRI，BOP 两个 EGL 渲染器均为 RTX 3060 Ti。
+
+`[5, 8]` 完整 15 资源库记录（`after/ui/complete-library-count.json`）：默认倍率 1 时 1 场景 × 4 次机位尝试全部稳定返回 `occluder_collision`（有界、不降数、不改成 none）；倍率 [0.2, 0.35] 时第 0 次尝试返回 5 个 placement、5 个不同资源 key。8 个唯一资源请求 `[5,8]` 的配置校验失败由单测覆盖。
+
+`verify --destination <RUN>/after` 只读退出 0：五个参考文件、cores、15 个 BOP、两个 HDRI 前后 SHA256 一致；cores SHA 为 `83aa1b451b11ff200a00c493b22b7aee112161cc06f1efceec741c5951d1be2f`；生产源码与工具哈希与运行时记录一致；没有执行参考 `render.py`、没有改 native 包。
+
+### 回归与证据限制
+
+- 全量 `tests/unit tests/ui`：**727 passed / 54.69 s / 退出 0**（基线 699，新增 28 项；日志 `<RUN>/logs/ac12-full-suite.log`）。
+- 保留固定 1e-4 瞄准容差、低面数/中空/U/48 面 frame、超 2M 流式并集、近远/毫米、LOD 异步、分组重取景、uint32 解码、掩码与中断工具测试，无新增 skip/xfail。
+- 限制：只有 cores 一个目标；真实库只实际选用了 5 个不同 BOP 资源（数据集层面 4 个 key 同时出现）；只有 2 个 HDRI 场景，不是全部 979 个；没有三维地面接触阴影或房间几何；物理策略仍是逐 view 采样，不是 scene-stable；没有收到的用户原截图，也没有验证任意超显存或全部 15 个资源同时摆放的可行性。

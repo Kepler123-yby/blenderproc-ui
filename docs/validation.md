@@ -399,7 +399,7 @@ R=.artifacts/review15-cores-final/release-check
 
 ## 第十六轮：遮挡物导入、单位与参考式物理策略（2026-10-20，基线 2d84815）
 
-用户反馈“导入遮挡物进行遮挡渲染的状态不对”。本轮先在**不改生产代码**的前提下用真实控件复现，再修复并做修复后对照。证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review16-occluder-reference/run-20261020-141959/`（`before/`、`after/`；两次工具中间产物在 `attempts/`，不覆盖）。
+用户反馈“导入遮挡物进行遮挡渲染的状态不对”。本轮先在**不改生产代码**的前提下用真实控件复现，再修复并做修复后对照。证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review16-occluder-reference/run-20261020-141959/`（`before/`、`after/`；两次工具中间产物在 `attempts/`，不覆盖）。AC-8/AC-9/AC-10 命令里的 `<RUN>` 指本轮新目录 `.../run-20261020-141959/after`；AC-1 的 `<RUN>/before/` 指同级的 `before/`。
 
 ### 复现方式
 

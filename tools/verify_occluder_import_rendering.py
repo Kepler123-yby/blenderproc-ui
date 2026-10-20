@@ -3,13 +3,15 @@
 
 ``run`` drives the real ``ResourcesPanel``/``ProjectState``/``AssetLoader`` chain on a live Qt
 desktop (``DISPLAY=:1``), records the import/unit/selection state, captures both OpenGL canvases,
-then exports and renders the resulting project through the production runtime. ``--phase before``
-is the unchanged pre-fix reproduction; ``--phase after`` is the same operation script against the
-fix. The strategy switch is marked separately from the import fix.
+then exports and renders the resulting project through the production runtime. The default
+``after`` phase runs five cases plus the reload probe. Explicit ``--phase before`` retains the
+two-case compatibility mode; it does not roll back source code. A historical pre-fix reproduction
+requires the recorded baseline sources. The strategy switch is separate from the import fix.
 
 ``verify`` only re-reads the recorded inputs and datasets: it recomputes every SHA256, re-checks
 the cores geometry expectations, and confirms that the recorded checker/audit commands exited 0.
-It never renders, never executes the reference renderer, and never rewrites an input.
+It never renders, never executes the reference renderer, and never writes inputs or evidence.
+The verification result is JSON on stdout; no report file is created automatically.
 """
 from __future__ import annotations
 
@@ -507,7 +509,7 @@ def complete_library_count_record(config, meshes):
     from bproc_core.scene import Rejection, propose_candidate, sample_scene
 
     def attempt(physical_scale):
-        """Bounded 3 scenes x 30 camera attempts, recording why nothing was accepted."""
+        """One scene, at most four camera proposals per multiplier; record rejections."""
         cfg = replace(config, scene_count=1, camera_mode='random', views_per_scene=1, seed=config.seed,
                       regions=(RegionSpec('count-front', 'count front', Range(.42, 1.15),
                                           Azimuth(-60., 60., False), Range(10., 60.)),),

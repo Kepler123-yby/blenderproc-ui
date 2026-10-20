@@ -22,8 +22,18 @@ CORE = Path('/home/kepler/文档/cores.ply')
 BOP = Path('/home/kepler/bproc_project/dataset_rendering/asserts/bop/models')
 FILES = sorted(BOP.glob('*.ply'))[:4]
 
-pytestmark = pytest.mark.skipif(not CORE.is_file() or len(FILES) < 4,
-                                reason='real cores/BOP resources are required')
+def _require_real_resources(core, files):
+    available = sum(path.is_file() for path in files)
+    if not core.is_file() or len(files) < 4 or available != len(files):
+        pytest.fail(f'real cores/BOP resources are required: cores={core}, '
+                    f'cores_exists={core.is_file()}, BOP_files={available}/4 minimum',
+                    pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def require_real_resources():
+    # An unavailable production fixture is an explicit failed precondition, not a skip.
+    _require_real_resources(CORE, FILES)
 
 
 def _raw(path, unit):

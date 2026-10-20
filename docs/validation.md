@@ -443,7 +443,7 @@ R=.artifacts/review15-cores-final/release-check
 ### 回归与证据限制
 
 - 全量 `tests/unit tests/ui`：**727 passed / 54.69 s / 退出 0**（基线 699，新增 28 项；日志 `<RUN>/logs/ac12-full-suite.log`）。
-- 保留固定 1e-4 瞄准容差、低面数/中空/U/48 面 frame、超 2M 流式并集、近远/毫米、LOD 异步、分组重取景、uint32 解码、掩码与中断工具测试，无新增 skip/xfail。
+- 保留固定 1e-4 瞄准容差、低面数/中空/U/48 面 frame、超 2M 流式并集、近远/毫米、LOD 异步、分组重取景、uint32 解码、掩码与中断工具测试。当时本机实际运行零 skip/xfail，但源码存在本轮新增的资源缺失 skipif；早先“无新增标记”的声明与首轮审查均漏检，不能据运行零跳过推断源码无标记。修正见下文。
 - 范围勘误：5 个数据集实际使用 **9** 种 BOP 资源，各数据集分别 3/3/3/3/4 种，每帧最多 2 个；不能把跨帧的 4 个 key 写成同帧出现。完整库小倍率的 5 个 placement 是几何诊断，不是 5 遮挡物真实渲染。只有 cores 一个目标、2 个 HDRI（非全部 979 个），无三维地面接触阴影/房间几何；仍逐 view 采样，无用户原截图，不保证任意超显存或 15 资源同时摆放。
 
 ### 第十六轮补修与全新实测（原 REVISE 不覆盖）
@@ -457,3 +457,9 @@ R=.artifacts/review15-cores-final/release-check
 - **兼容事实**：当前对历史 before 的 16 张双 mask 仍逐字节一致；当前 RGB PNG 最大差 **60**（000002 中仅 16/307200 像素差 >20），BOP JPEG 最大差 **94**。不保证 RGB 逐像素一致，也不把该差异全部归于舍入/编码；`legacy-image-differences.json` 保留逐帧统计，`visual-comparison.png` 配对实际 RGB/full/visible mask。
 - **资源范围**：真实数据集使用 `obj_000004/007/009/010/011/012/013/014/015.ply`，9 种；加载/导出完整 15 库。完整库默认倍率四次明确 collision 拒绝，小倍率得到 5 个不同 placement（未渲染）。23 个输入 SHA 前后不变；cores 仍 m/1035 顶点/1837 面/alpha255，只有用户指定的这个目标。
 - **回归**：补修 RED 10 failed、GREEN 47 passed；长任务/缓存补修 RED 3 failed、GREEN 50 passed；最终全量 **746 passed / 50.69 s / 退出 0**，见 `full-suite-final.log`。独立终验结果另追加，不把父会话实测写成独立 PASS。
+
+### 补充独立复核：跳过标记漏检及收口
+
+独立 arbiter 在 `d6db517` 亲跑 **746 passed / 51.66 s**、五组 checker/audit、公开只读 verify、完整15库诊断与真实双GL/旧回调探针，确认 **AC-1–11 PASS**，但仍判 **REVISE**：首轮 `cb3acad` 在导入生命周期测试中引入了模块级 `pytest.mark.skipif`，违反 AC-12 的源码约束；AC-13 的“无新增标记”说明也不准确。它不是后续八个补修提交引入，原 arbiter 漏检的历史不改写。摘要在 `arbiter-d6db517-review-excerpt.md`。
+
+本次只修改测试与文档：删除 skipif，改为 autouse 前置检查，cores 缺失、BOP 不足4个或文件缺失均明确 `pytest.fail`，不会跳过；补4项临时路径单测，不改原资产。RED **4 failed**、GREEN（含7项真实生命周期）**11 passed / 3.07 s**，完整回归 **750 passed / 52.98 s**，日志 `resource-preconditions-{red,green}.log`、`full-suite-no-skip-marker.log`。生产源码/工具未变，保留 `8a129b7` 的原GPU/GL证据及精确摘要；不为纯测试修正重新渲染或伪造新来源。AC-12/13 的定向独立签收结果另追加。

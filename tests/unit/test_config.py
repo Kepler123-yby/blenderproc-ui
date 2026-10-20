@@ -268,8 +268,9 @@ def test_physical_validation_requires_a_library_count_and_scale(tmp_path):
     assert "occluders" in error_fields(_physical(project, occluders=0))
     assert "occlusion.count" in error_fields(_physical(project, count=(0, 1), occluders=1))
     assert "occlusion.count" not in error_fields(_physical(project, count=(1, 1), occluders=1))
-    # 15 unique paths are enough for a [5, 8] request; 8 are not.
+    # 15 unique paths are enough for a [5, 8] request; 7 are not.
     assert not ({"occlusion.count"} & error_fields(_physical(project, count=(5, 8), occluders=15)))
+    assert not ({"occlusion.count"} & error_fields(_physical(project, count=(5, 8), occluders=8)))
     assert "occlusion.count" in error_fields(_physical(project, count=(5, 8), occluders=7))
     assert any(field.startswith("occlusion.physical_scale") for field in
                error_fields(_physical(project, occluders=1, physical_scale=Range(0., 1.))))

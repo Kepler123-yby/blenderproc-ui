@@ -379,7 +379,10 @@ class ResourcesPanel(QWidget):
     def _invalidate_asset_requests(self):
         for key in set(self._generations) | set(self._requested) | set(self._inflight):
             self._generations[key] = self._generations.get(key, 0) + 1
-        self._requested.clear()
+        # set_project may deliberately retain completed canonical meshes. Reuse those,
+        # but never carry an in-flight request (or failure) into the new document.
+        self._requested = {key: asset for key, asset in self._assets().items()
+                           if key in self.state.meshes}
         self._inflight.clear()
         self._failures.clear()
         self._suggest_after_load = False

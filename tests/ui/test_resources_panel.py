@@ -126,6 +126,20 @@ def test_reload_rejects_old_asset_callbacks_and_starts_fresh_requests(panel, tmp
     assert state.meshes[key] is current
 
 
+def test_project_replacement_reuses_completed_canonical_mesh_but_not_pending_io(panel):
+    ready_asset, ready_generation = panel.loader.requests[0]
+    current = make_mesh(ready_asset.key, size=.02)
+    panel.loader.loaded.emit(ready_asset.key, ready_generation, current)
+    before = len(panel.loader.requests)
+    panel.state.set_project(panel.state.config)
+    fresh_keys = {asset.key for asset, _ in panel.loader.requests[before:]}
+    assert ready_asset.key not in fresh_keys
+    assert fresh_keys == set(panel._assets()) - {ready_asset.key}
+    assert panel.state.meshes[ready_asset.key] is current
+    panel.loader.failed.emit(ready_asset.key, ready_generation, "STALE_COMPLETED_ASSET_FAILURE")
+    assert "STALE_COMPLETED_ASSET_FAILURE" not in panel.error_label.text()
+
+
 def test_reload_clears_previous_failure_and_retries_the_same_asset(panel, tmp_path):
     state = panel.state
     asset, generation = panel.loader.requests[0]

@@ -810,6 +810,35 @@ def _covered_share(target_hull, occluder_hull) -> float:
     return _polygon_area(_clip_to_convex(occluder_hull, target_hull)) / target_area
 
 
+def _linear_from(scale) -> np.ndarray:
+    """Uniform scalar or a full 3x3 linear part, which already contains rotation and scale."""
+    value = np.asarray(scale, dtype=float)
+    if value.ndim == 0:
+        return np.eye(3) * float(value)
+    if value.shape != (3, 3):
+        raise ValueError("Occluder linear part must be a scalar or a 3x3 matrix")
+    return value
+
+
+def _uniform_so3(rng) -> np.ndarray:
+    """Deterministic uniform SO(3) sample from a normalised Gaussian quaternion.
+
+    Three independent uniform Euler angles are *not* uniform over rotations; a normalised
+    4-vector is. A draw with zero norm has probability zero and falls back to identity instead of
+    retrying forever, so a seeded generator always consumes a fixed number of numbers.
+    """
+    quaternion = rng.normal(size=4)
+    norm = float(np.linalg.norm(quaternion))
+    if norm < 1e-12:
+        return np.eye(3)
+    w, x, y, z = quaternion / norm
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+
+
 def _offset_span(base, direction, mesh, scale, points, pose):
     """Interval of sideways offsets at which the occluder can still touch a target.
 
@@ -834,7 +863,13 @@ def _offset_span(base, direction, mesh, scale, points, pose):
         return None        # a point at (or behind) the lens has no finite aim on this ray
     perpendicular = points - camera - ray_depth[:, None] * view
     along = (perpendicular @ direction) * (depth / ray_depth)
-    half = float((np.ptp(mesh.bounds_m, axis=0) * scale / 2) @ np.abs(direction))
+    extent = np.ptp(mesh.bounds_m, axis=0)
+    if np.ndim(scale) == 0:
+        # Historical scalar path: identical arithmetic, so existing candidates do not drift.
+        half = float((extent * float(scale) / 2) @ np.abs(direction))
+    else:
+        # Support of the already rotated/scaled box along the chosen sideways direction.
+        half = float(np.abs(_linear_from(scale).T @ np.asarray(direction, dtype=float)) @ (extent / 2))
     low, high = float(along.min()) - half, float(along.max()) + half
     return (low, high, half) if high - low > 0 else None
 
@@ -862,9 +897,10 @@ def _aimed_offset(base, direction, mesh, scale, shapes: _TargetShapes, pose, con
     aim = min(max((wanted.minimum + wanted.maximum) / 2, wanted.minimum), wanted.maximum)
 
     def matrix_at(offset):
+        linear = _linear_from(scale)
         matrix = np.eye(4)
-        matrix[:3, :3] *= scale
-        matrix[:3, 3] = base + direction * offset - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
+        matrix[:3, :3] = linear
+        matrix[:3, 3] = base + direction * offset - linear @ mesh.bounds_m.mean(axis=0)
         return matrix
 
     # Convexity is translation invariant, so the occluder is classified once at the search origin
@@ -1077,6 +1113,10 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
     target_front = min((float(np.min((transform_points(bounds_corners(meshes[p.asset_key].bounds_m),
                                                      p.world_from_model) - camera) @ view))
                         for p in targets if p.asset_key in meshes), default=distance)
+    if getattr(config.occlusion, "strategy", "aimed_view") == "physical_view":
+        return _physical_placements(config, meshes, pose, rng, camera, distance, view, right, up,
+                                    center_size, boxes, target_shapes, target_points, target_front,
+                                    diagnostics_out)
     placements = []
     for _ in range(int(rng.integers(config.occlusion.count[0], config.occlusion.count[1] + 1))):
         asset = config.occluders[int(rng.integers(len(config.occluders)))]
@@ -1116,6 +1156,77 @@ def occluder_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], p
             matrix = np.eye(4)
             matrix[:3, :3] *= scale
             matrix[:3, 3] = center - matrix[:3, :3] @ mesh.bounds_m.mean(axis=0)
+            box = _world_aabb(mesh.bounds_m, matrix)
+            if any(_boxes_overlap(box, other) for other in boxes):
+                continue
+            boxes.append(box)
+            placements.append(Placement(asset.key, None, None, matrix, 'occluder'))
+            break
+        else:
+            return Rejection('occluder_collision', asset.key)
+    return placements
+
+
+def _physical_placements(config: ProjectConfig, meshes: Mapping[str, MeshData], pose, rng, camera,
+                        distance, view, right, up, center_size, boxes, target_shapes,
+                        target_points, target_front, diagnostics_out):
+    """Reference-like physical placement: fixed metre size, uniform SO3, no replacement.
+
+    The linear part is one ``s * R`` for the whole proposal: depth bounds, rotated AABB, collision,
+    the sideways `_aimed_offset` search, the silhouette estimate and the final matrix all use it,
+    so the occluder is never aimed as an axis-aligned prototype while being rendered rotated. The
+    multiplier comes only from ``physical_scale``; a fixed multiplier of one therefore has the
+    same singular values in near and far views. When the fixed size cannot fit between the near
+    clip and the nearest target surface the proposal is rejected, never shrunk or moved apart by
+    changing the camera.
+    """
+    library, seen = [], set()
+    for asset in config.occluders:
+        resolved = Path(asset.path).resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        library.append(asset)
+    if not library:
+        return Rejection('missing_occluder_library', config.anchor_key)
+    count = int(rng.integers(int(config.occlusion.count[0]), int(config.occlusion.count[1]) + 1))
+    if count < 1:
+        return Rejection('invalid_occluder_count', config.anchor_key)
+    if count > len(library):
+        return Rejection('insufficient_occluder_library', str(len(library)))
+    chosen = rng.choice(len(library), size=count, replace=False)
+    clearance = min(OCCLUDER_CLEARANCE_FRACTION[0] * center_size,
+                    OCCLUDER_CLEARANCE_FRACTION[1] * distance)
+    tolerance = 1e-6 * distance
+    placements = []
+    for index in chosen:
+        asset = library[int(index)]
+        mesh = meshes[asset.key]
+        extent = np.ptp(mesh.bounds_m, axis=0)
+        if float(extent.max()) <= 0:
+            return Rejection('invalid_mesh', asset.key)
+        multiplier = float(rng.uniform(config.occlusion.physical_scale.minimum,
+                                       config.occlusion.physical_scale.maximum))
+        linear = _uniform_so3(rng) * multiplier
+        half_along_view = float(np.abs(linear.T @ view) @ (extent / 2))
+        low = float(pose.clip_near_m) + clearance
+        high = target_front - clearance
+        nearest = low + half_along_view
+        farthest = high - half_along_view
+        if farthest <= nearest + tolerance:
+            return Rejection('no_occluder_room', asset.key)
+        for _ in range(OCCLUDER_DRAWS):
+            depth = float(rng.uniform(low, high))
+            depth = min(max(depth, nearest), farthest)
+            angle = rng.uniform(0., 2 * np.pi)
+            base = camera + view * depth
+            direction = np.cos(angle) * right + np.sin(angle) * up
+            center = base + direction * _aimed_offset(
+                base, direction, mesh, linear, target_shapes, pose, config, rng,
+                float(extent.max()) * multiplier, target_points, diagnostics_out)
+            matrix = np.eye(4)
+            matrix[:3, :3] = linear
+            matrix[:3, 3] = center - linear @ mesh.bounds_m.mean(axis=0)
             box = _world_aabb(mesh.bounds_m, matrix)
             if any(_boxes_overlap(box, other) for other in boxes):
                 continue

@@ -20,6 +20,18 @@ from .render_tiling import NativeTiling
 VERTEX_NODE = "bproc_vertex_colour"  # stable name so a purged material can be rebuilt
 
 
+def occluder_pool_capacity(config) -> int:
+    """Instances kept per occluder asset for this strategy.
+
+    ``aimed_view`` may draw the same asset more than once per frame, so it needs one object per
+    requested instance. ``physical_view`` selects without replacement, so a second object would
+    only be dead weight (and would hide a duplicate-key bug).
+    """
+    if getattr(config.occlusion, "strategy", "aimed_view") == "physical_view":
+        return 1
+    return int(config.occlusion.count[1])
+
+
 class BlenderBackend:
     def __init__(self, api=None):
         self.api = api
@@ -82,7 +94,7 @@ class BlenderBackend:
                 self.targets[target.obj_id] = obj
         for asset in config.occluders:
             self._pools[asset.key] = []
-            for i in range(config.occlusion.count[1]):
+            for i in range(occluder_pool_capacity(config)):
                 obj = self._make_object(meshes[asset.key], f"occluder_{asset.key}_{i}")
                 obj.set_cp("ui_target_id", 0)
                 obj.set_cp("category_id", 0)
@@ -142,31 +154,64 @@ class BlenderBackend:
         scene.frame_start, scene.frame_end = 0, 1
         scene.frame_set(0)
 
-    def apply(self, candidate) -> None:
-        self.candidate = candidate
-        self._single_frame()
+    def _hide_all(self) -> None:
         for obj in self.objects:
             obj.hide(True)
-        used = {}
-        for placement in candidate.placements:
-            if placement.role == "target":
-                obj = self.targets[placement.obj_id]
-            else:
-                index = used.get(placement.asset_key, 0)
-                obj = self._pools[placement.asset_key][index]
-                used[placement.asset_key] = index + 1
-            obj.set_local2world_mat(placement.world_from_model)
-            obj.hide(False)
-        camera = self.config.camera
-        K = np.array([[camera.fx, 0, camera.cx], [0, camera.fy, camera.cy], [0, 0, 1.]])
-        self.api.camera.set_intrinsics_from_K_matrix(K, camera.width, camera.height,
-            clip_start=candidate.camera.clip_near_m, clip_end=candidate.camera.clip_far_m)
-        self.api.camera.add_camera_pose(candidate.camera.world_from_camera, frame=0)
-        self._apply_material(candidate)
-        self.light.set_location(candidate.light.position_m)
-        self.light.set_energy(candidate.light.energy_w)
-        self.light.set_color(candidate.light.color_rgb)
-        self._apply_world(candidate)
+
+    def apply(self, candidate) -> None:
+        """Show exactly the candidate's placements, or leave no occluder visible.
+
+        The candidate is the whole visible set; every other managed object is hidden first. A
+        malformed placement (unknown target/asset, pool overflow, a duplicate physical asset) or
+        any failure while applying camera/material/world must not leave a half-shown scene: the
+        exception is re-raised after hiding everything and clearing the candidate, so the next
+        apply starts from a known state.
+        """
+        self.candidate = candidate
+        try:
+            self._single_frame()
+            self._hide_all()
+            used = {}
+            physical = (getattr(self.config.occlusion, "strategy", "aimed_view") == "physical_view"
+                        if self.config is not None else False)
+            seen_physical = set()
+            for placement in candidate.placements:
+                if placement.role == "target":
+                    if placement.obj_id not in self.targets:
+                        raise ValueError(f"Placement references an unknown target {placement.obj_id}")
+                    obj = self.targets[placement.obj_id]
+                else:
+                    pool = self._pools.get(placement.asset_key)
+                    if pool is None:
+                        raise ValueError(f"Placement references an unknown occluder {placement.asset_key}")
+                    if physical:
+                        if placement.asset_key in seen_physical:
+                            raise ValueError(
+                                f"Physical occluders must be unique within one frame: {placement.asset_key}")
+                        seen_physical.add(placement.asset_key)
+                    index = used.get(placement.asset_key, 0)
+                    if index >= len(pool):
+                        raise ValueError(
+                            f"Occluder pool {placement.asset_key} has no instance {index} "
+                            f"(capacity {len(pool)})")
+                    obj = pool[index]
+                    used[placement.asset_key] = index + 1
+                obj.set_local2world_mat(placement.world_from_model)
+                obj.hide(False)
+            camera = self.config.camera
+            K = np.array([[camera.fx, 0, camera.cx], [0, camera.fy, camera.cy], [0, 0, 1.]])
+            self.api.camera.set_intrinsics_from_K_matrix(K, camera.width, camera.height,
+                clip_start=candidate.camera.clip_near_m, clip_end=candidate.camera.clip_far_m)
+            self.api.camera.add_camera_pose(candidate.camera.world_from_camera, frame=0)
+            self._apply_material(candidate)
+            self.light.set_location(candidate.light.position_m)
+            self.light.set_energy(candidate.light.energy_w)
+            self.light.set_color(candidate.light.color_rgb)
+            self._apply_world(candidate)
+        except BaseException:
+            self._hide_all()
+            self.candidate = None
+            raise
 
     def _live_material(self, object_name, material_name):
         """Resolve a material by name, recreating it if BlenderProc dropped the datablock.

@@ -199,20 +199,31 @@ class SamplingPanel(QWidget):
         self.none_fraction = number(minimum=0, maximum=100, decimals=1, suffix=" %")
         self.occlusion_ratio = RangeEditor(minimum=0, maximum=100, decimals=1, suffix=" %")
         self.count_min, self.count_max = integer(1, 0, 100), integer(3, 0, 100)
+        self.occlusion_strategy = QComboBox()
+        self.occlusion_strategy.addItem("按视角表观尺寸", "aimed_view")
+        self.occlusion_strategy.addItem("按物理尺寸", "physical_view")
         self.occluder_scale = RangeEditor(minimum=.000001, maximum=1000, decimals=3)
+        self.physical_scale = RangeEditor(minimum=.000001, maximum=1000, decimals=3)
         self.attempts = integer(30, 1, 10000)
         self.none_fraction.valueChanged.connect(lambda: self._occlusion_changed("none_fraction"))
         self.occlusion_ratio.changed.connect(lambda: self._occlusion_changed("ratio"))
         self.count_min.valueChanged.connect(lambda: self._occlusion_changed("count_min"))
         self.count_max.valueChanged.connect(lambda: self._occlusion_changed("count_max"))
+        self.occlusion_strategy.currentIndexChanged.connect(lambda: self._occlusion_changed("strategy"))
         self.occluder_scale.changed.connect(lambda: self._occlusion_changed("scale"))
+        self.physical_scale.changed.connect(lambda: self._occlusion_changed("physical_scale"))
         self.attempts.valueChanged.connect(lambda: self._occlusion_changed("max_attempts"))
         form.addRow("无遮挡样本", self.none_fraction)
         form.addRow("其余遮挡率", self.occlusion_ratio)
         form.addRow("遮挡物个数", row(self.count_min, QLabel("—"), self.count_max))
-        form.addRow("相对中心尺寸", self.occluder_scale)
+        form.addRow("遮挡策略", self.occlusion_strategy)
+        form.addRow("表观相对尺寸", self.occluder_scale)
+        form.addRow("物理倍率", self.physical_scale)
         form.addRow("每张尝试上限", self.attempts)
         form.addRow(note("按实际像素验收中心遮挡，包含其他目标造成的遮挡。所有启用目标须完整入画且可见。"))
+        form.addRow(note("按视角表观尺寸：数值是遮挡物相对目标的屏幕大小，物理米数随当前机位深度反算，"
+                         "不随机旋转。按物理尺寸：数值乘模型米制尺寸后固定不变，每个视角重新采样均匀旋转与位置，"
+                         "同一帧不重复使用同一资源；放不下或资源数不足会明确拒绝。两种策略各自保留自己的数值。"))
 
         form = section("相机内参 K", layout)
         self.width, self.height = integer(640, 1, 32768), integer(480, 1, 32768)
@@ -547,7 +558,9 @@ class SamplingPanel(QWidget):
             original = self.state.config.occlusion
             values = {"none_fraction": self.none_fraction.value() / 100,
                       "ratio": Range(ratio.minimum / 100, ratio.maximum / 100),
-                      "max_attempts": self.attempts.value(), "scale": self.occluder_scale.value()}
+                      "max_attempts": self.attempts.value(), "scale": self.occluder_scale.value(),
+                      "strategy": self.occlusion_strategy.currentData(),
+                      "physical_scale": self.physical_scale.value()}
             if field == "count_min":
                 changes = {"count": (self.count_min.value(), original.count[1])}
             elif field == "count_max":
@@ -661,6 +674,11 @@ class SamplingPanel(QWidget):
         self.count_min.setValue(config.occlusion.count[0])
         self.count_max.setValue(config.occlusion.count[1])
         self.occluder_scale.set_value(config.occlusion.scale)
+        self.occlusion_strategy.setCurrentIndex(
+            max(0, self.occlusion_strategy.findData(getattr(config.occlusion, "strategy", "aimed_view"))))
+        self.physical_scale.set_value(config.occlusion.physical_scale)
+        self.occluder_scale.setEnabled(config.occlusion.strategy == "aimed_view")
+        self.physical_scale.setEnabled(config.occlusion.strategy == "physical_view")
         self.attempts.setValue(config.occlusion.max_attempts)
         self.width.setValue(config.camera.width)
         self.height.setValue(config.camera.height)

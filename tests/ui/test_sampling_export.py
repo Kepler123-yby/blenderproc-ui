@@ -323,3 +323,48 @@ def test_fixed_material_editors_commit_the_specified_values(state, qtbot):
     # Switching back to random keeps the specified values for later.
     panel.material_source.setCurrentIndex(0)
     assert state.config.material.fixed.roughness == pytest.approx(0.27)
+
+
+def test_occluder_strategy_switch_keeps_both_numbers_and_exports_them(state, qtbot, tmp_path, monkeypatch):
+    from bproc_core.config import AssetSpec
+    from tests.factories import make_mesh, write_mesh
+    occluder = write_mesh(tmp_path / "遮盖物.ply", make_mesh("occ", size=.05))
+    state.update(occluders=(AssetSpec("occ", occluder.resolve(), "mm"),),
+                 occlusion=replace(state.config.occlusion, count=(1, 1)))
+    panel = SamplingPanel(state)
+    qtbot.addWidget(panel)
+    assert state.config.occlusion.strategy == "aimed_view"
+    assert panel.occluder_scale.isEnabled() and not panel.physical_scale.isEnabled()
+    panel.occluder_scale.minimum.setValue(.2)
+    panel.occluder_scale.maximum.setValue(.4)
+    assert state.config.occlusion.scale == Range(.2, .4)
+
+    panel.occlusion_strategy.setCurrentIndex(panel.occlusion_strategy.findData("physical_view"))
+    assert state.config.occlusion.strategy == "physical_view"
+    assert state.config.occlusion.scale == Range(.2, .4), "switching must not overwrite the aimed value"
+    assert panel.physical_scale.isEnabled() and not panel.occluder_scale.isEnabled()
+    panel.physical_scale.minimum.setValue(.5)
+    panel.physical_scale.maximum.setValue(1.5)
+    assert state.config.occlusion.physical_scale == Range(.5, 1.5)
+    panel.occlusion_strategy.setCurrentIndex(panel.occlusion_strategy.findData("aimed_view"))
+    assert state.config.occlusion.scale == Range(.2, .4)
+    assert state.config.occlusion.physical_scale == Range(.5, 1.5)
+    panel.occlusion_strategy.setCurrentIndex(panel.occlusion_strategy.findData("physical_view"))
+
+    from bproc_core.project_io import save_project
+    saved = tmp_path / "策略.yaml"
+    save_project(state.config, saved)
+    reloaded = load_project(saved)
+    assert reloaded.occlusion.strategy == "physical_view"
+    assert reloaded.occlusion.physical_scale == Range(.5, 1.5)
+    assert reloaded.occlusion.scale == Range(.2, .4)
+
+    monkeypatch.setattr("bproc_export.bundle.locate_runtime", lambda config: {"schema_version": 1, "ready": True})
+    export = ExportPanel(state)
+    qtbot.addWidget(export)
+    receipt = export.export_to(tmp_path / "job-physical")
+    exported = load_project(receipt.directory / "scene.yaml")
+    assert exported.occlusion.strategy == "physical_view"
+    assert exported.occlusion.physical_scale == Range(.5, 1.5)
+    assert exported.occlusion.scale == Range(.2, .4)
+    assert panel.occlusion_strategy.currentData() == "physical_view"

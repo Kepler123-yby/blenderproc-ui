@@ -120,6 +120,27 @@ def test_switching_the_project_drops_a_running_search(state, monkeypatch, tmp_pa
     controller.close()
 
 
+def test_reloading_the_same_project_drops_a_running_preview(state, monkeypatch, tmp_path):
+    _loaded(state)
+    state.update(views_per_scene=1, scene_count=1)
+    path = tmp_path / "reload.yaml"
+    state.save(path)
+    controller = PreviewController(state)
+    controller._timer.setInterval(5000)
+    blocked = _BlockedProposal(monkeypatch)
+    blocked.start(controller)
+    token_before = controller._token
+    try:
+        state.load(path)
+        assert state.candidate is None and state.meshes == {}
+        assert controller._token > token_before
+        blocked.release_result(controller)
+        assert state.candidate is None
+    finally:
+        blocked.release.set()
+        controller.close()
+
+
 def test_a_result_arriving_during_the_debounce_is_dropped(state, monkeypatch):
     _loaded(state)
     state.update(views_per_scene=1, scene_count=1)

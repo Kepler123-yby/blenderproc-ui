@@ -26,6 +26,7 @@ class ResourcesPanel(QWidget):
         self._updating = False
         self._generations, self._requested = {}, {}
         self._inflight, self._failures = {}, {}
+        self._asset_load_epoch = state.asset_load_epoch
         self._suggest_after_load = False
         self.selected_keys = []
         layout = QVBoxLayout(self)
@@ -375,18 +376,30 @@ class ResourcesPanel(QWidget):
     def _assets(self):
         return {a.key: a for a in [*(t.asset for t in self.state.config.targets), *self.state.config.occluders]}
 
-    def reload_assets(self):
+    def _invalidate_asset_requests(self):
+        for key in set(self._generations) | set(self._requested) | set(self._inflight):
+            self._generations[key] = self._generations.get(key, 0) + 1
         self._requested.clear()
+        self._inflight.clear()
         self._failures.clear()
+        self._suggest_after_load = False
         self.error_label.clear()
+        self._asset_load_epoch = self.state.asset_load_epoch
+
+    def reload_assets(self):
+        self._invalidate_asset_requests()
         self.state.set_meshes({})
         self._request_meshes()
 
     def _request_meshes(self):
+        if self._asset_load_epoch != self.state.asset_load_epoch:
+            self._invalidate_asset_requests()
         assets = self._assets()
         for key in tuple(self._requested):
             if key not in assets:
                 self._requested.pop(key)
+                self._inflight.pop(key, None)
+                self._failures.pop(key, None)
                 self._generations[key] = self._generations.get(key, 0) + 1
         for key, asset in assets.items():
             if (self._requested.get(key) != asset or
@@ -397,7 +410,9 @@ class ResourcesPanel(QWidget):
                 self.loader.request(asset, self._generations[key])
 
     def _loaded(self, key, generation, mesh):
-        if generation != self._generations.get(key) or self._assets().get(key) != self._requested.get(key):
+        if (self._asset_load_epoch != self.state.asset_load_epoch
+                or generation != self._generations.get(key)
+                or self._assets().get(key) != self._requested.get(key)):
             return
         if key not in self._assets():
             return
@@ -411,7 +426,9 @@ class ResourcesPanel(QWidget):
             self.restore_suggestions()
 
     def _failed(self, key, generation, message):
-        if generation == self._generations.get(key) and key in self._assets():
+        if (self._asset_load_epoch == self.state.asset_load_epoch
+                and generation == self._generations.get(key) and key in self._assets()
+                and self._assets().get(key) == self._requested.get(key)):
             self._inflight.pop(key, None)
             self._failures[key] = self._assets()[key]
             self._show_error(message)

@@ -28,6 +28,19 @@ def test_project_load_restores_ids_units_and_clears_dirty(state, tmp_path):
     assert not state.dirty
 
 
+def test_asset_loading_epoch_changes_for_reload_not_ordinary_edits(state, tmp_path):
+    epoch = state.asset_load_epoch
+    state.update(seed=state.config.seed + 1)
+    state.set_meshes({})
+    assert state.asset_load_epoch == epoch
+    path = tmp_path / "same.yaml"
+    state.save(path)
+    state.load(path)
+    assert state.asset_load_epoch == epoch + 1
+    state.set_project(state.config)
+    assert state.asset_load_epoch == epoch + 2
+
+
 def test_cannot_anchor_disabled_or_missing_target(state):
     target = replace(state.config.targets[1], enabled=False)
     state.update(targets=(state.config.targets[0], target))

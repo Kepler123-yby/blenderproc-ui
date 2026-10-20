@@ -175,6 +175,45 @@ def test_main_window_lod_reaches_both_viewports_and_keeps_state_canonical(qtbot,
     window.close()
 
 
+def test_project_reload_rejects_old_loader_results_in_both_viewports(qtbot, tmp_path, monkeypatch):
+    from tests.ui.test_resources_panel import FakeLoader
+
+    monkeypatch.setattr("bproc_ui.panels.resources.AssetLoader", lambda parent=None: FakeLoader())
+    state = ProjectState(make_project(tmp_path / "inputs"))
+    state.set_meshes({key: make_mesh(key, size=.05) for key in ("target-2", "target-7")})
+    scene, camera = RecordingScene(), RecordingCamera()
+    window = MainWindow(state, scene_factory=lambda: scene, camera_factory=lambda parent: camera,
+                        restore_settings=False)
+    qtbot.addWidget(window)
+    window.preview._timer.setInterval(5000)
+    assert window._display_meshes
+    loader = window.resources.loader
+    old_asset, old_generation = loader.requests[0]
+    path = tmp_path / "same.yaml"
+    state.save(path)
+    lod_generation = window.lod._generation
+    state.set_candidate(candidate(placement("target-2")))
+    state.load(path)
+    assert state.candidate is None and state.meshes == {}
+    assert window._display_meshes == {}
+    assert window.lod._generation > lod_generation
+    loader.loaded.emit(old_asset.key, old_generation, make_mesh(old_asset.key, size=99.))
+    loader.failed.emit(old_asset.key, old_generation, "PRE_RELOAD_FAILURE")
+    assert state.meshes == {} and window._display_meshes == {}
+    assert "PRE_RELOAD_FAILURE" not in window.resources.error_label.text()
+    fresh_asset, fresh_generation = next((a, g) for a, g in reversed(loader.requests)
+                                       if a.key == old_asset.key)
+    assert fresh_generation > old_generation
+    current = make_mesh(fresh_asset.key, size=.03)
+    loader.loaded.emit(fresh_asset.key, fresh_generation, current)
+    assert state.meshes[fresh_asset.key] is current
+    assert window._display_meshes[fresh_asset.key].vertices_m is current.vertices_m
+    assert scene.calls[-1][1][fresh_asset.key] is current
+    assert camera.calls[-1][1][fresh_asset.key] is current
+    window._closing = True
+    window.close()
+
+
 def test_main_window_keeps_a_mesh_inside_the_threshold_canonical(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr("bproc_ui.panels.resources.AssetLoader",
                         lambda parent=None: _NoopLoader(parent))

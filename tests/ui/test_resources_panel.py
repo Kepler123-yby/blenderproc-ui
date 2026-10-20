@@ -89,6 +89,57 @@ def test_ids_are_stable_when_removing_a_noncenter_target(panel, tmp_path):
     assert panel.state.config.targets[1].obj_id == 1
 
 
+@pytest.mark.parametrize("operation", ["load_same", "set_project_same", "reload_assets"])
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+def test_reload_rejects_old_asset_callbacks_and_starts_fresh_requests(panel, tmp_path, operation, outcome):
+    panel.add_occluders([tmp_path / "occluder.ply"], unit="mm")
+    state = panel.state
+    path = tmp_path / "same-project.yaml"
+    state.save(path)
+    key = state.config.occluders[0].key
+    old_asset, old_generation = next(pair for pair in panel.loader.requests if pair[0].key == key)
+    before = len(panel.loader.requests)
+    if operation == "load_same":
+        state.load(path)
+    elif operation == "set_project_same":
+        state.set_project(state.config)
+    else:
+        panel.reload_assets()
+    fresh = panel.loader.requests[before:]
+    assert {asset.key for asset, _ in fresh} == set(panel._assets())
+    new_asset, new_generation = next(pair for pair in fresh if pair[0].key == key)
+    assert new_generation > old_generation
+    revision = state.mesh_revision
+    if outcome == "success":
+        panel.loader.loaded.emit(key, old_generation, make_mesh(key, size=99.))
+    else:
+        panel.loader.failed.emit(key, old_generation, "PRE_RELOAD_FAILURE")
+    assert key not in state.meshes
+    assert state.mesh_revision == revision
+    assert "PRE_RELOAD_FAILURE" not in panel.error_label.text()
+    assert panel._inflight[key] == new_generation
+    current = make_mesh(key, size=.02)
+    panel.loader.loaded.emit(key, new_generation, current)
+    assert state.meshes[key] is current
+    panel.loader.failed.emit(key, old_generation, "LATE_OLD_FAILURE")
+    assert "LATE_OLD_FAILURE" not in panel.error_label.text()
+    assert state.meshes[key] is current
+
+
+def test_reload_clears_previous_failure_and_retries_the_same_asset(panel, tmp_path):
+    state = panel.state
+    asset, generation = panel.loader.requests[0]
+    panel.loader.failed.emit(asset.key, generation, "OLD_FAILURE")
+    assert "OLD_FAILURE" in panel.error_label.text()
+    path = tmp_path / "reload-failed.yaml"
+    state.save(path)
+    before = len(panel.loader.requests)
+    state.load(path)
+    assert panel.error_label.text() == ""
+    assert panel._failures == {}
+    assert any(a.key == asset.key and g > generation for a, g in panel.loader.requests[before:])
+
+
 def test_hdri_toggle_preserves_range_precision(panel):
     strength = Range(.12345678901234, .98765432109876)
     rotation = Range(17.123456789012, 123.987654321098)

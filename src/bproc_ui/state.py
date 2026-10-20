@@ -30,6 +30,9 @@ class ProjectState(QObject):
         # Geometry identity: loading, replacing or dropping meshes must invalidate results that
         # were computed against the previous meshes even when the config stayed the same.
         self.mesh_revision = 0
+        # A new document invalidates pending asset I/O even when every path/unit is unchanged.
+        # Ordinary config edits keep this epoch; per-asset generations handle those changes.
+        self.asset_load_epoch = 0
 
     def _touch_context(self):
         self.context_revision += 1
@@ -45,6 +48,7 @@ class ProjectState(QObject):
         new_assets = {t.asset.key: t.asset for t in config.targets}
         new_assets.update({a.key: a for a in config.occluders})
         self.config = config
+        self.asset_load_epoch += 1
         keys = {t.asset.key for t in config.targets}
         keys.update(a.key for a in config.occluders)
         self.meshes = {key: mesh for key, mesh in self.meshes.items()

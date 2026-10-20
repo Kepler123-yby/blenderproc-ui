@@ -86,8 +86,12 @@ class ResourcesPanel(QWidget):
         self.occluders = QListWidget()
         self.occluders.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.occluders.setMaximumHeight(92)
+        self.occluders.itemSelectionChanged.connect(self._sync_occluder_unit)
         self.occluders.currentRowChanged.connect(self._sync_occluder_unit)
         form.addRow(self.occluders)
+        self.occluder_import_unit = QComboBox()
+        self.occluder_import_unit.addItems(["mm", "cm", "m"])
+        form.addRow("新增导入单位", self.occluder_import_unit)
         add_occ = QPushButton("＋ 文件")
         add_occ.clicked.connect(self._choose_occluders)
         folder_occ = QPushButton("扫描目录")
@@ -99,7 +103,9 @@ class ResourcesPanel(QWidget):
         self.occluder_unit.addItems(["m", "cm", "mm"])
         self.occluder_unit.currentTextChanged.connect(self._set_occluder_unit)
         form.addRow("选中资源单位", self.occluder_unit)
-        form.addRow(note("新增遮挡物沿用上方导入单位；逐个选中可修改。"))
+        self.occluder_size_label = note("选中遮挡物可查看换算后的米制尺寸；新增默认 mm，请按源文件确认")
+        form.addRow(self.occluder_size_label)
+        form.addRow(note("新增遮挡物使用独立单位（默认 mm）；已导入资源只由选中行编辑器修改。"))
 
         form = section("World · Haven HDRI", layout)
         self.hdris = QListWidget()
@@ -134,7 +140,7 @@ class ResourcesPanel(QWidget):
         self.loader.failed.connect(self._failed)
         state.project_changed.connect(self.sync)
         state.selection_changed.connect(self.sync)
-        state.meshes_changed.connect(self._sync_size)
+        state.meshes_changed.connect(self._sync_sizes)
         self.sync()
 
     def _target(self):
@@ -254,11 +260,32 @@ class ResourcesPanel(QWidget):
             self._show_error(error)
 
     def add_occluders(self, paths, unit=None):
-        existing = {a.path for a in self.state.config.occluders}
-        assets = tuple(AssetSpec("occluder-" + uuid4().hex[:10], Path(path).resolve(),
-                                 unit or self.import_unit.currentText()) for path in paths
-                       if Path(path).resolve() not in existing)
-        self.state.update(occluders=self.state.config.occluders + assets)
+        """Import occluders with their own unit, deduplicated by resolved path.
+
+        The target import control never decides an occluder's unit: the source library is the
+        only authority, and the independent control defaults to mm with a visible hint. A single
+        batch also deduplicates against itself, so a repeated path (or a symlink pointing at an
+        already imported file) cannot become a second physical asset.
+        """
+        default = unit or self.occluder_import_unit.currentText()
+        seen = {asset.path.resolve() for asset in self.state.config.occluders}
+        added = []
+        for path in paths:
+            resolved = Path(path).expanduser().resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            added.append(AssetSpec("occluder-" + uuid4().hex[:10], resolved, default))
+        if added:
+            self.state.update(occluders=self.state.config.occluders + tuple(added))
+            added_keys = {asset.key for asset in added}
+            self.occluders.clearSelection()
+            for row in range(self.occluders.count()):
+                item = self.occluders.item(row)
+                if item.data(Qt.UserRole) in added_keys:
+                    item.setSelected(True)
+            self._sync_occluder_unit()
+        return tuple(added)
 
     def _choose_occluders(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "导入遮挡物", "", "网格 (*.ply *.obj)")
@@ -276,18 +303,34 @@ class ResourcesPanel(QWidget):
         keys = {item.data(Qt.UserRole) for item in self.occluders.selectedItems()}
         self.state.update(occluders=tuple(a for a in self.state.config.occluders if a.key not in keys))
 
-    def _sync_occluder_unit(self):
-        item = self.occluders.currentItem()
-        if item:
-            asset = next(a for a in self.state.config.occluders if a.key == item.data(Qt.UserRole))
-            blocked = self.occluder_unit.blockSignals(True)
-            self.occluder_unit.setCurrentText(asset.unit)
-            self.occluder_unit.blockSignals(blocked)
+    def _occluder_assets(self):
+        """Selected rows, or the current row when a rebuild left nothing selected."""
+        keys = {item.data(Qt.UserRole) for item in self.occluders.selectedItems()}
+        if not keys:
+            item = self.occluders.currentItem()
+            keys = {item.data(Qt.UserRole)} if item is not None else set()
+        return [asset for asset in self.state.config.occluders if asset.key in keys]
+
+    def _sync_occluder_unit(self, *_):
+        """Mirror the selected rows' unit, saying `mixed` instead of silently showing one."""
+        assets = self._occluder_assets()
+        blocked = self.occluder_unit.blockSignals(True)
+        units = {asset.unit for asset in assets}
+        if len(units) == 1:
+            self.occluder_unit.setPlaceholderText("")
+            self.occluder_unit.setCurrentText(units.pop())
+        elif units:
+            self.occluder_unit.setCurrentIndex(-1)
+            self.occluder_unit.setPlaceholderText("混合单位（请选择）")
+        self.occluder_unit.blockSignals(blocked)
+        self._sync_occluder_size(assets)
 
     def _set_occluder_unit(self, unit):
         if self._updating:
             return
         keys = {item.data(Qt.UserRole) for item in self.occluders.selectedItems()}
+        if not keys:
+            return
         self.state.update(occluders=tuple(replace(a, unit=unit) if a.key in keys else a
                                         for a in self.state.config.occluders))
 
@@ -383,6 +426,24 @@ class ResourcesPanel(QWidget):
             self.size_label.setText("尺寸 " + " × ".join(f"{d:.4g}" for d in dims) + " m\n"
                                     + f"{len(mesh.vertices_m):,} 顶点  /  {len(mesh.faces):,} 三角面")
 
+    def _sync_occluder_size(self, assets=None):
+        assets = self._occluder_assets() if assets is None else assets
+        if not assets:
+            self.occluder_size_label.setText("选中遮挡物可查看换算后的米制尺寸；新增默认 mm，请按源文件确认")
+            return
+        asset, mesh = assets[0], self.state.meshes.get(assets[0].key)
+        if mesh is None:
+            self.occluder_size_label.setText(f"{asset.path.name}（{asset.unit}）：等待网格载入")
+            return
+        dims = np.ptp(mesh.bounds_m, axis=0)
+        self.occluder_size_label.setText(
+            f"{asset.path.name}：{asset.unit} → " + " × ".join(f"{d:.4g}" for d in dims) + " m"
+            + f"（{len(mesh.vertices_m):,} 顶点 / {len(mesh.faces):,} 三角面）")
+
+    def _sync_sizes(self):
+        self._sync_size()
+        self._sync_occluder_size()
+
     def sync(self, *_):
         self._updating = True
         target = self._target()
@@ -413,12 +474,19 @@ class ResourcesPanel(QWidget):
                 editor.setEnabled(False)
         anchor = next((t for t in self.state.config.targets if t.asset.key == self.state.config.anchor_key), None)
         self.anchor_label.setText("◎ 渲染中心：" + (anchor.name if anchor else "未设置"))
+        current = self.occluders.currentItem()
+        current_key = None if current is None else current.data(Qt.UserRole)
+        selected_keys = {item.data(Qt.UserRole) for item in self.occluders.selectedItems()}
         self.occluders.clear()
         for asset in self.state.config.occluders:
             item = QListWidgetItem(f"◇ {asset.path.name}  [{asset.unit}]")
             item.setData(Qt.UserRole, asset.key)
             item.setToolTip(str(asset.path))
             self.occluders.addItem(item)
+            if asset.key in selected_keys:
+                item.setSelected(True)
+            if asset.key == current_key:
+                self.occluders.setCurrentItem(item)
         self.hdris.clear()
         for path in self.state.config.hdri.files:
             item = QListWidgetItem("◈ " + path.name)
@@ -430,5 +498,6 @@ class ResourcesPanel(QWidget):
         self.strength.set_value(self.state.config.hdri.strength)
         self.rotation.set_value(self.state.config.hdri.rotation_deg)
         self._sync_size()
+        self._sync_occluder_size()
         self._updating = False
         self._request_meshes()

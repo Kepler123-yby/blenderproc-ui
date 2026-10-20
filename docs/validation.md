@@ -399,11 +399,11 @@ R=.artifacts/review15-cores-final/release-check
 
 ## 第十六轮：遮挡物导入、单位与参考式物理策略（2026-10-20，基线 2d84815）
 
-用户反馈“导入遮挡物进行遮挡渲染的状态不对”。本轮先在**不改生产代码**的前提下用真实控件复现，再修复并做修复后对照。证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review16-occluder-reference/run-20261020-141959/`（`before/`、`after/`；两次工具中间产物在 `attempts/`，不覆盖）。AC-8/AC-9/AC-10 命令里的 `<RUN>` 指本轮新目录 `.../run-20261020-141959/after`；AC-1 的 `<RUN>/before/` 指同级的 `before/`。
+用户反馈“导入遮挡物进行遮挡渲染的状态不对”。本轮先在**不改生产代码**的前提下用真实控件复现，再修复并做修复后对照。证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review16-occluder-reference/run-20261020-141959/`（`before/`、`after/`；两次工具中间产物在 `attempts/`，不覆盖）。本节 `before/after` 均指这份初轮归档。原 full-cycle `dc1a5e9d71582039.json` 的独立终裁为 **REVISE**（重载旧回调、verify 写证据、默认入口与事实文案未过），不能以 727 项通过替代它；后续补修使用全新 `review-fixes-01/`，见下节。
 
 ### 复现方式
 
-`tools/verify_occluder_import_rendering.py run --phase before|after` 在 `DISPLAY=:1` 的真实 Qt/OpenGL 桌面上，通过 `ResourcesPanel`/`ProjectState`/`AssetLoader` 执行同一套操作：目标 `cores.ply`（m）→ 导入 5 个真实 BOP 文件（含同批重复与软链接别名）→ 选行换 cm/mm → 混合单位 → 移除/目录导入/清空 → 保存重载；再预览两个 GL 画布、切固定机位、none/partial 切换，最后导出并调用真实 BlenderProc/OPTIX 渲染。没有手写“正确 mm 的 YAML”替代导入。
+历史工具在相应基线源码下执行 `run --phase before|after`，在 `DISPLAY=:1` 的真实 Qt/OpenGL 桌面上，通过 `ResourcesPanel`/`ProjectState`/`AssetLoader` 执行同一套操作：目标 `cores.ply`（m）→ 导入 5 个真实 BOP 文件（含同批重复与软链接别名）→ 选行换 cm/mm → 混合单位 → 移除/目录导入/清空 → 保存重载；再预览两个 GL 画布、切固定机位、none/partial 切换，最后导出并调用真实 BlenderProc/OPTIX 渲染。没有手写“正确 mm 的 YAML”替代导入。
 
 ### 修改前实测（`before/ui/lifecycle.json`、`before/logs/`）
 
@@ -424,7 +424,7 @@ R=.artifacts/review15-cores-final/release-check
 - 导入控件独立，默认 `mm`；同批 7 条 → 5 个资源；目录 15 → 15 个资源、单位全为 mm；改单位后选中集保持；混合单位显示“混合单位（请选择）”；清空无 traceback；保存重载后 15 个资源与单位一致。
 - 目标始终保持 `cores.ply`、单位 m、obj_id 1、1035 顶点/1837 三角面、alpha 255；遮挡物 mm bounds = 原数值 × `.001`，只换算一次。
 - 预览：aimed 仍是标量 0.186 的无旋转矩阵；physical 是均匀尺度 × 旋转的完整矩阵（示例线性部分 `[[0.889,-0.069,0.452],[-0.02,0.982,0.19],[-0.457,-0.178,0.872]]`）。真实 UI 策略下拉切到 physical 后 `state.config.occlusion.strategy == physical_view`；固定机位近/远两个视角都能出候选。
-- 同一 aimed 配置修复前后：mask/mask_visib 逐字节相同，RGB 最大差 1 个 8 位步长（Cycles 舍入），说明导入/单位修复没有改变历史算法结果；画面差异来自单独标记的 physical 策略。
+- 历史 aimed 配置前后 16 张 mask/mask_visib 逐字节相同，几何/掩码兼容；RGB PNG 最大通道差为 1，但 BOP JPEG 最大差为 **104**，不能把所有 RGB 差异归为一个步长或保证逐像素一致。当前补修重跑的独立差值另列下节；不把新策略画面差异本身当作用户原异常已解决的证据。
 
 | 数据集（after） | 格式/机位 | 帧 | 实测遮挡 | 选用资源 | 多遮挡帧 |
 |---|---|---|---|---|---|
@@ -432,16 +432,28 @@ R=.artifacts/review15-cores-final/release-check
 | cores-bop-aimed | BOP / fixed 近+远 | 4/4 | 0/0/0.18084/0.37760 | 3 | 1 |
 | cores-rgb-physical | rgb_masks / random | 4/4 | 0/0/0.29706/0.49617 | 3 | 2 |
 | cores-bop-physical | BOP / fixed 近+远 | 4/4 | 0/0/0.29650/0.28638 | 3 | 2 |
-| cores-rgb-physical-multi | rgb_masks / fixed | 4/4 | 0/0/0.30025/0.36148 | 4 | 2 |
+| cores-rgb-physical-multi | rgb_masks / random | 4/4 | 0/0/0.30025/0.36148 | 4 | 2 |
 
 全部 20/20 帧保存、skipped=0；checker 与 `tools/audit_native_masks.py dataset` 逐数据集退出 0；none 帧原生遮挡率精确 0；有遮挡帧都在预记录窗口 `[0.1, 0.5]`。物理样本每帧被接受的遮挡物都完整位于 near clip 与最近目标表面之间，保守 AABB 不与目标或其他遮挡物相交（`logs/*-report.json.safety.problems == []`），线性部分奇异值三轴相等。真实 Haven 覆盖室外清晨纯天空与室内蓝色摄影棚两个 2k HDRI，BOP 两个 EGL 渲染器均为 RTX 3060 Ti。
 
-`[5, 8]` 完整 15 资源库记录（`after/ui/complete-library-count.json`）：默认倍率 1 时 1 场景 × 4 次机位尝试全部稳定返回 `occluder_collision`（有界、不降数、不改成 none）；倍率 [0.2, 0.35] 时第 0 次尝试返回 5 个 placement、5 个不同资源 key。8 个唯一资源请求 `[5,8]` 的配置校验失败由单测覆盖。
+`[5, 8]` 完整 15 资源库记录（`after/ui/complete-library-count.json`）：默认倍率 1 时 1 场景 × 4 次机位尝试全部稳定返回 `occluder_collision`（有界、不降数、不改成 none）；倍率 [0.2, 0.35] 时第 0 次尝试返回 5 个 placement、5 个不同资源 key。7 个唯一资源请求 `[5,8]` 的配置校验失败由单测覆盖；8 个唯一资源合法，不能写成不足。
 
-`verify --destination <RUN>/after` 只读退出 0：五个参考文件、cores、15 个 BOP、两个 HDRI 前后 SHA256 一致；cores SHA 为 `83aa1b451b11ff200a00c493b22b7aee112161cc06f1efceec741c5951d1be2f`；生产源码与工具哈希与运行时记录一致；没有执行参考 `render.py`、没有改 native 包。
+首轮 verify 虽退出 0、输入 SHA256 前后一致，但会覆盖 `verify.json`，独立复核认定其**并非只读**；真正无写入的证据见补修。cores SHA 为 `83aa1b451b11ff200a00c493b22b7aee112161cc06f1efceec741c5951d1be2f`，没有执行参考 `render.py` 或修改 native 包。
 
 ### 回归与证据限制
 
 - 全量 `tests/unit tests/ui`：**727 passed / 54.69 s / 退出 0**（基线 699，新增 28 项；日志 `<RUN>/logs/ac12-full-suite.log`）。
 - 保留固定 1e-4 瞄准容差、低面数/中空/U/48 面 frame、超 2M 流式并集、近远/毫米、LOD 异步、分组重取景、uint32 解码、掩码与中断工具测试，无新增 skip/xfail。
-- 限制：只有 cores 一个目标；真实库只实际选用了 5 个不同 BOP 资源（数据集层面 4 个 key 同时出现）；只有 2 个 HDRI 场景，不是全部 979 个；没有三维地面接触阴影或房间几何；物理策略仍是逐 view 采样，不是 scene-stable；没有收到的用户原截图，也没有验证任意超显存或全部 15 个资源同时摆放的可行性。
+- 范围勘误：5 个数据集实际使用 **9** 种 BOP 资源，各数据集分别 3/3/3/3/4 种，每帧最多 2 个；不能把跨帧的 4 个 key 写成同帧出现。完整库小倍率的 5 个 placement 是几何诊断，不是 5 遮挡物真实渲染。只有 cores 一个目标、2 个 HDRI（非全部 979 个），无三维地面接触阴影/房间几何；仍逐 view 采样，无用户原截图，不保证任意超显存或 15 资源同时摆放。
+
+### 第十六轮补修与全新实测（原 REVISE 不覆盖）
+
+证据根：`.artifacts/review16-occluder-reference/review-fixes-01/`；完成运行在 **`after-responsive-03/`**，代码快照 **`8a129b7`**，运行时 tracked 干净。后续文档和测试注释变更不冒充相同 HEAD；该工具分别校验生产源码摘要和工具 SHA。
+
+- **重载隔离**：增加资源加载 epoch，旧成功、旧失败和旧布局建议失效；有效完成网格可由设置替换复用，文件重载重新加载。真实桌面带标签的合成旧回调探针记录 epoch **0→1**、generation **2→4**；旧成功/失败均拒绝，mesh revision 不变，candidate、preview 与双视口 LOD 同步失效。它是受控回调测试，不假称原文件返回了千倍几何。
+- **真实默认入口**：未传 `--phase` 的 run 退出 **0 / 296.22 s**，真实 `DISPLAY=:1`/xcb、两种策略共 16 张 GL/窗口截图；5 个 native 数据集 **20/20 帧**、skipped=0、20 次 preflight/render/checker/audit 均为 0。倍率、原生遮挡率和矩阵安全检查与上表一致，未改窗口或 1e-4 容差。另行只读实际导入 16 个 canonical 网格的双 GL 探针返回 NVIDIA/RTX3060Ti、OpenGL4.6，两画布均非恒色且窗口可见，见 `live-dual-gl.log`。
+- **长任务不冻结桌面**：完整库诊断及子进程等待在后台执行，Qt 事件只在主线程处理，异常原样传播。此前两次运行被 SIGKILL（137），均保留原 running 产物，未当作通过。第二次峰值 RSS 807296 KiB；未取得信号来源/OOM 证明，不能归因于已证实的 OOM。隔离几何诊断 139.76 s、123668 KiB、退出 0；修复后完整新运行峰值 RSS 1709268 KiB（GNU time 含子进程）。
+- **真正只读 verify**：公开 CLI 退出 0；调用前后 **462 个文件**的 SHA256、大小、mtime 全相同，没有创建 `verify.json`。结果在证据目录外的 `readonly-verify-stdout.json`，证明在 `readonly-verification-proof.json`。verify 读取记录及哈希、检查已记录退出码；不冒称它自身重新执行了所有 checker/audit。
+- **兼容事实**：当前对历史 before 的 16 张双 mask 仍逐字节一致；当前 RGB PNG 最大差 **60**（000002 中仅 16/307200 像素差 >20），BOP JPEG 最大差 **94**。不保证 RGB 逐像素一致，也不把该差异全部归于舍入/编码；`legacy-image-differences.json` 保留逐帧统计，`visual-comparison.png` 配对实际 RGB/full/visible mask。
+- **资源范围**：真实数据集使用 `obj_000004/007/009/010/011/012/013/014/015.ply`，9 种；加载/导出完整 15 库。完整库默认倍率四次明确 collision 拒绝，小倍率得到 5 个不同 placement（未渲染）。23 个输入 SHA 前后不变；cores 仍 m/1035 顶点/1837 面/alpha255，只有用户指定的这个目标。
+- **回归**：补修 RED 10 failed、GREEN 47 passed；长任务/缓存补修 RED 3 failed、GREEN 50 passed；最终全量 **746 passed / 50.69 s / 退出 0**，见 `full-suite-final.log`。独立终验结果另追加，不把父会话实测写成独立 PASS。

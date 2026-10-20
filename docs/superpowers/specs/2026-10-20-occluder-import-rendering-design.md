@@ -2,7 +2,8 @@
 
 日期：2026-10-20
 基线：`2d84815`（tracked 干净）
-证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review16-occluder-reference/run-20261020-141959`
+初轮证据根：`/home/kepler/rm_2027/blenderproc-ui/.artifacts/review16-occluder-reference/run-20261020-141959`
+补修证据根：`.artifacts/review16-occluder-reference/review-fixes-01`；完整新运行在 `after-responsive-03/`。初轮 full-cycle 终裁 REVISE 不改写。
 
 ## 1. 目标与范围
 
@@ -41,12 +42,13 @@ env -u PYTHONPATH -u QT_QPA_PLATFORM DISPLAY=:1 QT_API=pyside6 \
 **没有收到的用户原截图不能声称复现。** 上表只声明本轮真实操作能观察到的问题；旧
 `.artifacts/review15-cores-final/release-check` 的 50 帧通过只说明其固定配置可用，不覆盖这里的多资源导入链。
 
-## 3. 单元/缓存现状（已核对，不改动）
+## 3. 单位/缓存现状（首轮结论与独立复核勘误）
 
 - `src/bproc_core/assets.py:96-120` 只在加载时按 `m=1 / cm=.01 / mm=.001` 转换一次；实测 mm bounds =
   原数值 × `.001`（`obj_000001` → 0.0759 m），没有二次缩放。
-- `src/bproc_ui/state.py:66-98` 在资源定义变化时删除对应 canonical mesh；`resources.py:342-375` 的
-  generation 检查已能拒绝旧异步结果。因此“换单位后看到旧尺寸”不是缓存缺失，而是第 1、3 条 UI 状态缺陷。
+- 资源定义变化会删除对应 canonical mesh，已有 generation 保护能拒绝换单位前的结果；但这不能证明跨项目重载安全。
+  独立复核发现：同路径/同单位重载时仍可能复用在途 generation，旧成功可回填几何、旧失败可写入新项目错误标签。
+  因此原先“旧异步结果均已隔离”的结论过宽；补修增加项目加载 epoch，并针对成功、失败、预览和双视口 LOD 回写补 RED/GREEN。
 
 ## 4. 修复决策
 
@@ -58,6 +60,9 @@ env -u PYTHONPATH -u QT_QPA_PLATFORM DISPLAY=:1 QT_API=pyside6 \
 - `sync()` 重建列表前保存 current key 与 selected keys，重建后恢复；找不到 key 时安全跳过。
 - 混合单位：选中资源单位不一致时把单位控件置为 `-1` 并显示“混合单位（请选择）”；用户显式选单位后才批量应用。
 - 新增遮挡物尺寸反馈：当前行 canonical bounds（m）与顶点/面数，明确“已按单位换算一次”。
+- 项目替换/重载更新 `asset_load_epoch`；面板推进请求代际并清除在途请求、失败和旧布局建议标志，回调同时核对 epoch、generation 与资源定义。
+  `set_project(preserve_meshes=True)` 可复用已完成且身份未变的 canonical 网格；真实 `load()` 清空网格并启动新请求。
+  旧成功/失败不能改变新项目 mesh revision、预览、LOD 或错误标签。
 
 ### 4.2 策略字段与兼容
 
@@ -121,10 +126,12 @@ class OcclusionSpec:
 ## 5. 验收对应
 
 - AC-1：`<RUN>/before/`（上文命令与文件）。
-- AC-2/3：`tests/ui/test_occluder_import_lifecycle.py` + 既有 state/preview/LOD 测试。
+- AC-2/3：导入生命周期测试及 `test_resources_panel.py`、`test_project_state.py`、`test_preview_invalidation.py`、`test_viewport_lod.py` 的重载回归；真实桌面的 `ui/lifecycle.json.steps.save-reload.reload_probe`。
 - AC-4/5/6：`tests/unit/test_occluder_physical.py` + 既有 config/export/scene 测试；`<RUN>/after` 的 15 资源 `[5,8]` 记录。
 - AC-7：`tests/unit/test_occluder_backend_lifecycle.py` + 既有 backend/runtime 测试。
-- AC-8/9/10/11：`tools/verify_occluder_import_rendering.py run/verify`，真实 DISPLAY=:1、OPTIX、Haven、15 BOP 库。
+- AC-8/9/10/11：默认 `run --destination NEW` 即 after 阶段，真实 DISPLAY=:1、OPTIX、Haven、15 BOP 库；长几何检查/子进程等待在后台执行，主线程保持 Qt 事件。
+  `verify` 只输出 JSON，不写证据；补修前后 462 个证据文件的内容/大小/mtime 完全不变。
+  `--phase before` 仅选择两数据集模式，不回滚源码；历史复现依赖归档的基线源码。
 - AC-12：全量 `tests/unit tests/ui`。
 - AC-13：文档、提交、`git diff --check`、arbiter 独立重验。
 

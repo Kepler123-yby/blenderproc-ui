@@ -9,7 +9,7 @@
 
 ## 步骤 0（已完成）：修改前复现
 
-- 工具：`tools/verify_occluder_import_rendering.py`（`run --phase before|after`、只读 `verify`）。
+- 工具：`tools/verify_occluder_import_rendering.py`；首轮要求显式 phase，且 verify 曾写入报告，并非真正只读；补修已修正，见步骤 8。
 - 真实运行写入 `.artifacts/review16-occluder-reference/run-20261020-141959/before`，退出 0。
 - RED 证据是上一步的错误行为本身（`lifecycle.json` + traceback + 渲染图），不是人为改坏代码。
 
@@ -57,7 +57,7 @@ GREEN：`pytest tests/unit/test_config.py -q`。
 测试：`tests/unit/test_occluder_physical.py`
 - 固定 seed 可重现；`RᵀR=I`、`det=1`（≤1e-10）；奇异值 = 配置倍率；非中心原点/非立方资产。
 - 最终矩阵重算深度、旋转后 AABB、碰撞、`_offset_span`、silhouette 一致；倍率 1 近远 view 无距离缩放。
-- 数量：key 唯一、数量等于采样值；`[5,8]` 在 15 资源下合法，8 资源不足时校验失败；无库请求遮挡被拒。
+- 数量：key 唯一、数量等于采样值；`[5,8]` 在 15 或 8 个唯一资源下合法，7 资源不足时校验失败；无库请求遮挡被拒。
 GREEN：AC-5/AC-6。
 
 提交：`feat(scene): place physical occluders with uniform SO3 rotation`
@@ -87,7 +87,7 @@ GREEN：AC-4。
 
 ## 步骤 6：真实 GPU 与 UI 烟测
 
-命令（真实桌面）：
+历史执行命令（真实桌面；目录已存在，不要覆盖重跑）：
 
 ```
 env -u PYTHONPATH -u QT_QPA_PLATFORM DISPLAY=:1 QT_API=pyside6 .venv/bin/python \
@@ -105,4 +105,15 @@ env -u PYTHONPATH -u QT_QPA_PLATFORM DISPLAY=:1 QT_API=pyside6 .venv/bin/python 
 - `docs/usage.md`：单位、倍率、旋转、数量、scene/view、旧配置兼容、验证范围。
 - `docs/validation.md`：本轮复现 → 修复前后视觉/数据、真实数量与限制。
 - `report.md` 第十六轮 + `report-handoff.md`（忽略文件，不入 Git）。
-- 本地英文 conventional 提交（分 5 个逻辑提交），`git diff --check`、tracked 干净，不 push/amend/rebase。
+- 本地英文 conventional 提交，`git diff --check`、tracked 干净，不 push/amend/rebase。
+
+## 步骤 8：独立 REVISE 后的补修
+
+原 full-cycle 状态 `dc1a5e9d71582039.json` 保持 REVISE；不能用首轮 727 通过宣称 AC-3 已通过。
+
+- 为项目重载增加资源加载 epoch；旧成功/失败失效，真实重载重新加载；保留有效完成缓存而不保留在途请求。
+- 补项目/state/preview/双视口回归、verify 成功/失败均不写证据、缺省 phase、主线程事件心跳和后台异常传播测试。
+- 默认 `run --destination NEW` 选 after；`before` 不回滚源码。真实新运行在 `review-fixes-01/after-responsive-03/`，不覆盖首轮或两次 SIGKILL 的失败目录。
+- 将长诊断及 native 子进程等待移至后台，保持 Qt 主线程响应；记录 SIGKILL 来源未证实，不擅归为 OOM。
+- 修正文案：RGB 多遮挡实际 random、数据集共用到 9 种 BOP、上限 8 时 7 个资源才不足、逐 view 遮挡、RGB 非逐像素兼容。
+- 新 run/verify、20/20 帧、20 步退出 0、462 文件内容/大小/mtime 不变；全量与独立终验另记在 validation.md 和补修证据中。

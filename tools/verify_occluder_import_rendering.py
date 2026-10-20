@@ -16,6 +16,7 @@ The verification result is JSON on stdout; no report file is created automatical
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
 import importlib.metadata
@@ -147,6 +148,16 @@ def _wait(app, predicate, timeout=60.0):
         app.processEvents()
         time.sleep(0.02)
     return False
+
+
+def _run_responsive(app, function, *args, **kwargs):
+    """Run long geometry/subprocess checks without freezing the live desktop."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(function, *args, **kwargs)
+        while not future.done():
+            app.processEvents()
+            time.sleep(0.02)
+        return future.result()
 
 
 def _occluder_rows(panel):
@@ -608,7 +619,7 @@ def run(destination, phase='after'):
     write_json(destination / 'ui' / 'preview.json', ui_evidence)
     if hasattr(state.config.occlusion, 'strategy'):
         write_json(destination / 'ui' / 'complete-library-count.json',
-                   complete_library_count_record(physical, state.meshes))
+                   _run_responsive(app, complete_library_count_record, physical, dict(state.meshes)))
 
     for name, config in configs:
         is_bop = name.startswith('cores-bop')
@@ -651,7 +662,8 @@ def run(destination, phase='after'):
                               ('audit', [sys.executable, REPO / 'tools/audit_native_masks.py', 'dataset',
                                          '--dataset', dataset, '--job', job,
                                          '--output', destination / 'logs' / f'{name}-audit.json'])):
-            entry = _logging_run(commands, destination, name, step, command, env=env)
+            entry = _run_responsive(app, _logging_run, commands, destination, name, step,
+                                    command, env=env)
             if entry['exit_code']:
                 summary['status'] = 'failed'
                 write_json(destination / 'summary.json', summary)

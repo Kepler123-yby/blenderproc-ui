@@ -21,6 +21,33 @@ def test_run_defaults_to_after_and_preserves_explicit_phases(tmp_path, monkeypat
     assert calls == [(tmp_path / "new-run", phase or "after")]
 
 
+def test_long_checks_pump_events_on_the_main_thread():
+    import threading
+    main_thread = threading.get_ident()
+    pumped = threading.Event()
+    calls = []
+
+    class App:
+        def processEvents(self):
+            calls.append(threading.get_ident())
+            pumped.set()
+
+    def worker():
+        assert threading.get_ident() != main_thread
+        assert pumped.wait(5), "desktop events were blocked by the long check"
+        return 42
+
+    assert tool._run_responsive(App(), worker) == 42
+    assert calls and set(calls) == {main_thread}
+
+
+def test_background_check_errors_are_not_swallowed():
+    def fail():
+        raise RuntimeError("checker failed")
+    with pytest.raises(RuntimeError, match="checker failed"):
+        tool._run_responsive(SimpleNamespace(processEvents=lambda: None), fail)
+
+
 @pytest.fixture
 def recorded_run(tmp_path, monkeypatch):
     core = tmp_path / "core.ply"

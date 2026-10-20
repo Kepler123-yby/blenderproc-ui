@@ -132,7 +132,7 @@ class SamplingPanel(QWidget):
         form.addRow("随机种子", self.seed)
         self.allocation = note("")
         form.addRow(self.allocation)
-        form.addRow(note("同一场景里物体摆放与光照固定，只有机位在变；视角数按区域平均分配。\n多目标在同一张图中出现。"))
+        form.addRow(note("同一场景共享目标布局、光照和材质；机位与遮挡物按视角生成，遮挡物会重新摆放。视角数按区域平均分配。\n多目标在同一张图中出现。"))
 
         form = section("光照 · 点光源", layout)
         self.energy = RangeEditor(minimum=0, suffix=" W", decimals=1)

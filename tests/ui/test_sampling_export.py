@@ -11,6 +11,16 @@ from bproc_ui.panels.sampling import SamplingPanel
 from bproc_ui.panels.export import ExportPanel
 
 
+def test_scene_help_distinguishes_targets_from_per_view_occluders(state, qtbot):
+    from PySide6.QtWidgets import QLabel
+    panel = SamplingPanel(state)
+    qtbot.addWidget(panel)
+    text = "\n".join(label.text() for label in panel.findChildren(QLabel))
+    assert "遮挡物会重新摆放" in text
+    assert "共享目标布局" in text
+    assert "只有机位在变" not in text
+
+
 def test_resolution_scales_intrinsics_once(state, qtbot):
     panel = SamplingPanel(state)
     qtbot.addWidget(panel)

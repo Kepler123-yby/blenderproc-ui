@@ -24,12 +24,11 @@ class RunTerminated(BaseException):
 
 
 def warn_mixed_scale(config, meshes, recorder) -> float:
-    """Report the dataset-format limits that a mixed-size scene runs into. Returns the ratio.
+    """Report framing and shared-depth-tolerance concerns. Returns the target-size ratio.
 
-    Two format-level facts cannot follow the smallest object: the BOP GT depth tolerance is one
-    value per dataset (we take the smallest target's, so nothing is over-reported as visible) and
-    the occlusion window is one interval for every target, so a 1 mm part next to a 20 mm part
-    cannot be partly covered in the same frame as the large one.
+    The occlusion window applies only to the anchor; other targets need visible pixels. Mixed
+    scales are allowed, but small targets may occupy few pixels in the shared framing. The BOP
+    writer uses one depth tolerance derived from the smallest target. Grouping is optional.
     """
     extents = [value for value in target_extents(config, meshes) if value > 0]
     if len(extents) < 2:
@@ -39,8 +38,9 @@ def warn_mixed_scale(config, meshes, recorder) -> float:
         return ratio
     if config.occlusion.ratio.minimum > 0:
         recorder.warn("mixed_scale_occlusion",
-                      f"启用目标尺寸相差 {ratio:.0f}×，同一个遮挡比例窗口〔{config.occlusion.ratio.minimum:g}–"
-                      f"{config.occlusion.ratio.maximum:g}〕无法同时适配最大与最小目标；先按尺度分组分别生成（tools/export_by_scale.py）")
+                      f"启用目标尺寸相差 {ratio:.0f}×，遮挡比例窗口〔{config.occlusion.ratio.minimum:g}–"
+                      f"{config.occlusion.ratio.maximum:g}〕只约束中心目标；请检查其他目标的可见像素大小，"
+                      "需要分别取景时可按尺度分组（tools/export_by_scale.py）")
     recorder.warn("mixed_scale_tolerance",
                   f"启用目标尺寸相差 {ratio:.0f}×，BOP GT 深度容差按最小目标取值（更严），"
                   "大目标标注同样使用该容差；如需各自容差请用 tools/export_by_scale.py 拆分数据集")

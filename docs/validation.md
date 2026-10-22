@@ -1,5 +1,38 @@
 # 验证记录
 
+## 算法与使用文档复核（2026-10-23）
+
+复核基线为 `a78f4425ac970ecb2bbb0c65e4fbea793c2d5b6a`。本轮阅读当前采样、遮挡、分组、运行状态与导出逻辑，重跑单元/Qt 测试，并只读检查已有真实 GPU 产物。现有检查未发现阻塞当前使用流程的算法错误。
+
+| 核对项 | 当前规则与结果 |
+|---|---|
+| 球坐标与机位分配 | 半径均匀、方位角与仰角正弦均匀；跨界角度、固定端点、完整一周分别处理。固定/随机模式互斥，固定模式按机位列表计数 |
+| 场景与视角随机性 | 目标布局、光照、材质按场景共享；相机和遮挡物按视角/尝试抽样。无遮挡类别按场景数取整，重试不改变类别 |
+| 物理遮挡物 | 单位换算后以一次 `s × R` 变换参与深度、碰撞、投影覆盖及最终摆放；按唯一资源无放回选择，放不下或数量不足不自动降级 |
+| 像素遮挡验收 | 只对中心目标应用遮挡窗口，所有启用目标都必须有可见像素；精确像素验收与几何估计分开，重试预算有界 |
+| 按尺寸分组 | 启用目标必须全部载入，分组并集完整且不重复；重取景为显式选项，保留 ID、内参及深度编码 |
+| 输出与状态 | 二值掩码、BOP GT 索引和模型/位姿单位一致；元数据提交与 BOP 后处理完成后才计入成功，部分完成返回非零 |
+
+实际执行结果：
+
+- 完整单元与 Qt 测试：**750 passed in 60.07s**。命令见下方。
+- 已有 GPU 证据目录：`.artifacts/review16-occluder-reference/review-fixes-01/after-responsive-03/`。复核开始时执行 `tools/verify_occluder_import_rendering.py verify --destination <该目录>`，资源、生产源码与验收工具哈希匹配，返回 `ok: true`。
+- 对该目录 `results/` 下五组产物重新运行真实检查器：`cores-rgb-aimed`、`cores-rgb-physical`、`cores-rgb-physical-multi` 使用 `check_rgb_masks.py`；`cores-bop-aimed`、`cores-bop-physical` 使用 `check_bop.py`。**5/5 PASS，合计 saved/requested = 20/20、skipped = 0**。
+- 修正文案后运行 `tests/unit/test_mixed_scale.py tests/unit/test_scale_groups.py tests/unit/test_run.py`：**37 passed in 0.37s**。
+- README 的启动入口、任务启动器和分组工具参数与实际 `--help` 核对，Markdown 本地链接、Shell 示例语法和 `git diff --check` 检查通过。
+
+修正内容：README 原先误述固定机位与随机采样可混合计数；旧使用说明将兼容张数参数误写成向上取整，并漏述可选的分组重取景。另将尺寸差异运行警告及相关注释中的“所有目标共用遮挡窗口、不能同数据集”改为实际的中心目标约束与可选分组建议。没有改动采样或验收计算规则。
+
+本轮没有重新运行 GPU 渲染，也没有安装或修改 `bop` / Blender 环境。上述 GPU 证据对应复核开始时的生产源码；随后修改了警告文本和注释，旧证据的源码哈希不会与修改后的工作区相等。其 20 帧覆盖表观/物理遮挡、两种输出及多遮挡物，不代表全部模型组合或其他 GPU 后端均已实测。
+
+```bash
+env -u PYTHONPATH -u DEBUG PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  QT_API=pyside6 QT_QPA_PLATFORM=offscreen \
+  .venv/bin/python -m pytest -p pytestqt.plugin tests/unit tests/ui -q
+```
+
+## 初次验收（2026-10-16）
+
 2026-10-16 在本机 Ubuntu 22.04.5 x86_64 完成。机器可读证据见 [validation-evidence.json](validation-evidence.json)，桌面截图见下方；完整运行记录保留在本机 `.artifacts/`，不纳入 Git。
 
 ![Blender 风格的原生桌面工作区：脚本页展示 GPU 后端、降噪与表面处理](images/workspace.png)

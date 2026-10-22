@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Export one BlenderProc job per target-size class.
 
-A dataset has one BOP GT depth tolerance and one occlusion-ratio window. Targets that differ by
-more than 10x cannot share those format-level values, so this entry splits the project into
-separate jobs (``<job>-size-1``, ``<job>-size-2``, ...) and leaves ordinary projects untouched.
+This optional entry splits targets differing by more than 10x into separate jobs
+(``<job>-size-1``, ``<job>-size-2``, ...) for independent framing and BOP depth-tolerance selection.
+Mixed scales can also share one scene. Ordinary single-group projects are left untouched.
 
     .venv/bin/python tools/export_by_scale.py project.yaml .artifacts/render_job
     .venv/bin/python tools/export_by_scale.py project.yaml .artifacts/render_job --dry-run

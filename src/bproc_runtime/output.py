@@ -80,12 +80,7 @@ class JsonRunRecorder:
         self.begun = True
 
     def warn(self, code, message) -> None:
-        """Record a run-level limitation that a finished dataset must carry with it.
-
-        Mixed target scales cannot be expressed in the dataset format (one GT depth tolerance,
-        one occlusion window), so the run reports the limitation instead of silently producing
-        frames whose masks mean something different per object.
-        """
+        """Persist each run-level advisory once, including in the finished dataset status."""
         if code in {row["code"] for row in self._warnings}:
             return
         self._warnings.append({"code": code, "message": message})

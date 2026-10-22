@@ -1,12 +1,10 @@
 """Split a project into datasets that each describe one target-size class.
 
-A dataset carries one BOP GT depth tolerance and one occlusion-ratio window. When enabled
-targets differ by more than :data:`MIXED_SCALE_FACTOR`, those format-level values cannot serve
-both the smallest and the largest target, so the honest output is several datasets. The split
-keeps the physical scene unchanged: cameras, lighting and depth encoding stay as configured, and
-a group that does not contain the original render centre gets a new centre with the other target
-offsets shifted by that centre's nominal offset. Callers that want a closer framing per group can
-edit the generated projects afterwards.
+Grouping is optional: mixed scales can share a scene, and the occlusion window applies only to
+the anchor. Separate size classes allow independent framing and BOP depth-tolerance selection.
+By default cameras, lighting and depth encoding stay as configured. A group without the original
+render centre gets a new centre with the other target offsets shifted by its nominal offset.
+Opt-in reframing adjusts camera distances and point lighting for each group.
 """
 from __future__ import annotations
 
@@ -19,7 +17,7 @@ from .camera import (bounds_fit_window, envelope_radius, fit_bounds_radius, fram
                      random_fit_radius)
 from .config import Box, ConfigError, ProjectConfig, Range, TargetSpec
 
-#: Target size ratio above which one dataset cannot honestly describe every object.
+#: Target size ratio used by optional grouping and mixed-scale advisories.
 MIXED_SCALE_FACTOR = 10.0
 
 

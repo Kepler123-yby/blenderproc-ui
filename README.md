@@ -25,6 +25,124 @@ python3 -m venv .venv
 
 `bproc-ui` 是相同入口的简写。UI 依赖安装到 `.venv`；实际渲染使用已有的 conda `bop`、Blender 和对应依赖。在“脚本”页填写环境路径，导出后用 `--check-only` 检查，启动器不会联网补装依赖。
 
+## 环境配置教程（参考华南虎 RM2023 开源文档）
+
+参考 [《RM2023-华南理工大学-华南虎-工程视觉开源》](docs/RM2023-华南理工大学-华南虎-工程视觉开源.pdf) PDF 第 18–20 页“BlenderProc 渲染数据集制作方法”。原文的关键顺序是：**建立 Python 3.8 环境 → 安装 BOP toolkit → 安装 BlenderProc → 准备模型和背景 → 渲染及标注处理**。
+
+原文第 4–5 页的 Python 3.6、ObjectDatasetTools、RealSense、OpenCV 4.6 属于另一条“实拍重建”流程，**不是本工具的安装依赖**。原文没有固定当前 BlenderProc/Blender 版本；下文按本项目已经验证的版本补齐，不把旧流程命令原样混用。
+
+### 1. 准备 Ubuntu 系统与 GPU
+
+以 Ubuntu 22.04 为例，先安装 NVIDIA 官方驱动并重启，再检查显卡：
+
+```bash
+nvidia-smi
+sudo apt-get update
+sudo apt-get install -y build-essential cmake git pkg-config libssl-dev \
+  libgl1 libegl1 libglib2.0-0 libxkbcommon-x11-0 libxcb-cursor0 \
+  libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0
+```
+
+`nvidia-smi` 应能列出 GPU 和驱动版本；UI 还需要有效桌面/OpenGL 会话。安装软件包通常需要联网，不必照搬原文对整机执行 `apt upgrade`。本项目实际 GPU 验证为 NVIDIA OPTIX；BOP 后处理还要求 NVIDIA EGL，不能落到 llvmpipe 等软件渲染器。Blender 自带运行组件，本文不要求另外安装某个固定 CUDA Toolkit。
+
+### 2. 建立独立渲染环境，先装 BOP toolkit
+
+安装好 Miniconda/Anaconda 后执行；以下路径可按本机调整：
+
+```bash
+conda create -n bop python=3.8 -y
+conda activate bop
+python -m pip install --upgrade pip setuptools wheel
+mkdir -p "$HOME/blenderproc"
+cd "$HOME/blenderproc"
+git clone https://gitee.com/yu-chenghuan/Linemod-Render.git
+cd Linemod-Render/bop_toolkit
+python -m pip install -r requirements.txt
+python -m pip install -e .
+python -c "import bop_toolkit_lib; print(bop_toolkit_lib.__file__)"
+```
+
+保留该源码目录，稍后在 UI 填写其绝对路径。PDF 中的 `pip install -r requirments.txt -e` 存在文件名拼写及缺少安装目标的问题；这里针对实际含 `requirements.txt`、`setup.py` 的 toolkit 目录拆成两条命令。若下载到的分支结构不同，应以实际文件为准，不运行原文的残缺命令。
+
+### 3. 安装固定版本 BlenderProc 与 Blender
+
+```bash
+# 仍在 conda bop 环境
+python -m pip install blenderproc==2.8.0
+
+# 下载并解压 Blender 官方 Linux x64 包
+mkdir -p "$HOME/blender"
+cd "$HOME/blender"
+wget https://download.blender.org/release/Blender4.2/blender-4.2.1-linux-x64.tar.xz
+tar -xf blender-4.2.1-linux-x64.tar.xz
+export BLENDER_DIR="$HOME/blender/blender-4.2.1-linux-x64"
+"$BLENDER_DIR/blender" --version
+```
+
+没有 `wget` 时可从 Blender 官方下载同一个压缩包再解压。本工具适配 **BlenderProc 2.8.0 + Blender 4.2.1 LTS**，Blender 内置 Python 为 **3.11**。conda 的 Python 3.8 负责启动任务，不是实际执行 `bpy` 的解释器；不要把 UI 安装到 `bop` 环境，也不要只在 conda 中安装依赖就认为 Blender 环境已经齐备。
+
+### 4. 单独准备 Blender 内部 Python 依赖
+
+先通过一个最小 BlenderProc 脚本准备默认依赖和离线缓存，再用它的 pip 入口补充依赖，不要直接用系统 `pip` 替代：
+
+```bash
+conda activate bop
+export BLENDER_DIR="$HOME/blender/blender-4.2.1-linux-x64"
+mkdir -p "$HOME/blenderproc/setup"
+printf 'import blenderproc as bproc\nbproc.init()\n' > "$HOME/blenderproc/setup/prepare_env.py"
+blenderproc run --custom-blender-path "$BLENDER_DIR" "$HOME/blenderproc/setup/prepare_env.py"
+blenderproc pip install --custom-blender-path "$BLENDER_DIR" requests
+```
+
+`blenderproc run` 首次启动会准备其默认依赖（包括 NumPy、trimesh、pyrender、OpenCV 等），安装到 Blender 的 `custom-python-packages/` 并维护依赖缓存；`blenderproc pip install` 本身只安装显式指定的包，不能代替首次初始化。该准备脚本不生成数据集，不代表已经通过本应用的 GPU-only 验收。首次准备需要联网；不要把实拍流程的 OpenCV 4.6 强行装进这里。
+
+BOP 模式另外需要在 **Blender Python** 中安装 toolkit 的依赖；本机采用与原文同源的本地 toolkit：
+
+```bash
+export BOP_TOOLKIT="$HOME/blenderproc/Linemod-Render/bop_toolkit"
+blenderproc pip install --custom-blender-path "$BLENDER_DIR" \
+  vispy glumpy triangle Cython pycocotools
+```
+
+本项目 BOP 运行时通过 UI 中填写的 toolkit 源码目录导入 `bop_toolkit_lib`；仅在 conda 中执行过 `pip install -e .` 不能替代这一步。基础 scipy、matplotlib、OpenCV、PyOpenGL/pyrender 等由 BlenderProc 默认环境提供，以上命令补充 toolkit 常用组件；**不要将旧 toolkit 的 requirements.txt 整份装进 Blender Python 3.11**，其中 scipy 1.5、matplotlib 2.2 等历史固定版本与当前环境不兼容。toolkit 不同分支的附加依赖可能不同，须按实际导入报错补齐并以任务 `--check-only` 为准。本文依据原文与本机适配器整理，没有在全新系统重装验证；启动器不会帮忙下载安装或自动修复环境。
+
+### 5. 安装 UI，填写三个运行路径
+
+回到本仓库，使用独立 Python 3.10+ 创建 `.venv`，不要在已激活的 Python 3.8 环境里建 UI 虚拟环境：
+
+```bash
+conda deactivate
+cd /你的路径/blenderproc-ui
+python3.10 -m venv .venv
+.venv/bin/python -m pip install -e '.[gui]' -c constraints/ui.txt
+.venv/bin/blenderproc-ui
+```
+
+在“脚本”页设置：
+
+| 字段 | 示例路径 |
+|---|---|
+| Conda 环境 | `bop` |
+| Blender 目录 | `/home/你的用户名/blender/blender-4.2.1-linux-x64` |
+| BlenderProc CLI | `/home/你的用户名/miniconda3/envs/bop/bin/blenderproc` |
+| BOP toolkit | `/home/你的用户名/blenderproc/Linemod-Render/bop_toolkit` |
+
+`anaconda3` 或其他 conda 安装位置请相应替换。RGB 双掩码格式不要求配置 BOP toolkit；若暂时不需要 BOP，可跳过 toolkit 的安装及专用依赖步骤，但 Blender 默认依赖仍须准备。
+
+### 6. 准备资源并验证整个链路
+
+原文使用 BOP 模型及 `blenderproc download cc_textures ./backgrounds` 下载的 CC 材质。本 UI 的资源入口不同：目标导入带面的 PLY，遮挡物导入 PLY/OBJ，环境导入 `.hdr`/`.exr`；**CC 贴图目录不能直接当作 HDRI 导入**。可使用自己的模型、[BOP 模型](https://bop.felk.cvut.cz/datasets/)及 Poly Haven HDRI，分别核对来源授权和 m/cm/mm 单位。此应用无需运行原文旧版 `main_lm_upright.py`。
+
+在 UI 检查配置，导出到新的 `jobs/你的任务名`，先预检，再用新的输出目录试一个场景：
+
+```bash
+conda run --no-capture-output -n bop python jobs/你的任务名/run_job.py --check-only
+conda run --no-capture-output -n bop python jobs/你的任务名/run_job.py \
+  --num-scenes 1 --output /新的试渲染父目录
+```
+
+预检应通过且不创建数据集。实际任务结束后检查 `run_metadata/status.json`，并用下文检查器验证图片与标注。BOP 模式还应看到日志中的两个 `BOP EGL renderer` 检查均为真实 GPU。原文手动调用 `calc_gt_masks.py` / `calc_gt_info.py` 是旧流水线的步骤；本项目 BOP writer 已完成对应掩码及 GT 信息后处理，不要再次无差别覆盖标注。COCO/Linemod_preprocessed 转换不属于本工具输出职责。
+
 ## 第一次生成数据集
 
 ### 1. 导入目标，指定渲染中心
@@ -133,31 +251,31 @@ conda run --no-capture-output -n bop python /任务目录/run_job.py
 
 | 素材 | 内容 |
 |---|---|
-| [导出任务 jobs/render_job](jobs/render_job/) | `cores` 目标（`obj_id=1`，单位 m），15 个遮挡物资源（单位 mm），979 个 HDRI 路径；随机模式 **250 场景 × 4 视角 = 1000 张请求** |
-| [试渲染 renders/preview/dataset](renders/preview/dataset/) | **1 场景 × 4 视角**，640×480，OPTIX、50 samples、自动降噪；`completed`，requested=4、saved=4、skipped=0、exit_code=0 |
+| [导出任务 example/jobs/render_job](example/jobs/render_job/) | `cores` 目标（`obj_id=1`，单位 m），15 个遮挡物资源（单位 mm），979 个 HDRI 路径；随机模式 **250 场景 × 4 视角 = 1000 张请求** |
+| [试渲染 example/renders/preview/dataset](example/renders/preview/dataset/) | **1 场景 × 4 视角**，640×480，OPTIX、50 samples、自动降噪；`completed`，requested=4、saved=4、skipped=0、exit_code=0 |
 
 任务使用物理尺寸遮挡策略，每帧 1 个遮挡物、物理倍率 1；项目设定无遮挡场景比例 20%、其余遮挡率 10%–50%。场景比例在小样本中会取整，本次四帧实测遮挡率约为 **20.80%、29.70%、10.54%、29.97%**。1000 张是导出任务的配置规模，**不是已完成的渲染数量**。
 
 | RGB 构图 | 完整掩码 `mask` | 可见掩码 `mask_visib` |
 |---|---|---|
-| ![人工试渲染第一视角](renders/preview/dataset/rgb/000000.png) | ![目标完整轮廓](renders/preview/dataset/mask/000000_000001.png) | ![目标可见轮廓](renders/preview/dataset/mask_visib/000000_000001.png) |
-| ![人工试渲染第二视角](renders/preview/dataset/rgb/000001.png) | ![第二视角完整轮廓](renders/preview/dataset/mask/000001_000001.png) | ![第二视角可见轮廓](renders/preview/dataset/mask_visib/000001_000001.png) |
+| ![人工试渲染第一视角](example/renders/preview/dataset/rgb/000000.png) | ![目标完整轮廓](example/renders/preview/dataset/mask/000000_000001.png) | ![目标可见轮廓](example/renders/preview/dataset/mask_visib/000000_000001.png) |
+| ![人工试渲染第二视角](example/renders/preview/dataset/rgb/000001.png) | ![第二视角完整轮廓](example/renders/preview/dataset/mask/000001_000001.png) | ![第二视角可见轮廓](example/renders/preview/dataset/mask_visib/000001_000001.png) |
 
-其余视角及逐帧相机、摆放与遮挡率见 [manifest.json](renders/preview/dataset/run_metadata/manifest.json)，完成状态见 [status.json](renders/preview/dataset/run_metadata/status.json)。
+其余视角及逐帧相机、摆放与遮挡率见 [manifest.json](example/renders/preview/dataset/run_metadata/manifest.json)，完成状态见 [status.json](example/renders/preview/dataset/run_metadata/status.json)。
 
 ```bash
 # 在本机资源路径和运行环境有效时，检查示例任务
-conda run --no-capture-output -n bop python jobs/render_job/run_job.py --check-only
+conda run --no-capture-output -n bop python example/jobs/render_job/run_job.py --check-only
 
 # 一个完整场景的试渲染；必须使用尚不存在的最终数据集目录
-conda run --no-capture-output -n bop python jobs/render_job/run_job.py \
+conda run --no-capture-output -n bop python example/jobs/render_job/run_job.py \
   --num-scenes 1 --output /新的试渲染父目录
 
 # 只读检查仓库现有四帧结果
-.venv/bin/python tests/blender/check_rgb_masks.py renders/preview/dataset
+.venv/bin/python tests/blender/check_rgb_masks.py example/renders/preview/dataset
 ```
 
-任务包含导出时的运行时代码快照；模型、HDRI 和运行环境仍引用原机器的绝对路径，**未随仓库打包**。其他机器请在应用中替换资源与环境路径并重新导出，不要把示例任务当成开箱即用的数据包。
+`example/jobs/` 与 `example/renders/` **仅作导出结构和结果示例**，不作为默认运行目录。历史快照内的绝对路径保持原样；新任务请导出到根目录 `jobs/`，新结果写入根目录 `renders/`，不要覆盖示例。任务包含导出时的运行时代码快照；模型、HDRI 和运行环境仍引用原机器的绝对路径，**未随仓库打包**。其他机器请在应用中替换资源与环境路径并重新导出，不要把示例任务当成开箱即用的数据包。
 
 ## 输出格式与标签
 
@@ -244,6 +362,6 @@ env -u PYTHONPATH -u DEBUG PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 .venv/bin/python tests/blender/check_bop.py /BOP数据集路径
 ```
 
-v1.1 自动验收：**775 项单元与 Qt 测试通过**；真实 Blender 4.2.1 烟测覆盖后台构建、GUI 面板注册、场景/视角往返切换、相机矩阵、对象复用和视口状态，见 [场景/机位预览验证](docs/scene-camera-preview-verification.md)。用户另已完成人工测试，上方 `renders/preview/dataset` 保存了四帧实际渲染结果；`jobs/render_job` 保存对应配置来源的完整导出任务。历史 GPU 与算法检查见 [验证记录](docs/validation.md)。
+v1.1 自动验收：**775 项单元与 Qt 测试通过**；真实 Blender 4.2.1 烟测覆盖后台构建、GUI 面板注册、场景/视角往返切换、相机矩阵、对象复用和视口状态，见 [场景/机位预览验证](docs/scene-camera-preview-verification.md)。用户另已完成人工测试，上方 `example/renders/preview/dataset` 保存了四帧实际渲染结果；`example/jobs/render_job` 保存对应配置来源的完整导出任务。历史 GPU 与算法检查见 [验证记录](docs/validation.md)。
 
 详细设置见 [使用说明](docs/usage.md)、[GPU 与表面处理](docs/gpu-rendering.md)。设计与实施计划保存在 [docs/superpowers/](docs/superpowers/)。

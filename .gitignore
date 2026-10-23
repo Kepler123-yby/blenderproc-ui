@@ -8,8 +8,8 @@ __pycache__/
 build/
 dist/
 .blender-view/
-jobs/*
-!jobs/render_job/
+/jobs/
+/renders/
 .pi/
 /report-pi.md
 /report-review.md

@@ -344,6 +344,12 @@ BOP 图像与标注位于 `train_pbr/000000/` 等场景目录，相应掩码后�
 | 修改材质后视口差别很小 | 在 Blender 中查看真实光照；模型顶点色很暗时可试“统一基色” |
 | Qt 无法载入 xcb 插件 | 按 [使用说明](docs/usage.md#安装与启动) 检查桌面系统库 |
 
+## 致谢
+
+感谢 **华南理工大学华南虎战队** 开源工程视觉方案，并在 [《RM2023-华南理工大学-华南虎-工程视觉开源》](docs/RM2023-华南理工大学-华南虎-工程视觉开源.pdf) 中分享数据集制作、BlenderProc 渲染及环境配置经验。这些资料为本项目的环境配置教程与数据集制作流程提供了重要参考。
+
+相关开源项目：[Linemod-Render](https://gitee.com/yu-chenghuan/Linemod-Render)、[Linemod-Real](https://gitee.com/yu-chenghuan/Linemod-Real)。感谢战队及相关贡献者对 RoboMaster 视觉技术交流与开源生态的贡献。
+
 ## 验证与更多说明
 
 安装开发依赖后运行单元与 Qt 测试：

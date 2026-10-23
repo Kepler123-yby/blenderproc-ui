@@ -10,8 +10,8 @@
 从仓库根目录可只读检查示例结果：
 
 ```bash
-.venv/bin/python tests/blender/check_rgb_masks.py example/renders/preview/dataset
-.venv/bin/python tests/blender/verify_runtime.py example/jobs/render_job --static
+.venv/bin/python tests/blender/check_rgb_masks.py examples/renders/preview/dataset
+.venv/bin/python tests/blender/verify_runtime.py examples/jobs/render_job --static
 ```
 
 环境配置、示例图片与详细操作见根目录 [README](../README.md)。

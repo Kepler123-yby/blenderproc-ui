@@ -251,31 +251,31 @@ conda run --no-capture-output -n bop python /任务目录/run_job.py
 
 | 素材 | 内容 |
 |---|---|
-| [导出任务 example/jobs/render_job](example/jobs/render_job/) | `cores` 目标（`obj_id=1`，单位 m），15 个遮挡物资源（单位 mm），979 个 HDRI 路径；随机模式 **250 场景 × 4 视角 = 1000 张请求** |
-| [试渲染 example/renders/preview/dataset](example/renders/preview/dataset/) | **1 场景 × 4 视角**，640×480，OPTIX、50 samples、自动降噪；`completed`，requested=4、saved=4、skipped=0、exit_code=0 |
+| [导出任务 examples/jobs/render_job](examples/jobs/render_job/) | `cores` 目标（`obj_id=1`，单位 m），15 个遮挡物资源（单位 mm），979 个 HDRI 路径；随机模式 **250 场景 × 4 视角 = 1000 张请求** |
+| [试渲染 examples/renders/preview/dataset](examples/renders/preview/dataset/) | **1 场景 × 4 视角**，640×480，OPTIX、50 samples、自动降噪；`completed`，requested=4、saved=4、skipped=0、exit_code=0 |
 
 任务使用物理尺寸遮挡策略，每帧 1 个遮挡物、物理倍率 1；项目设定无遮挡场景比例 20%、其余遮挡率 10%–50%。场景比例在小样本中会取整，本次四帧实测遮挡率约为 **20.80%、29.70%、10.54%、29.97%**。1000 张是导出任务的配置规模，**不是已完成的渲染数量**。
 
 | RGB 构图 | 完整掩码 `mask` | 可见掩码 `mask_visib` |
 |---|---|---|
-| ![人工试渲染第一视角](example/renders/preview/dataset/rgb/000000.png) | ![目标完整轮廓](example/renders/preview/dataset/mask/000000_000001.png) | ![目标可见轮廓](example/renders/preview/dataset/mask_visib/000000_000001.png) |
-| ![人工试渲染第二视角](example/renders/preview/dataset/rgb/000001.png) | ![第二视角完整轮廓](example/renders/preview/dataset/mask/000001_000001.png) | ![第二视角可见轮廓](example/renders/preview/dataset/mask_visib/000001_000001.png) |
+| ![人工试渲染第一视角](examples/renders/preview/dataset/rgb/000000.png) | ![目标完整轮廓](examples/renders/preview/dataset/mask/000000_000001.png) | ![目标可见轮廓](examples/renders/preview/dataset/mask_visib/000000_000001.png) |
+| ![人工试渲染第二视角](examples/renders/preview/dataset/rgb/000001.png) | ![第二视角完整轮廓](examples/renders/preview/dataset/mask/000001_000001.png) | ![第二视角可见轮廓](examples/renders/preview/dataset/mask_visib/000001_000001.png) |
 
-其余视角及逐帧相机、摆放与遮挡率见 [manifest.json](example/renders/preview/dataset/run_metadata/manifest.json)，完成状态见 [status.json](example/renders/preview/dataset/run_metadata/status.json)。
+其余视角及逐帧相机、摆放与遮挡率见 [manifest.json](examples/renders/preview/dataset/run_metadata/manifest.json)，完成状态见 [status.json](examples/renders/preview/dataset/run_metadata/status.json)。
 
 ```bash
 # 在本机资源路径和运行环境有效时，检查示例任务
-conda run --no-capture-output -n bop python example/jobs/render_job/run_job.py --check-only
+conda run --no-capture-output -n bop python examples/jobs/render_job/run_job.py --check-only
 
 # 一个完整场景的试渲染；必须使用尚不存在的最终数据集目录
-conda run --no-capture-output -n bop python example/jobs/render_job/run_job.py \
+conda run --no-capture-output -n bop python examples/jobs/render_job/run_job.py \
   --num-scenes 1 --output /新的试渲染父目录
 
 # 只读检查仓库现有四帧结果
-.venv/bin/python tests/blender/check_rgb_masks.py example/renders/preview/dataset
+.venv/bin/python tests/blender/check_rgb_masks.py examples/renders/preview/dataset
 ```
 
-`example/jobs/` 与 `example/renders/` **仅作导出结构和结果示例**，不作为默认运行目录。历史快照内的绝对路径保持原样；新任务请导出到根目录 `jobs/`，新结果写入根目录 `renders/`，不要覆盖示例。任务包含导出时的运行时代码快照；模型、HDRI 和运行环境仍引用原机器的绝对路径，**未随仓库打包**。其他机器请在应用中替换资源与环境路径并重新导出，不要把示例任务当成开箱即用的数据包。
+`examples/jobs/` 与 `examples/renders/` **仅作导出结构和结果示例**，不作为默认运行目录。历史快照内的绝对路径保持原样；新任务请导出到根目录 `jobs/`，新结果写入根目录 `renders/`，不要覆盖示例。任务包含导出时的运行时代码快照；模型、HDRI 和运行环境仍引用原机器的绝对路径，**未随仓库打包**。其他机器请在应用中替换资源与环境路径并重新导出，不要把示例任务当成开箱即用的数据包。
 
 ## 输出格式与标签
 
@@ -368,6 +368,6 @@ env -u PYTHONPATH -u DEBUG PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 .venv/bin/python tests/blender/check_bop.py /BOP数据集路径
 ```
 
-v1.1 自动验收：**775 项单元与 Qt 测试通过**；真实 Blender 4.2.1 烟测覆盖后台构建、GUI 面板注册、场景/视角往返切换、相机矩阵、对象复用和视口状态，见 [场景/机位预览验证](docs/scene-camera-preview-verification.md)。用户另已完成人工测试，上方 `example/renders/preview/dataset` 保存了四帧实际渲染结果；`example/jobs/render_job` 保存对应配置来源的完整导出任务。历史 GPU 与算法检查见 [验证记录](docs/validation.md)。
+v1.1 自动验收：**775 项单元与 Qt 测试通过**；真实 Blender 4.2.1 烟测覆盖后台构建、GUI 面板注册、场景/视角往返切换、相机矩阵、对象复用和视口状态，见 [场景/机位预览验证](docs/scene-camera-preview-verification.md)。用户另已完成人工测试，上方 `examples/renders/preview/dataset` 保存了四帧实际渲染结果；`examples/jobs/render_job` 保存对应配置来源的完整导出任务。历史 GPU 与算法检查见 [验证记录](docs/validation.md)。
 
 详细设置见 [使用说明](docs/usage.md)、[GPU 与表面处理](docs/gpu-rendering.md)。设计与实施计划保存在 [docs/superpowers/](docs/superpowers/)。

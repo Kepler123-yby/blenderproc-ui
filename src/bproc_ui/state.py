@@ -22,6 +22,7 @@ class ProjectState(QObject):
         self.edited_target_key = config.targets[0].asset.key if config.targets else None
         self.meshes = {}
         self.candidate = None
+        self.candidate_config = None
         self.dirty = False
         self.path = None
         # Bumped whenever the project behind the editor changes; background work compares it to
@@ -56,6 +57,7 @@ class ProjectState(QObject):
         if self.edited_target_key not in {t.asset.key for t in config.targets}:
             self.edited_target_key = config.targets[0].asset.key if config.targets else None
         self.candidate = None
+        self.candidate_config = None
         self._touch_context()
         self.mesh_revision += 1
         self._set_dirty(False)
@@ -90,6 +92,7 @@ class ProjectState(QObject):
         keep_candidate = appearance_only and not stale and self.candidate is not None
         if not keep_candidate:
             self.candidate = None
+            self.candidate_config = None
         self._touch_context()
         self._set_dirty(True)
         self.project_changed.emit()
@@ -113,14 +116,16 @@ class ProjectState(QObject):
 
     def set_meshes(self, meshes):
         self.meshes = dict(meshes)
+        self.candidate_config = None
         if self.candidate is not None:
             self.candidate = None
             self.candidate_changed.emit(None)
         self.mesh_revision += 1
         self.meshes_changed.emit()
 
-    def set_candidate(self, candidate):
+    def set_candidate(self, candidate, *, config=None):
         self.candidate = candidate
+        self.candidate_config = (config if config is not None else self.config) if candidate is not None else None
         self.candidate_changed.emit(candidate)
 
     def load(self, path):

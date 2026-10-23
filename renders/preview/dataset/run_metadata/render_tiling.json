@@ -1,0 +1,140 @@
+{
+  "requested_use_tiling": true,
+  "requested_tile_size": 2048,
+  "original_use_tiling": true,
+  "original_tile_size": 2048,
+  "effective_use_tiling": true,
+  "effective_tile_size": 2048,
+  "stages": [
+    {
+      "stage": "prepare",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:44.977232+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:47.029964+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:47.751891+00:00"
+    },
+    {
+      "stage": "rgb",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:48.047905+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:49.318696+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:49.503041+00:00"
+    },
+    {
+      "stage": "rgb",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:49.662455+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:51.304677+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:51.485790+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:52.102834+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:52.283627+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:53.052844+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:53.235244+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:53.894490+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:54.082329+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:56.250684+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:56.440239+00:00"
+    },
+    {
+      "stage": "rgb",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:56.607495+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:57.987882+00:00"
+    },
+    {
+      "stage": "segmentation",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:58.177706+00:00"
+    },
+    {
+      "stage": "rgb",
+      "use_tiling": true,
+      "tile_size": 2048,
+      "at": "2026-10-23T18:05:58.345043+00:00"
+    }
+  ],
+  "log_path": "/tmp/bproc-ui-we9gr8oj/tiling/cycles_tiles.log",
+  "capability": "image_buffer_only: the scene and its geometry stay fully resident",
+  "tile_schedule_lines": [],
+  "scheduled_tiles_proven": false
+}

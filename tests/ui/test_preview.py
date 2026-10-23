@@ -47,8 +47,8 @@ def test_preview_impossible_layout_is_bounded_and_clears_candidate(state, monkey
     def reject(config, meshes, scene, view, attempt):
         calls.append(attempt)
         return Rejection("collision", "overlap")
-    monkeypatch.setattr("bproc_ui.preview.propose_candidate", reject)
-    monkeypatch.setattr("bproc_ui.preview.sample_scene",
+    monkeypatch.setattr("bproc_core.preview.propose_candidate", reject)
+    monkeypatch.setattr("bproc_core.preview.sample_scene",
                         lambda config, meshes, index, **kwargs: SimpleNamespace(scene_index=index))
     controller = PreviewController(state)
     state.set_candidate(object())
@@ -60,19 +60,22 @@ def test_preview_impossible_layout_is_bounded_and_clears_candidate(state, monkey
 
 def test_preview_covers_every_view_of_a_multi_view_project(state):
     _loaded(state)
-    state.update(views_per_scene=4, scene_count=1)
+    state.update(views_per_scene=4, scene_count=2,
+                 regions=(RegionSpec(key="a"), RegionSpec(key="b")))
     dirty_before = state.dirty
     controller = PreviewController(state)
     region = state.config.regions[0]
 
     for index in (0, 1, 3):
+        controller.scene_index = 1
         candidate = _preview(controller, region.key, index, 71)
         assert candidate is not None, f"视角 {index} 没有拿到候选"
         assert candidate.view_index == index
-        narrowed = replace(state.config, camera_mode="random", regions=(region,), fixed_cameras=(),
-                           scene_count=1, seed=71)
-        scene = propose_scene(narrowed, state.meshes, 0)
-        expected = propose_candidate(narrowed, state.meshes, scene, index, candidate.attempt_index)
+        effective = replace(state.config, seed=71)
+        scene = propose_scene(effective, state.meshes, 1)
+        expected = propose_candidate(effective, state.meshes, scene, index, candidate.attempt_index)
+        assert candidate.scene_index == 1
+        assert state.candidate_config == effective
         assert candidate_to_dict(candidate) == candidate_to_dict(expected)
 
     assert state.config.seed == 42 and state.dirty == dirty_before, "a preview must not edit the project"
@@ -100,12 +103,12 @@ def test_preview_switches_regions_including_a_wrapped_azimuth(state):
     controller = PreviewController(state)
 
     for key in ("r2", "r1", "r2"):
-        candidate = _preview(controller, key, 1, 5)
+        candidate = _preview(controller, key, None, 5)
         assert candidate is not None, f"区域 {key} 没有拿到候选"
         assert controller.region_key == key
 
 
-def test_second_fixed_camera_previews_at_view_index_zero(state):
+def test_second_fixed_camera_retains_production_view_index(state):
     _loaded(state)
     cameras = (FixedCameraSpec(key="c1", name="机位 1", radius_m=.5, azimuth_deg=-90.0, elevation_deg=25.0),
                FixedCameraSpec(key="c2", name="机位 2", radius_m=.6, azimuth_deg=90.0, elevation_deg=40.0))
@@ -114,9 +117,13 @@ def test_second_fixed_camera_previews_at_view_index_zero(state):
 
     candidate = _preview(controller, "c2", 3, 9)
 
-    assert candidate is not None and candidate.view_index == 0
+    assert candidate is not None and candidate.view_index == 1
     assert candidate.camera_kind == "fixed"
-    assert controller.region_key == "c2" and controller.sample_index == 0
+    assert controller.region_key == "c2" and controller.sample_index == 1
+    effective = replace(state.config, seed=9)
+    expected = propose_candidate(effective, state.meshes, propose_scene(effective, state.meshes, 0),
+                                 1, candidate.attempt_index)
+    assert candidate_to_dict(candidate) == candidate_to_dict(expected)
 
 
 def test_preview_of_an_empty_draft_clears_the_candidate(state):

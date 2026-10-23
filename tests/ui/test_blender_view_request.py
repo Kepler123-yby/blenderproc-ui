@@ -32,7 +32,8 @@ class Session:
 def opened(monkeypatch):
     calls = []
 
-    def prepare_scene(config, candidate, workspace, script):
+    def prepare_scene(config, candidate, workspace, script, *, geometry_only):
+        assert geometry_only is True
         return workspace / f"scene-{len(calls)}.blend"
 
     def open_gui(config, blend, script, workspace):
@@ -139,9 +140,12 @@ def test_a_stale_failure_is_reported_as_cancelled(state, viewer, pool, opened):
 
 def test_opening_uses_the_request_snapshot_not_the_live_editor(state, viewer, pool, opened):
     from bproc_core.config import HdriSpec
-    state.set_candidate(object())
+    effective = replace(state.config, seed=789, scene_count=2, views_per_scene=3)
+    state.set_candidate(object(), config=effective)
     viewer.open()
     request = pool.tasks[-1].request
+    assert request.config is effective
+    assert state.config.seed != request.config.seed
     pool.finish()
     assert opened[0][0] is request.config        # the snapshot that was built, not state.config
     assert "中性灰" in viewer._hdri_hint(replace(request.config, hdri=HdriSpec(files=())))
@@ -162,4 +166,15 @@ def test_a_second_click_while_building_is_ignored(state, viewer, pool, opened):
     state.set_candidate(object())
     assert viewer.open() is True
     assert viewer.open() is False
+    assert len(pool.tasks) == 1
+
+
+def test_closed_viewer_drops_finished_build_and_rejects_new_requests(state, viewer, pool, opened):
+    state.set_candidate(object())
+    assert viewer.open()
+    viewer.close()
+    pool.finish()
+    assert opened == []
+    assert not viewer.busy
+    assert not viewer.open()
     assert len(pool.tasks) == 1

@@ -46,7 +46,7 @@ class _BlockedProposal:
         self.result = object() if result is None else result
         self.next_result = object()
         self.calls = 0
-        monkeypatch.setattr("bproc_ui.preview.sample_scene", lambda *args, **kwargs: object())
+        monkeypatch.setattr("bproc_core.preview.sample_scene", lambda *args, **kwargs: object())
 
         def proposal(*args, **kwargs):
             self.calls += 1
@@ -56,7 +56,7 @@ class _BlockedProposal:
             self.release.wait(5)
             return self.result
 
-        monkeypatch.setattr("bproc_ui.preview.propose_candidate", proposal)
+        monkeypatch.setattr("bproc_core.preview.propose_candidate", proposal)
 
     def start(self, controller):
         controller.refresh()
@@ -292,9 +292,9 @@ def test_an_ordinary_asynchronous_result_is_still_applied(state, monkeypatch):
     statuses = []
     controller.status_changed.connect(statuses.append)
     sentinel = object()
-    original_sample = __import__("bproc_ui.preview", fromlist=["sample_scene"]).sample_scene
-    monkeypatch.setattr("bproc_ui.preview.sample_scene", lambda *args, **kwargs: object())
-    monkeypatch.setattr("bproc_ui.preview.propose_candidate", lambda *args, **kwargs: sentinel)
+    original_sample = __import__("bproc_core.preview", fromlist=["sample_scene"]).sample_scene
+    monkeypatch.setattr("bproc_core.preview.sample_scene", lambda *args, **kwargs: object())
+    monkeypatch.setattr("bproc_core.preview.propose_candidate", lambda *args, **kwargs: sentinel)
     assert original_sample is not None
 
     token_before = controller._token
@@ -311,8 +311,10 @@ def test_a_material_change_keeps_the_shown_candidate(state):
     _loaded(state)
     controller = PreviewController(state)
     candidate = object()
-    state.set_candidate(candidate)
+    effective = replace(state.config, seed=71)
+    state.set_candidate(candidate, config=effective)
     state.update(material=replace(state.config.material, color="solid", base_color="#ff0000"))
     assert state.candidate is candidate
+    assert state.candidate_config is effective, "retain the generating config until a new candidate arrives"
     assert not controller.waiting(), "only the debounced refresh may start a new search"
     controller.close()

@@ -9,8 +9,10 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from bproc_core.assets import load_mesh
+from bproc_core.config import ConfigError
 from bproc_core.project_io import load_project
-from bproc_core.scene import Rejection, candidate_from_dict, propose_candidate, sample_scene
+from bproc_core.scene import Rejection, candidate_from_dict
+from bproc_core.preview import candidate_for_preview
 from bproc_export.blender_view import open_gui, prepare_scene
 
 
@@ -22,6 +24,7 @@ def main(argv=None) -> int:
     parser.add_argument("--view", type=int, default=0, help="该场景内的视角序号")
     parser.add_argument("--workspace", type=Path, help="快照与日志目录，默认为项目同级的 .blender-view/")
     parser.add_argument("--script", type=Path, default=Path(__file__).with_name("blender_view.py"))
+    parser.add_argument("--geometry-only", action="store_true", help="只看几何；渲染按钮仍严格要求 GPU")
     arguments = parser.parse_args(argv)
 
     config = load_project(arguments.project)
@@ -30,21 +33,17 @@ def main(argv=None) -> int:
     else:
         assets = [t.asset for t in config.targets if t.enabled] + list(config.occluders)
         meshes = {asset.key: load_mesh(asset) for asset in assets}
-        candidate = None
-        scene = sample_scene(config, meshes, arguments.scene)
-        if isinstance(scene, Rejection):
-            print(f"场景无法摆放：{scene.reason}", file=sys.stderr)
-            return 1
-        for attempt in range(60):
-            proposal = propose_candidate(config, meshes, scene, arguments.view, attempt)
-            if not isinstance(proposal, Rejection):
-                candidate = proposal
-                break
-        if candidate is None:
-            print("没有可用候选机位；先调大距离或位置范围", file=sys.stderr)
+        candidate = candidate_for_preview(config, meshes, arguments.scene, arguments.view)
+        if isinstance(candidate, Rejection):
+            print(f"没有可用候选：{candidate.reason}: {candidate.detail}", file=sys.stderr)
             return 1
     workspace = arguments.workspace or Path(arguments.project).expanduser().absolute().parent / ".blender-view"
-    blend = prepare_scene(config, candidate, workspace, arguments.script)
+    try:
+        options = {"geometry_only": True} if arguments.geometry_only else {}
+        blend = prepare_scene(config, candidate, workspace, arguments.script, **options)
+    except ConfigError as error:
+        print(f"配置错误：{error}", file=sys.stderr)
+        return 1
     print(f"场景已构建 {blend}")
     session = open_gui(config, blend, arguments.script, workspace)
     print(f"已在 Blender 中打开 · 日志 {session.log}")

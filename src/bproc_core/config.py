@@ -488,7 +488,11 @@ def validate_project(config: ProjectConfig, *, check_files: bool = True) -> tupl
     if config.render.denoiser not in ("auto", "none", "OPTIX"):
         issue("render.denoiser", "降噪仅支持 auto、none 或 GPU OPTIX")
     if config.render.denoiser == "OPTIX" and config.render.device != "OPTIX":
-        issue("render.denoiser", "OptiX GPU 降噪需要 OPTIX 渲染后端；CUDA 等后端请使用自动或关闭")
+        issue("render.denoiser",
+              "OptiX GPU 降噪需要 OPTIX 渲染后端：请将降噪改为「自动 GPU」或「关闭」，"
+              "或在具备支持 OptiX 的 NVIDIA GPU 时把渲染后端切换为 OPTIX。"
+              "AMD/Intel GPU 或无 OptiX 的 macOS 环境不可使用该降噪选项；"
+              "本工具不会回退到 CPU 降噪")
     if finite("render.noise_threshold", config.render.noise_threshold) and not 0 <= config.render.noise_threshold <= 1:
         issue("render.noise_threshold", "自适应采样阈值必须位于 0 到 1，0 表示关闭")
     output = config.output

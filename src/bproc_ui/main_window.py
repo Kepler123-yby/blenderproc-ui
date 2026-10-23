@@ -209,16 +209,25 @@ class MainWindow(QMainWindow):
         sample_layout.setSpacing(8)
         controls = QHBoxLayout()
         controls.setSpacing(8)
+        controls.addWidget(QLabel("场景"))
+        self.scene_index = integer(1, 1, max(1, self.state.config.scene_count))
+        self.scene_index.setMaximumWidth(82)
+        self.scene_index.valueChanged.connect(self._sample_changed)
+        controls.addWidget(self.scene_index)
+        self.scene_total = QLabel()
+        controls.addWidget(self.scene_total)
         controls.addWidget(QLabel("机位来源"))
         self.preview_region = QComboBox()
         self.preview_region.setMinimumWidth(110)
-        self.preview_region.currentIndexChanged.connect(self._bottom_region_changed)
+        self.preview_region.setEnabled(False)  # actual source, not a second sampler
         controls.addWidget(self.preview_region)
         controls.addWidget(QLabel("视角"))
         self.sample_index = integer(1, 1, 10000000)
         self.sample_index.setMaximumWidth(82)
         self.sample_index.valueChanged.connect(self._sample_changed)
         controls.addWidget(self.sample_index)
+        self.view_total = QLabel()
+        controls.addWidget(self.view_total)
         controls.addWidget(QLabel("预览种子"))
         self.preview_seed = SeedEditor(self.state.config.seed)
         self.preview_seed.setMaximumWidth(100)
@@ -312,11 +321,9 @@ class MainWindow(QMainWindow):
         self._updating = False
 
     def _region_changed(self, key):
-        self.preview.refresh(key, self.sample_index.value() - 1, self.preview_seed.value())
+        self.preview.refresh(region_key=key, preview_seed=self.preview_seed.value(),
+                             scene_index=self.scene_index.value() - 1)
         self.scene_view.set_regions(self.state.config, key)
-        self._updating = True
-        self.preview_region.setCurrentIndex(self.preview_region.findData(key))
-        self._updating = False
 
     def _bottom_region_changed(self, index):
         if not self._updating and index >= 0:
@@ -324,7 +331,9 @@ class MainWindow(QMainWindow):
 
     def _sample_changed(self):
         if not self._updating and hasattr(self, "preview"):
-            self.preview.refresh(self.sampling.current_region_key, self.sample_index.value() - 1, self.preview_seed.value())
+            self.preview.refresh(sample_index=self.sample_index.value() - 1,
+                                 preview_seed=self.preview_seed.value(),
+                                 scene_index=self.scene_index.value() - 1)
 
     def _refresh_clicked(self):
         self.preview_seed.setValue(self.preview_seed.value() + 1)
@@ -433,6 +442,11 @@ class MainWindow(QMainWindow):
         self.scene_view.set_selection(self.state.edited_target_key)
         self.scene_view.set_candidates([candidate] if candidate else [])
         if candidate:
+            self._updating = True
+            self.scene_index.setValue(candidate.scene_index + 1)
+            self.sample_index.setValue(candidate.view_index + 1)
+            self.preview_region.setCurrentIndex(self.preview_region.findData(candidate.region_key))
+            self._updating = False
             self.camera_preview.set_camera(self.state.config.camera, candidate.camera)
             anchor = next(t for t in self.state.config.targets if t.asset.key == candidate.anchor_key)
             fixed = next((c for c in self.state.config.fixed_cameras if c.key == candidate.region_key), None)
@@ -456,11 +470,16 @@ class MainWindow(QMainWindow):
                     caption += "（估计，需像素验收）"
             self.viewport_caption.setText(caption + "    |    左键旋转 / Shift + 左键平移 / 滚轮缩放")
         else:
+            self.preview_region.setCurrentIndex(-1)
+            if hasattr(self.camera_preview, "caption"):
+                self.camera_preview.caption.setText("无有效候选 · 未经像素遮挡验收")
             self.viewport_caption.setText("  用户透视 · 辅助网格不参与输出")
 
     def _preview_status(self, message):
         """Transient line only: the persistent guidance lives in ``preview_hint``."""
         self.preview_state.setText(message)
+        if self.preview.waiting():
+            self.preview_region.setCurrentIndex(-1)
 
     def _update_hint(self):
         if self.state.config.camera_mode == "fixed":
@@ -524,12 +543,15 @@ class MainWindow(QMainWindow):
         for region in config.regions:
             self.preview_region.addItem("◌ " + region.name, region.key)
         self.preview_region.setCurrentIndex(self.preview_region.findData(self.sampling.current_region_key))
-        # A preview is always one scene, so its index walks the views of that scene, not the
-        # whole dataset; a pinned camera has exactly one view.
-        pinned = config.camera_mode == "fixed"
-        self.sample_index.setMaximum(1 if pinned else max(1, config.views))
-        self.sample_index.setValue(1 if pinned else self.sample_index.value())
-        self.sample_index.setEnabled(not pinned)
+        self.scene_index.setMaximum(max(1, config.scene_count))
+        self.scene_total.setText(f"/ {config.scene_count}")
+        self.sample_index.setMaximum(max(1, config.views))
+        self.sample_index.setEnabled(config.views > 1)
+        self.view_total.setText(f"/ {config.views}")
+        self.preview.scene_index = self.scene_index.value() - 1
+        self.preview.sample_index = self.sample_index.value() - 1
+        if self.state.candidate is None:
+            self.preview_region.setCurrentIndex(-1)
         self.scene_view.set_regions(config, self.sampling.current_region_key)
         self.lod_mode.setCurrentIndex(self.lod_mode.findData(config.viewport.lod_mode))
         self._lod_refresh()
@@ -544,6 +566,7 @@ class MainWindow(QMainWindow):
                                      f"    |    {config.scene_count:,} 场景 × {config.views} 视角 = {config.total_shots:,} 张    |    "
                                      + ("RGB + mask + mask_visib" if config.output.format == "rgb_masks" else "BOP"))
         self._update_hint()
+        self.preview_hint.setText(self.preview_hint.text() + " 候选预览 · 未经像素遮挡验收。")
         self._update_title()
         self._updating = False
 
@@ -609,6 +632,7 @@ class MainWindow(QMainWindow):
                     self.settings.setValue(key, splitter.saveState())
             # A search still in flight must not write a candidate into state after the editor is gone.
             self.preview.close()
+            self.export_panel.viewer.close()
             self.lod.close()
             self.camera_preview.hide()
             event.accept()

@@ -1,0 +1,8 @@
+{"scene_index": 0, "view_index": 0, "attempt_index": 0, "reason": "no_occluder_room", "phase": "view"}
+{"scene_index": 0, "view_index": 2, "attempt_index": 0, "reason": "occlusion", "phase": "view", "occlusion_ratio": 0.0, "required": [0.1, 0.5]}
+{"scene_index": 0, "view_index": 2, "attempt_index": 1, "reason": "no_occluder_room", "phase": "view"}
+{"scene_index": 0, "view_index": 2, "attempt_index": 2, "reason": "no_occluder_room", "phase": "view"}
+{"scene_index": 0, "view_index": 2, "attempt_index": 3, "reason": "occlusion", "phase": "view", "occlusion_ratio": 0.0, "required": [0.1, 0.5]}
+{"scene_index": 0, "view_index": 2, "attempt_index": 4, "reason": "no_occluder_room", "phase": "view"}
+{"scene_index": 0, "view_index": 2, "attempt_index": 5, "reason": "occlusion", "phase": "view", "occlusion_ratio": 0.0, "required": [0.1, 0.5]}
+{"scene_index": 0, "view_index": 2, "attempt_index": 6, "reason": "occlusion", "phase": "view", "occlusion_ratio": 0.04014132888409072, "required": [0.1, 0.5]}

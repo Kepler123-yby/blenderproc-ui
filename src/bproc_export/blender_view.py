@@ -14,6 +14,7 @@ import os
 import shlex
 import subprocess
 
+from bproc_core.config import ConfigError, validate_project
 from bproc_core.project_io import save_project
 from bproc_core.scene import candidate_to_dict
 
@@ -72,7 +73,8 @@ def build_command(locator: dict, script: Path, scene: Path, candidate: Path, ble
 
 def gui_command(locator: dict, script: Path, blend: Path) -> list[str]:
     return [str(Path(locator["blender_dir"]) / "blender"), str(blend),
-            "--python", str(script), "--", str(script), "--view-only"]
+            "--python", str(script), "--", str(script), str(blend.parent / "scratch"),
+            "--view-only", "--blenderproc-package", locator["blenderproc_package_dir"]]
 
 
 def _tail(path: Path, lines: int = 6) -> str:
@@ -83,9 +85,26 @@ def _tail(path: Path, lines: int = 6) -> str:
     return "\n".join(text[-lines:])
 
 
+def render_problems(config) -> tuple[str, ...]:
+    """Render-setting errors that must stop a scene build before Blender starts.
+
+    Only ``render.*`` is guarded: viewing one scene has no business requiring the dataset
+    export conditions (output conflicts, shot counts) to be settled first.
+    """
+    return tuple(f"{issue.field}: {issue.message}"
+                 for issue in validate_project(config, check_files=False)
+                 if issue.severity == "error" and issue.field.startswith("render."))
+
+
 def prepare_scene(config, candidate, workspace: Path, script: Path,
-                  runner=subprocess.run) -> Path:
+                  runner=subprocess.run, *, geometry_only=False) -> Path:
     """Rebuild the scene in a background Blender process and return the saved ``.blend``."""
+    # Reject invalid render settings here, before the runtime lookup or any build artefact, so
+    # every caller (GUI viewer, tools/open_blender.py) gets the same Chinese advice instead of
+    # Blender's exit code and traceback.
+    problems = () if geometry_only else render_problems(config)
+    if problems:
+        raise ConfigError("\n".join(problems))
     locator = locate_runtime(config)
     workspace = Path(workspace).expanduser().absolute()
     scene, payload = write_snapshot(config, candidate, workspace)
@@ -94,6 +113,8 @@ def prepare_scene(config, candidate, workspace: Path, script: Path,
     blend = workspace / "scene.blend"
     log = workspace / "build.log"
     command = build_command(locator, Path(script).expanduser().absolute(), scene, payload, blend, scratch)
+    if geometry_only:
+        command.insert(command.index("--save-blend"), "--geometry-only")
     with log.open("wb") as handle:
         completed = runner(command, env=build_environment(locator), stdout=handle,
                            stderr=subprocess.STDOUT, timeout=BUILD_TIMEOUT_S)

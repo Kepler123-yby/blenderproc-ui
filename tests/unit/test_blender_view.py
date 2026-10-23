@@ -1,11 +1,13 @@
 """The Blender bridge only builds commands, environments and snapshots; no Blender here."""
 
 from pathlib import Path
+from dataclasses import replace
 import json
 
 import pytest
 
 from bproc_core.assets import load_mesh
+from bproc_core.config import ConfigError, validate_project
 from bproc_core.project_io import load_project
 from bproc_core.scene import candidate_from_dict, candidate_to_dict, propose_candidate, propose_scene
 from bproc_export import blender_view
@@ -138,3 +140,73 @@ def test_open_gui_starts_a_detached_session_and_keeps_its_log(tmp_path, monkeypa
     assert session.log == tmp_path / "view/blender.log"
     assert session.blend == tmp_path / "scene.blend"
     assert "--view-only" in session.command
+
+
+NON_OPTIX_BACKENDS = ("CUDA", "HIP", "ONEAPI", "METAL")
+
+
+@pytest.mark.parametrize("device", NON_OPTIX_BACKENDS)
+def test_prepare_scene_rejects_an_optix_denoiser_before_any_build_work(tmp_path, monkeypatch, device):
+    config = make_project(tmp_path)
+    invalid = replace(config, render=replace(config.render, device=device, denoiser="OPTIX"))
+    calls = []
+
+    def locate(project):
+        calls.append("locate_runtime")
+        return _locator(tmp_path)
+
+    monkeypatch.setattr(blender_view, "locate_runtime", locate)
+    monkeypatch.setattr(blender_view, "write_snapshot",
+                        lambda *args, **kwargs: calls.append("write_snapshot") or (None, None))
+    workspace = tmp_path / "view"
+
+    with pytest.raises(ConfigError) as error:
+        blender_view.prepare_scene(invalid, _candidate(invalid), workspace, tmp_path / "view.py",
+                                   runner=lambda *args, **kwargs: pytest.fail("Blender must not start"))
+
+    message = str(error.value)
+    assert "render.denoiser" in message
+    for hint in ("自动 GPU", "关闭", "OPTIX", "AMD/Intel", "macOS"):
+        assert hint in message
+    assert calls == []
+    assert not workspace.exists()
+    assert invalid.render.device == device and invalid.render.denoiser == "OPTIX"
+
+
+@pytest.mark.parametrize("device,denoiser", [
+    ("OPTIX", "auto"), ("OPTIX", "OPTIX"), ("CUDA", "auto"), ("CUDA", "none"),
+])
+def test_prepare_scene_still_builds_legal_render_settings(tmp_path, monkeypatch, device, denoiser):
+    config = make_project(tmp_path)
+    legal = replace(config, render=replace(config.render, device=device, denoiser=denoiser))
+    monkeypatch.setattr(blender_view, "locate_runtime", lambda project: _locator(tmp_path))
+    seen = []
+
+    def runner(command, **kwargs):
+        seen.append(command)
+        kwargs["stdout"].write(b"BUILD LOG\n")
+        Path(command[-1]).write_bytes(b"BLENDER")
+        return _Done(0)
+
+    blend = blender_view.prepare_scene(legal, _candidate(legal), tmp_path / "view",
+                                       tmp_path / "view.py", runner=runner)
+    assert blend.read_bytes() == b"BLENDER"
+    assert len(seen) == 1
+
+
+def test_prepare_scene_does_not_require_an_unused_dataset_directory(tmp_path, monkeypatch):
+    """Viewing one scene must not inherit export readiness, e.g. a free dataset path."""
+    config = make_project(tmp_path)
+    (config.output.root / config.output.dataset_name).mkdir(parents=True)
+    assert "output.root" in {issue.field for issue in validate_project(config)
+                             if issue.severity == "error"}
+    monkeypatch.setattr(blender_view, "locate_runtime", lambda project: _locator(tmp_path))
+
+    def runner(command, **kwargs):
+        kwargs["stdout"].write(b"BUILD LOG\n")
+        Path(command[-1]).write_bytes(b"BLENDER")
+        return _Done(0)
+
+    blend = blender_view.prepare_scene(config, _candidate(config), tmp_path / "view",
+                                       tmp_path / "view.py", runner=runner)
+    assert blend.read_bytes() == b"BLENDER"

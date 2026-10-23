@@ -51,11 +51,12 @@ class BlenderBackend:
         self._original_render = None
         self.gpu_devices = None
         self.tiling = None
+        self.geometry_scene = None
 
-    def prepare(self, config, meshes) -> None:
+    def prepare(self, config, meshes, *, geometry_only=False) -> None:
         if self.api is None:
             self.api = importlib.import_module("blenderproc")
-        if getattr(self.api, "__name__", None) == "blenderproc":
+        if not geometry_only and getattr(self.api, "__name__", None) == "blenderproc":
             # BlenderProc 2.8's progress reader is a non-daemon thread. A signal
             # during thread.start can bypass its cleanup and hang Python exit.
             # Preserve native Cycles terminal output and avoid that thread/pipe
@@ -73,18 +74,28 @@ class BlenderBackend:
         self._temporary = tempfile.TemporaryDirectory(prefix="bproc-ui-")
         (Path(self._temporary.name) / "seg").mkdir()
         (Path(self._temporary.name) / "rgb").mkdir()
-        self.api.init()
-        self.api.renderer.set_max_amount_of_samples(config.render.samples)
-        self.gpu_devices = configure_gpu(self.api, self.bpy, config.render.device)
-        configure_rgb_quality(self.api, self.bpy, config.render)
-        # Native Cycles image tiling is applied and verified against the live scene, and its own
-        # `render_stats` lines are captured as execution evidence.
-        self.tiling = NativeTiling(self.bpy, config.render, Path(self._temporary.name) / "tiling")
-        self.tiling.apply("prepare")
-        self.tiling.install_observer()
-        self.api.renderer.set_output_format("PNG", 8)
-        if config.output.format == "bop":
-            self.api.renderer.enable_depth_output(activate_antialiasing=False)
+        if geometry_only:
+            # bproc.init() selects devices and a denoiser AND deletes unrelated scenes.
+            # A preview instead owns a native scene; all assembly below is shared with rendering.
+            scene = self.bpy.data.scenes.new("BlenderProc Preview")
+            self.geometry_scene = scene
+            self.bpy.context.window.scene = scene
+            scene.world = self.bpy.data.worlds.new("Preview World")
+            data = self.bpy.data.cameras.new("Preview Camera")
+            camera = self.bpy.data.objects.new("Preview Camera", data)
+            scene.collection.objects.link(camera)
+            scene.camera = camera
+            scene.render.engine = "CYCLES"
+        else:
+            self.api.init()
+            self.configure_render()
+            # Native tiling is used only by actual dataset rendering.
+            self.tiling = NativeTiling(self.bpy, config.render, Path(self._temporary.name) / "tiling")
+            self.tiling.apply("prepare")
+            self.tiling.install_observer()
+            self.api.renderer.set_output_format("PNG", 8)
+            if config.output.format == "bop":
+                self.api.renderer.enable_depth_output(activate_antialiasing=False)
         for target in config.targets:
             if target.enabled:
                 obj = self._make_object(meshes[target.asset.key], f"target_{target.obj_id:06d}", target=True)
@@ -103,6 +114,19 @@ class BlenderBackend:
         self.light = self.api.types.Light()
         self.light.set_type("POINT")
         self._create_world()
+
+    def configure_render(self):
+        """Explicit strict GPU boundary, also used by the native preview render button."""
+        from bproc_core.config import ConfigError, validate_project
+
+        problems = [f"{i.field}: {i.message}" for i in validate_project(self.config, check_files=False)
+                    if i.severity == "error" and i.field.startswith("render.")]
+        if problems:
+            raise ConfigError("\n".join(problems))
+        self.api.renderer.set_max_amount_of_samples(self.config.render.samples)
+        self.gpu_devices = configure_gpu(self.api, self.bpy, self.config.render.device)
+        configure_rgb_quality(self.api, self.bpy, self.config.render)
+        self.bpy.context.scene.cycles.preview_samples = min(32, self.config.render.samples)
 
     def _make_object(self, mesh, name, target=False):
         data = self.bpy.data.meshes.new(name)
@@ -157,6 +181,8 @@ class BlenderBackend:
     def _hide_all(self) -> None:
         for obj in self.objects:
             obj.hide(True)
+            if self.geometry_scene is not None:
+                obj.blender_obj.hide_viewport = True
 
     def apply(self, candidate) -> None:
         """Show exactly the candidate's placements, or leave no occluder visible.
@@ -198,6 +224,8 @@ class BlenderBackend:
                     used[placement.asset_key] = index + 1
                 obj.set_local2world_mat(placement.world_from_model)
                 obj.hide(False)
+                if self.geometry_scene is not None:
+                    obj.blender_obj.hide_viewport = False
             camera = self.config.camera
             K = np.array([[camera.fx, 0, camera.cx], [0, camera.fy, camera.cy], [0, 0, 1.]])
             self.api.camera.set_intrinsics_from_K_matrix(K, camera.width, camera.height,

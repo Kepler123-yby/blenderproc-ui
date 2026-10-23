@@ -46,7 +46,8 @@ class _Prepare(QRunnable):
     def run(self):
         request = self.request
         try:
-            blend = prepare_scene(request.config, request.candidate, request.workspace, request.script)
+            blend = prepare_scene(request.config, request.candidate, request.workspace, request.script,
+                                  geometry_only=True)
         except Exception as error:
             self.signals.failed.emit(request, str(error))
         else:
@@ -66,6 +67,7 @@ class BlenderViewer(QObject):
         self.session = None
         self._request = None
         self._next_request = 0
+        self._closed = False
 
     @property
     def script(self) -> Path:
@@ -87,8 +89,15 @@ class BlenderViewer(QObject):
     def busy(self) -> bool:
         return self._request is not None
 
+    def close(self):
+        """A finishing background build must not open a window after the editor closes."""
+        self._closed = True
+        self._request = None
+
     def open(self) -> bool:
         """Rebuild the candidate scene in the background, then open the Blender GUI."""
+        if self._closed:
+            return False
         candidate = self.state.candidate
         if candidate is None:
             self.failed.emit("先调整机位得到候选构图，才能在 Blender 中查看")
@@ -97,7 +106,8 @@ class BlenderViewer(QObject):
             self.status.emit("场景正在重建，请稍候")
             return False
         self._next_request += 1
-        request = ViewRequest(self._next_request, self.state.context_revision, self.state.config,
+        config = self.state.candidate_config or self.state.config
+        request = ViewRequest(self._next_request, self.state.context_revision, config,
                               candidate, self.workspace, self.script)
         task = _Prepare(request)
         task.signals.prepared.connect(self._prepared)

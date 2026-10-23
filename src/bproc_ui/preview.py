@@ -11,7 +11,9 @@ from dataclasses import replace
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
-from bproc_core.scene import Rejection, propose_candidate, sample_scene
+from bproc_core.scene import Rejection
+from bproc_core.preview import candidate_for_preview
+from bproc_core.sampling import allocate_regions
 
 #: One refresh may spend at most this long proposing. A hundred-occluder scene needs ~5 s for the
 #: full budget; the UI should report that instead of freezing the window.
@@ -33,12 +35,13 @@ class _Search(QRunnable):
     class Signals(QObject):
         done = Signal(int, object, object, bool)
 
-    def __init__(self, token, config, meshes, view_index, attempts, deadline_s):
+    def __init__(self, token, config, meshes, scene_index, view_index, attempts, deadline_s):
         super().__init__()
         self.signals = _Search.Signals()
         self.token = token
         self._config = config
         self._meshes = meshes
+        self._scene_index = scene_index
         self._view_index = view_index
         self._attempts = attempts
         self._deadline_s = deadline_s
@@ -48,27 +51,18 @@ class _Search(QRunnable):
         self._cancelled = True
 
     def run(self):
-        from time import monotonic
-
-        started = monotonic()
         rejection, result, timed_out, error = None, None, False, None
         try:
-            scene = sample_scene(self._config, self._meshes, 0)
-            if not isinstance(scene, Rejection):
-                for attempt in range(self._attempts):
-                    if self._cancelled:
-                        break
-                    candidate = propose_candidate(self._config, self._meshes, scene, self._view_index, attempt)
-                    if not isinstance(candidate, Rejection):
-                        result = candidate
-                        break
-                    rejection = candidate
-                    if monotonic() - started > self._deadline_s:
-                        timed_out = True
-                        break
+            candidate = candidate_for_preview(
+                self._config, self._meshes, self._scene_index, self._view_index,
+                max_attempts=self._attempts, deadline_s=self._deadline_s,
+                cancelled=lambda: self._cancelled)
+            if isinstance(candidate, Rejection):
+                rejection = candidate
+                timed_out = candidate.reason == "timeout"
             else:
-                rejection = scene
-        except (ValueError, KeyError, TypeError) as exception:
+                result = candidate
+        except Exception as exception:
             error = exception
         # Always report, even when cancelled: the controller needs the token back to drop the entry,
         # and a superseded search must not leave a dangling reference to its signal object.
@@ -88,6 +82,8 @@ class PreviewController(QObject):
         self.region_key = (state.config.fixed_cameras[0].key if state.config.fixed_cameras else
                            state.config.regions[0].key if state.config.regions else None)
         self.sample_index = 0
+        self.scene_index = 0
+        self._candidate_config = None
         self.preview_seed = state.config.seed
         self._token = 0
         self._search = None
@@ -138,7 +134,7 @@ class PreviewController(QObject):
             self._search = None
         self._request_context = None
 
-    def refresh(self, region_key=None, sample_index=None, preview_seed=None):
+    def refresh(self, region_key=None, sample_index=None, preview_seed=None, scene_index=None):
         if self._closed:
             return None  # closed: no search, and no status or candidate write-back
         if region_key is not None:
@@ -147,37 +143,36 @@ class PreviewController(QObject):
             self.sample_index = sample_index
         if preview_seed is not None:
             self.preview_seed = preview_seed
+        if scene_index is not None:
+            self.scene_index = scene_index
+        self._timer.stop()
         config = self.state.config
-        fixed = next((c for c in config.fixed_cameras if c.key == self.region_key), None)
-        region = None if fixed else next((r for r in config.regions if r.key == self.region_key), None)
-        if fixed is None and region is None:
-            fixed = config.fixed_cameras[0] if config.fixed_cameras else None
-            region = None if fixed else (config.regions[0] if config.regions else None)
-            self.region_key = fixed.key if fixed else region.key if region else None
-        if fixed is None and region is None or not config.targets:
+        sources = config.fixed_cameras if config.camera_mode == "fixed" else config.regions
+        if not sources or not config.targets or config.views < 1 or config.scene_count < 1:
             self._invalidate()
             self.state.set_candidate(None)
             self.status_changed.emit("导入目标并设置渲染中心，即可预览候选构图")
             return None
-        # The preview is "scene 0 of one camera source". Random mode must keep the project's view
-        # count: narrowing it to one made every 视角 after the first an out-of-range index.
-        views = max(1, int(config.views))
-        if fixed is not None:
-            view_index = 0
-            self.sample_index = 0
-            preview_config = replace(config, camera_mode="fixed", regions=(), fixed_cameras=(fixed,),
-                                     views_per_scene=1, scene_count=1, seed=self.preview_seed)
-        else:
-            view_index = min(max(0, int(self.sample_index)), views - 1)
-            self.sample_index = view_index
-            preview_config = replace(config, camera_mode="random", regions=(region,), fixed_cameras=(),
-                                     scene_count=1, seed=self.preview_seed)
+        self.scene_index = min(max(0, int(self.scene_index)), config.scene_count - 1)
+        self.sample_index = min(max(0, int(self.sample_index)), config.views - 1)
+        # A source click navigates to its assigned first view; never narrow the sampler config.
+        if region_key is not None and sample_index is None:
+            counts = ({c.key: 1 for c in sources} if config.camera_mode == "fixed" else
+                      allocate_regions(config.views, [r.key for r in sources]))
+            if not counts.get(region_key, 0):
+                self._invalidate()
+                self.status_changed.emit("该来源没有分配视角，请选择有效视角编号")
+                return None
+            self.sample_index = sum(n for key, n in list(counts.items())[:list(counts).index(region_key)])
+        view_index = self.sample_index
+        preview_config = replace(config, seed=self.preview_seed)
         attempts = min(config.occlusion.max_attempts, 30)
         self._invalidate()
         token = self._token
         self._request_context = (self.state.context_revision, self.state.mesh_revision)
-        search = _Search(token, preview_config, dict(self.state.meshes), view_index, attempts,
-                         SEARCH_DEADLINE_S)
+        self._candidate_config = preview_config
+        search = _Search(token, preview_config, dict(self.state.meshes), self.scene_index,
+                         view_index, attempts, SEARCH_DEADLINE_S)
         search.signals.done.connect(self._on_done)
         self._search = search
         self._live[token] = search
@@ -201,8 +196,9 @@ class PreviewController(QObject):
             self.status_changed.emit(f"预览参数无效：{outcome}")
             return
         if result is not None:
-            self.state.set_candidate(result)
-            self.status_changed.emit("候选构图已更新 · 尚未经过 Blender 像素遮挡验收")
+            self.region_key = getattr(result, "region_key", self.region_key)
+            self.state.set_candidate(result, config=self._candidate_config)
+            self.status_changed.emit("候选构图已更新 · 候选预览 · 未经像素遮挡验收")
             self.refreshed.emit(result)
             return
         self.state.set_candidate(None)

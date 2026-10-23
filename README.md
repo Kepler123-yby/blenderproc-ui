@@ -1,5 +1,7 @@
 # BlenderProc 数据集工作区
 
+当前版本：**v1.1**。新增应用与 Blender 内的场景/相机视角切换，几何预览与严格 GPU 渲染预览分离。
+
 面向 Ubuntu 22.04 的本地桌面工具：导入目标与遮挡物，设置相机、光照和遮挡率，导出独立脚本，在 conda `bop` 环境中用 GPU 批量渲染。输出 **RGB + mask + mask_visib** 或 **BOP**；用于 YOLO 时，由外部工具转换标签。
 
 界面采用 Blender 风格，包含对象树、三维视口和独立相机窗口。基本流程是：**导入资源 → 设置采样 → 检查构图 → 导出任务 → 终端预检 → 小批量试渲染 → 完整渲染**。
@@ -88,7 +90,13 @@ python3 -m venv .venv
 
 ### 5. 预览、保存与导出
 
-独立相机窗口显示当前内参、分辨率和候选构图；关闭后用“视图 → 相机视角”或 UI 中的 F12 重开。三维视口用于检查构图，真实光照和材质可通过“在 Blender 中打开当前构图”查看。生成的 `.blend` 和日志保存在项目同级 `.blender-view/`；在 Blender 中修改的参数需要手动填回 UI。
+在底部“采样机位”栏选择 **场景编号、视角编号和预览种子**，总览与独立相机窗口同步显示同一个候选。固定模式的视角编号对应机位列表，随机模式保留全部区域的视角分配；切换编号不改变项目参数。独立相机窗口关闭后，用“视图 → 相机视角”或 UI 中的 F12 重开。
+
+点击“在 Blender 中打开当前构图”，默认进入 **SOLID 几何相机视图**，无需先通过 GPU/降噪检查。在 Blender 三维视口按 **N → BlenderProc → 场景 / 相机预览**，选择场景与视角后点“更新候选”，通过“相机视图”与“场景总览”检查构图、物体布局及相机位置/朝向；面板同时显示相机、灯光和环境参数。
+
+需要真实光照和材质时，点击 **“渲染预览（严格 GPU）”**。该入口验证 GPU 与降噪组合，失败时给出修改建议并保留几何视图，不回退 CPU。生成的 `.blend`、配置快照和日志保存在项目同级 `.blender-view/`；直接双击 `.blend` 不会自动注册面板，请从应用或命令行入口重新打开。场景参数在原应用修改，不做 Blender 反向同步。
+
+两端显示的都是 **候选预览，未经像素遮挡验收**。正式生成可能因像素验收而重试，不保证最终接受帧与当前候选完全相同。
 
 按 Ctrl+S 保存项目 YAML，再“检查配置”。在“脚本”页选择格式、数据集父目录与名称，填写：
 
@@ -118,6 +126,38 @@ conda run --no-capture-output -n bop python /任务目录/run_job.py
 `--output` 指**父目录**，实际结果位于 `<父目录>/<dataset_name>`。试渲染与正式渲染要使用不同的最终目录。已有结果目录即使为空也拒绝覆盖；中断后换新目录运行，目前不支持断点续跑。
 
 可用 `--format rgb_masks` 或 `--format bop` 临时覆盖输出格式。试渲染推荐 `--num-scenes N`；旧 `--num-samples` 会折算成整场景，不能保证恰好输出指定张数，也不能与 `--num-scenes` 同用。普通采样参数可编辑导出任务的 `scene.yaml`，环境路径或应用代码更新后应重新导出。
+
+## 仓库中的人工测试素材
+
+用户已完成人工测试，当前仓库保存以下任务与结果，替换原先的六帧示例：
+
+| 素材 | 内容 |
+|---|---|
+| [导出任务 jobs/render_job](jobs/render_job/) | `cores` 目标（`obj_id=1`，单位 m），15 个遮挡物资源（单位 mm），979 个 HDRI 路径；随机模式 **250 场景 × 4 视角 = 1000 张请求** |
+| [试渲染 renders/preview/dataset](renders/preview/dataset/) | **1 场景 × 4 视角**，640×480，OPTIX、50 samples、自动降噪；`completed`，requested=4、saved=4、skipped=0、exit_code=0 |
+
+任务使用物理尺寸遮挡策略，每帧 1 个遮挡物、物理倍率 1；项目设定无遮挡场景比例 20%、其余遮挡率 10%–50%。场景比例在小样本中会取整，本次四帧实测遮挡率约为 **20.80%、29.70%、10.54%、29.97%**。1000 张是导出任务的配置规模，**不是已完成的渲染数量**。
+
+| RGB 构图 | 完整掩码 `mask` | 可见掩码 `mask_visib` |
+|---|---|---|
+| ![人工试渲染第一视角](renders/preview/dataset/rgb/000000.png) | ![目标完整轮廓](renders/preview/dataset/mask/000000_000001.png) | ![目标可见轮廓](renders/preview/dataset/mask_visib/000000_000001.png) |
+| ![人工试渲染第二视角](renders/preview/dataset/rgb/000001.png) | ![第二视角完整轮廓](renders/preview/dataset/mask/000001_000001.png) | ![第二视角可见轮廓](renders/preview/dataset/mask_visib/000001_000001.png) |
+
+其余视角及逐帧相机、摆放与遮挡率见 [manifest.json](renders/preview/dataset/run_metadata/manifest.json)，完成状态见 [status.json](renders/preview/dataset/run_metadata/status.json)。
+
+```bash
+# 在本机资源路径和运行环境有效时，检查示例任务
+conda run --no-capture-output -n bop python jobs/render_job/run_job.py --check-only
+
+# 一个完整场景的试渲染；必须使用尚不存在的最终数据集目录
+conda run --no-capture-output -n bop python jobs/render_job/run_job.py \
+  --num-scenes 1 --output /新的试渲染父目录
+
+# 只读检查仓库现有四帧结果
+.venv/bin/python tests/blender/check_rgb_masks.py renders/preview/dataset
+```
+
+任务包含导出时的运行时代码快照；模型、HDRI 和运行环境仍引用原机器的绝对路径，**未随仓库打包**。其他机器请在应用中替换资源与环境路径并重新导出，不要把示例任务当成开箱即用的数据包。
 
 ## 输出格式与标签
 
@@ -204,6 +244,6 @@ env -u PYTHONPATH -u DEBUG PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 .venv/bin/python tests/blender/check_bop.py /BOP数据集路径
 ```
 
-2026-10-23 复核：750 项单元与 Qt 测试通过，并重新检查既有的 5 组 GPU 数据集（20 帧），全部通过。本轮未重新发起 GPU 渲染；证据范围与算法检查见 [验证记录](docs/validation.md)。
+v1.1 自动验收：**775 项单元与 Qt 测试通过**；真实 Blender 4.2.1 烟测覆盖后台构建、GUI 面板注册、场景/视角往返切换、相机矩阵、对象复用和视口状态，见 [场景/机位预览验证](docs/scene-camera-preview-verification.md)。用户另已完成人工测试，上方 `renders/preview/dataset` 保存了四帧实际渲染结果；`jobs/render_job` 保存对应配置来源的完整导出任务。历史 GPU 与算法检查见 [验证记录](docs/validation.md)。
 
 详细设置见 [使用说明](docs/usage.md)、[GPU 与表面处理](docs/gpu-rendering.md)。设计与实施计划保存在 [docs/superpowers/](docs/superpowers/)。

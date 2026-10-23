@@ -280,3 +280,26 @@ def test_physical_validation_requires_a_library_count_and_scale(tmp_path):
     assert "occlusion.strategy" in error_fields(replace(
         _physical(project, occluders=1), occlusion=replace(
             _physical(project, occluders=1).occlusion, strategy="scene_stable")))
+
+
+NON_OPTIX_BACKENDS = ("CUDA", "HIP", "ONEAPI", "METAL")
+
+
+@pytest.mark.parametrize("device", NON_OPTIX_BACKENDS)
+def test_optix_denoiser_stays_in_the_draft_but_is_reported_with_advice(tmp_path, device):
+    """Saving never drops the illegal pair; the readiness rule reports it with actionable help."""
+    project = make_project(tmp_path)
+    invalid = replace(project, render=replace(project.render, device=device, denoiser="OPTIX"))
+    path = tmp_path / "draft.yaml"
+    save_project(invalid, path)
+
+    loaded = load_project(path)
+    assert loaded.render.device == device and loaded.render.denoiser == "OPTIX"
+    assert loaded == invalid
+
+    messages = [issue.message for issue in validate_project(loaded, check_files=False)
+                if issue.field == "render.denoiser" and issue.severity == "error"]
+    assert len(messages) == 1
+    # The advice must name both escapes, the hardware premise, and that CPU fallback is refused.
+    for hint in ("自动 GPU", "关闭", "OPTIX", "AMD/Intel", "macOS", "不会回退到 CPU 降噪"):
+        assert hint in messages[0]

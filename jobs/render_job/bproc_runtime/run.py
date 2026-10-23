@@ -1,0 +1,230 @@
+"""One bounded retry budget per requested dataset image."""
+from __future__ import annotations
+
+from collections import Counter
+import signal
+import threading
+from typing import Protocol
+import numpy as np
+
+from bproc_core.masks import occlusion_ratio
+from bproc_core.occlusion import effective_occlusion_range, occlusion_accepted
+from bproc_core.scale_groups import MIXED_SCALE_FACTOR, target_extents
+from bproc_core.scene import LAYOUT_RETRY_REASONS, Rejection, propose_candidate, sample_scene
+from .records import FrameRef, RunSummary
+
+
+class FrameWriter(Protocol):
+    def write(self, index, candidate, frame) -> FrameRef: ...
+    def finalize(self) -> None: ...
+
+
+class RunTerminated(BaseException):
+    pass
+
+
+def warn_mixed_scale(config, meshes, recorder) -> float:
+    """Report framing and shared-depth-tolerance concerns. Returns the target-size ratio.
+
+    The occlusion window applies only to the anchor; other targets need visible pixels. Mixed
+    scales are allowed, but small targets may occupy few pixels in the shared framing. The BOP
+    writer uses one depth tolerance derived from the smallest target. Grouping is optional.
+    """
+    extents = [value for value in target_extents(config, meshes) if value > 0]
+    if len(extents) < 2:
+        return 1.0
+    ratio = max(extents) / min(extents)
+    if ratio <= MIXED_SCALE_FACTOR:
+        return ratio
+    if config.occlusion.ratio.minimum > 0:
+        recorder.warn("mixed_scale_occlusion",
+                      f"启用目标尺寸相差 {ratio:.0f}×，遮挡比例窗口〔{config.occlusion.ratio.minimum:g}–"
+                      f"{config.occlusion.ratio.maximum:g}〕只约束中心目标；请检查其他目标的可见像素大小，"
+                      "需要分别取景时可按尺度分组（tools/export_by_scale.py）")
+    recorder.warn("mixed_scale_tolerance",
+                  f"启用目标尺寸相差 {ratio:.0f}×，BOP GT 深度容差按最小目标取值（更严），"
+                  "大目标标注同样使用该容差；如需各自容差请用 tools/export_by_scale.py 拆分数据集")
+    return ratio
+
+
+def run_project(config, meshes, backend, writer: FrameWriter, recorder) -> RunSummary:
+    written = saved = committed = 0
+    failures = Counter()
+    interrupted = fatal = False
+    exit_code = 0
+    old_handlers = {}
+    committing = False
+    rendering = False
+    finalizing = False
+    pending_signal = None
+    expected_ids = {t.obj_id for t in config.targets if t.enabled}
+    anchor_id = next(t.obj_id for t in config.targets if t.asset.key == config.anchor_key)
+
+    def reject(scene_index, view_index, attempt, reason, *, phase="view", **details):
+        failures[reason] += 1
+        recorder.record_rejection(scene_index, view_index, attempt, reason, phase=phase,
+                                  details=details or None)
+
+    def interrupt(signum, frame):
+        nonlocal pending_signal
+        if committing or rendering or finalizing:
+            # Finish the image/manifest/counter transaction before honoring a
+            # signal. Repeated Ctrl-C must not tear down BOP finalization or
+            # replace an honest interrupted status with a stale running file.
+            if pending_signal is None:
+                pending_signal = signum
+            return
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt()
+        raise RunTerminated()
+
+    def native_call(method, *arguments):
+        nonlocal rendering
+        # Raising a Python exception while bpy's C renderer/compositor holds a
+        # lock can deadlock Blender shutdown. Finish the current native pass and
+        # honor cancellation as soon as it returns to our Python boundary.
+        rendering = True
+        try:
+            result = method(*arguments)
+        finally:
+            rendering = False
+        if pending_signal is not None:
+            interrupt(pending_signal, None)
+        return result
+
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            old_handlers[signum] = signal.signal(signum, interrupt)
+    try:
+        recorder.begin(config)
+        warn_mixed_scale(config, meshes, recorder)
+        native_call(backend.prepare, config, meshes)
+        for scene_index in range(config.scene_count):
+            def layout_rejected(layout_attempt_index, rejection, scene_index=scene_index):
+                # A layout retry belongs to the scene, not to view 0: view_index -1 says so.
+                reject(scene_index, -1, layout_attempt_index, rejection.reason, phase="layout")
+
+            scene = sample_scene(config, meshes, scene_index, on_rejection=layout_rejected)
+            if isinstance(scene, Rejection):
+                if scene.reason not in LAYOUT_RETRY_REASONS:
+                    reject(scene_index, -1, 0, scene.reason, phase="layout")
+                # An exhausted collision budget was already recorded once per attempt.
+                continue
+            for view_index in range(config.views):
+                for attempt in range(config.occlusion.max_attempts):
+                    candidate = propose_candidate(config, meshes, scene, view_index, attempt)
+                    if isinstance(candidate, Rejection):
+                        reject(scene_index, view_index, attempt, candidate.reason)
+                        continue
+                    native_call(backend.apply, candidate)
+                    evidence = native_call(backend.assess, anchor_id)
+                    if set(evidence.visible) != expected_ids:
+                        raise ValueError("Backend mask IDs do not match enabled targets")
+                    shape = (config.camera.height, config.camera.width)
+                    if evidence.anchor_full.shape != shape or any(m.shape != shape for m in evidence.visible.values()):
+                        raise ValueError("Backend masks have incorrect image dimensions")
+                    if evidence.anchor_full.dtype != bool or any(m.dtype != bool for m in evidence.visible.values()):
+                        raise ValueError("Backend masks must contain boolean pixels")
+                    if not np.any(evidence.anchor_full):
+                        reject(scene_index, view_index, attempt, "empty_baseline")
+                        continue
+                    ratio = occlusion_ratio(evidence, anchor_id)
+                    required = effective_occlusion_range(config, candidate.wants_unoccluded)
+                    measured = {"occlusion_ratio": ratio,
+                                "required": [required.minimum, required.maximum]}
+                    if any(not np.any(mask) for mask in evidence.visible.values()):
+                        reject(scene_index, view_index, attempt, "invisible_target", **measured)
+                        continue
+                    if not occlusion_accepted(ratio, required):
+                        reject(scene_index, view_index, attempt, "occlusion", **measured)
+                        continue
+                    frame = native_call(backend.render, evidence)
+                    committing = True
+                    try:
+                        ref = writer.write(written, candidate, frame)
+                        written += 1
+                        recorder.record_frame(ref, candidate, evidence)
+                        # Only frames whose metadata is committed on disk may be counted as saved;
+                        # a picture without a traceable record cannot be consumed downstream.
+                        committed += 1
+                        if config.output.format != "bop":
+                            saved = committed
+                    finally:
+                        committing = False
+                    if pending_signal is not None:
+                        interrupt(pending_signal, None)
+                    break
+    except KeyboardInterrupt:
+        interrupted, exit_code = True, 130
+        failures["sigint"] += 1
+    except RunTerminated:
+        interrupted, exit_code = True, 143
+        failures["sigterm"] += 1
+    except Exception as exc:
+        fatal, exit_code = True, 1
+        failures["fatal:" + type(exc).__name__] += 1
+        # A readable terminal diagnostic accompanies the machine-readable count.
+        print(f"Render failed: {type(exc).__name__}: {exc}", flush=True)
+    finally:
+        finalizing = True
+        try:
+            payload = backend.tiling_metadata() if hasattr(backend, "tiling_metadata") else None
+            if payload is not None:
+                recorder.record_metadata("render_tiling", payload)
+        except Exception as exc:
+            # Metadata is evidence, never a reason to lose the frames already written; a missing
+            # file is visible in the run directory and counted as a failure.
+            failures["metadata:render_tiling:" + type(exc).__name__] += 1
+            print(f"Render metadata failed: {type(exc).__name__}: {exc}", flush=True)
+        try:
+            writer.finalize()
+            if config.output.format == "bop":
+                saved = committed
+        except (Exception, KeyboardInterrupt) as exc:
+            fatal, exit_code = True, 1
+            failures["finalize:" + type(exc).__name__] += 1
+            if config.output.format == "bop":
+                saved = 0
+            print(f"Output finalization failed: {type(exc).__name__}: {exc}", flush=True)
+        try:
+            backend.close()
+        except Exception as exc:
+            fatal, exit_code = True, 1
+            failures["close:" + type(exc).__name__] += 1
+    if pending_signal is not None and not fatal:
+        interrupted = True
+        exit_code = 128 + pending_signal
+        key = "sigint" if pending_signal == signal.SIGINT else "sigterm"
+        if not failures[key]:
+            failures[key] += 1
+    if fatal:
+        status = "failed"
+    elif interrupted:
+        status = "interrupted"
+    elif saved == config.total_shots:
+        status = "completed"
+    else:
+        status, exit_code = "partial", 2
+    summary = RunSummary(status, config.total_shots, written, saved,
+                         config.total_shots - saved, dict(failures), exit_code)
+    try:
+        recorder.finish(summary)
+    except Exception as error:
+        # The dataset is already reserved, so a failure here must still be visible.
+        print(f"写入最终状态失败：{type(error).__name__}: {error}", flush=True)
+        written_summary = getattr(recorder, "last_summary", None)
+        if written_summary is not None:
+            # Whatever the recorder managed to write is the truth now (e.g. a failed manifest
+            # already marked the run failed); returning a different status would desync callers.
+            summary = written_summary
+        elif not fatal:
+            summary = RunSummary("failed", config.total_shots, written, saved,
+                                 config.total_shots - saved,
+                                 {**summary.failures_by_reason, "status:" + type(error).__name__: 1}, 1)
+    finally:
+        for signum, previous in old_handlers.items():
+            # Blender may have installed a C handler which Python represents as
+            # None. It cannot be restored with signal.signal; use the OS default
+            # as this standalone render process is about to exit.
+            signal.signal(signum, signal.SIG_DFL if previous is None else previous)
+    return summary

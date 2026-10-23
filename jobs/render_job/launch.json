@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "ready": true,
+  "blender_dir": "/home/kepler/blender/blender-4.2.1-linux-x64",
+  "blender_python": "/home/kepler/blender/blender-4.2.1-linux-x64/4.2/python/bin/python3.11",
+  "custom_packages": "/home/kepler/blender/blender-4.2.1-linux-x64/custom-python-packages/lib/python3.11/site-packages",
+  "blenderproc_executable": "/home/kepler/miniconda3/envs/bop/bin/blenderproc",
+  "blenderproc_package_dir": "/home/kepler/miniconda3/envs/bop/lib/python3.8/site-packages/blenderproc"
+}

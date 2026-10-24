@@ -1,6 +1,6 @@
 # BlenderProc 数据集工作区
 
-当前版本：**v2.0**。支持应用与 Blender 内的场景/相机视角切换，几何预览与严格 GPU 渲染预览分离；提供环境配置教程及 `examples/` 下的任务与渲染结果示例。
+当前版本：**tag2.01**（包版本 `2.0.1`）。支持应用与 Blender 内的场景/相机视角切换，几何预览与严格 GPU 渲染预览分离；提供环境配置教程及 `examples/` 下的任务与渲染结果示例。
 
 面向 Ubuntu 22.04 的本地桌面工具：导入目标与遮挡物，设置相机、光照和遮挡率，导出独立脚本，在 conda `bop` 环境中用 GPU 批量渲染。输出 **RGB + mask + mask_visib** 或 **BOP**；用于 YOLO 时，由外部工具转换标签。
 
@@ -8,22 +8,58 @@
 
 ## 安装与启动
 
-需要 Python 3.10+、可用的桌面 OpenGL 和 GPU 渲染环境。本机已验证的渲染组合为 **BlenderProc 2.8.0 + Blender 4.2.1 + NVIDIA OPTIX**；Blender 使用自己的 Python 3.11。UI 使用独立虚拟环境：
+以下面向首次在自己电脑上安装的用户，不需要作者的目录或现成环境。安装位置可以自选；命令以 `$HOME/projects/blenderproc-ui` 为例。
+
+### 环境要求
+
+| 部分 | 要求与用途 |
+|---|---|
+| 操作系统 | 以下教程针对 Ubuntu 22.04 x86_64；其他系统没有完成同等验证 |
+| UI Python | Python 3.10+，Ubuntu 22.04 建议使用系统 Python 3.10，依赖装在仓库 `.venv` |
+| 桌面 | 有效的图形桌面及硬件 OpenGL；纯 SSH 终端不能直接显示 Qt/Blender 窗口 |
+| 任务启动器 | 独立 conda 环境 `bop`，Python 3.8，用于启动导出任务 |
+| 实际渲染 | BlenderProc 2.8.0 + Blender 4.2.1 LTS；使用 Blender 内置 Python 3.11 |
+| GPU | 已验证 NVIDIA OPTIX；其他后端需对应硬件和驱动，不支持 CPU 回退；BOP 另需 GPU EGL |
+
+**UI、conda 启动器和 Blender 内置 Python 是三个独立环境。** 安装 UI 不等于配置好渲染环境；只有 UI 环境时可先导入模型、设置参数并查看应用内几何预览，打开 Blender 和生成数据集还需完成下方环境配置。
+
+### 获取源码并安装 UI
+
+在 Ubuntu 22.04 桌面终端执行：
 
 ```bash
-cd /home/kepler/rm_2027/blenderproc-ui
-python3 -m venv .venv
+sudo apt-get update
+sudo apt-get install -y git python3.10 python3.10-venv
+
+# 自选工作目录；已克隆仓库的用户跳过 git clone，直接进入自己的仓库
+mkdir -p "$HOME/projects"
+git clone https://github.com/Kepler123-yby/blenderproc-ui.git "$HOME/projects/blenderproc-ui"
+cd "$HOME/projects/blenderproc-ui"
+export BPROC_UI_ROOT="$PWD"
+
+# 显式使用系统 Python，避免误用已激活的 Python 3.8 conda 环境
+/usr/bin/python3.10 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e '.[gui]' -c constraints/ui.txt
 .venv/bin/blenderproc-ui
 ```
 
-如果仓库位于其他位置，替换第一行路径。已有项目可直接打开：
+Qt/OpenGL 系统库见下方“准备 Ubuntu 系统与 GPU”。若使用自定义 Python 3.10+，将 `/usr/bin/python3.10` 换成该解释器的真实路径。保持仓库源码在安装位置，`-e` 为可编辑安装，Blender 查看功能也需要仓库内的工具脚本。
+
+### 后续启动或打开项目
+
+不必激活虚拟环境，也不必先激活 conda。新开终端后，用自己的仓库路径启动：
 
 ```bash
-.venv/bin/blenderproc-ui --project /绝对路径/scene.yaml
+export BPROC_UI_ROOT="$HOME/projects/blenderproc-ui"  # 若安装在其他位置，在这里替换
+cd "$BPROC_UI_ROOT"
+"$BPROC_UI_ROOT/.venv/bin/blenderproc-ui"
+
+# 打开自己保存的项目，替换为实际 YAML 路径
+"$BPROC_UI_ROOT/.venv/bin/blenderproc-ui" --project "$HOME/my-datasets/scene.yaml"
 ```
 
-`bproc-ui` 是相同入口的简写。UI 依赖安装到 `.venv`；实际渲染使用已有的 conda `bop`、Blender 和对应依赖。在“脚本”页填写环境路径，导出后用 `--check-only` 检查，启动器不会联网补装依赖。
+`bproc-ui` 是相同入口的简写。下面的命令若使用相对路径，均需先回到仓库根目录；`BPROC_UI_ROOT` 等变量只对当前终端有效，新开终端要重新设置。首次使用请选择自己的模型资源，在“脚本”页配置本机运行路径，导出后执行 `--check-only`；启动器不会联网补装依赖。仓库 `examples/` 内的任务是历史示例，不是新用户可直接运行的默认项目。
 
 ## 环境配置教程（参考华南虎 RM2023 开源文档）
 
@@ -47,7 +83,9 @@ sudo apt-get install -y build-essential cmake git pkg-config libssl-dev \
 
 ### 2. 建立独立渲染环境，先装 BOP toolkit
 
-安装好 Miniconda/Anaconda 后执行；以下路径可按本机调整：
+如果还没有 conda，先按 [Miniconda 官方安装说明](https://www.anaconda.com/docs/getting-started/miniconda/install) 安装 Linux x86_64 版本，并按安装器提示初始化当前 shell；重新打开终端后，先用 `conda --version` 确认命令可用。不要求将 conda 安装到某个固定目录。
+
+下面创建名为 `bop` 的环境；若已经有同名环境，先检查 `conda run -n bop python --version` 是否为 Python 3.8，不要覆盖已有环境。已有且符合要求时，跳过 `conda create`。模型、toolkit 与 Blender 的安装路径可按需调整：
 
 ```bash
 conda create -n bop python=3.8 -y
@@ -106,39 +144,60 @@ blenderproc pip install --custom-blender-path "$BLENDER_DIR" \
 
 本项目 BOP 运行时通过 UI 中填写的 toolkit 源码目录导入 `bop_toolkit_lib`；仅在 conda 中执行过 `pip install -e .` 不能替代这一步。基础 scipy、matplotlib、OpenCV、PyOpenGL/pyrender 等由 BlenderProc 默认环境提供，以上命令补充 toolkit 常用组件；**不要将旧 toolkit 的 requirements.txt 整份装进 Blender Python 3.11**，其中 scipy 1.5、matplotlib 2.2 等历史固定版本与当前环境不兼容。toolkit 不同分支的附加依赖可能不同，须按实际导入报错补齐并以任务 `--check-only` 为准。本文依据原文与本机适配器整理，没有在全新系统重装验证；启动器不会帮忙下载安装或自动修复环境。
 
-### 5. 安装 UI，填写三个运行路径
+### 5. 获取本机路径并连接 UI 与渲染环境
 
-回到本仓库，使用独立 Python 3.10+ 创建 `.venv`，不要在已激活的 Python 3.8 环境里建 UI 虚拟环境：
+已经完成顶部 UI 安装的用户不必重复创建 `.venv`。先在终端激活渲染环境，查询真实路径，不要照抄作者机器的用户名或假设 conda 一定位于 `miniconda3/`：
 
 ```bash
-conda deactivate
-cd /你的路径/blenderproc-ui
-python3.10 -m venv .venv
-.venv/bin/python -m pip install -e '.[gui]' -c constraints/ui.txt
-.venv/bin/blenderproc-ui
+conda activate bop
+export BLENDER_DIR="$HOME/blender/blender-4.2.1-linux-x64"
+export BOP_TOOLKIT="$HOME/blenderproc/Linemod-Render/bop_toolkit"
+printf 'Conda 环境：%s\n' "$CONDA_DEFAULT_ENV"
+printf 'BlenderProc CLI：%s\n' "$(command -v blenderproc)"
+printf 'Blender 目录：%s\n' "$BLENDER_DIR"
+printf 'BOP toolkit：%s\n' "$BOP_TOOLKIT"
+test -x "$BLENDER_DIR/blender" && echo 'Blender 可执行文件存在'
+test -f "$BOP_TOOLKIT/bop_toolkit_lib/__init__.py" && echo 'toolkit 源码存在'
 ```
 
-在“脚本”页设置：
+如果安装在其他目录，先修改上述两个变量。确认 `command -v blenderproc` 的结果属于刚才安装的 `bop` 环境，而不是其他环境。在 UI“脚本”页按终端输出填写：
 
-| 字段 | 示例路径 |
+| 字段 | 如何填写 |
 |---|---|
-| Conda 环境 | `bop` |
-| Blender 目录 | `/home/你的用户名/blender/blender-4.2.1-linux-x64` |
-| BlenderProc CLI | `/home/你的用户名/miniconda3/envs/bop/bin/blenderproc` |
-| BOP toolkit | `/home/你的用户名/blenderproc/Linemod-Render/bop_toolkit` |
+| Conda 环境 | 上述环境名，默认 `bop`；后续 `conda run -n` 使用同一名称 |
+| Blender 目录 | `BLENDER_DIR` 的实际完整路径，选择安装目录，不是 `blender` 可执行文件 |
+| BlenderProc CLI | `command -v blenderproc` 的实际完整路径，选择可执行文件 |
+| BOP toolkit | `BOP_TOOLKIT` 的实际完整路径，目录内应含 `bop_toolkit_lib/` |
 
-`anaconda3` 或其他 conda 安装位置请相应替换。RGB 双掩码格式不要求配置 BOP toolkit；若暂时不需要 BOP，可跳过 toolkit 的安装及专用依赖步骤，但 Blender 默认依赖仍须准备。
+环境变量不会自动替你填写 UI。复制终端展开后的完整路径，不在路径框里原样填 `$HOME` 或 `$BLENDER_DIR`。即使 UI 中显示了默认路径，也需要检查它们是否与自己的安装一致。
+
+然后回到仓库并启动 UI：
+
+```bash
+export BPROC_UI_ROOT="$HOME/projects/blenderproc-ui"  # 按实际克隆位置修改
+cd "$BPROC_UI_ROOT"
+"$BPROC_UI_ROOT/.venv/bin/blenderproc-ui"
+```
+
+RGB 双掩码格式不要求配置 BOP toolkit；若暂时不需要 BOP，可跳过 toolkit 的安装及专用依赖步骤，但 Blender 默认依赖仍须准备。
 
 ### 6. 准备资源并验证整个链路
 
 原文使用 BOP 模型及 `blenderproc download cc_textures ./backgrounds` 下载的 CC 材质。本 UI 的资源入口不同：目标导入带面的 PLY，遮挡物导入 PLY/OBJ，环境导入 `.hdr`/`.exr`；**CC 贴图目录不能直接当作 HDRI 导入**。可使用自己的模型、[BOP 模型](https://bop.felk.cvut.cz/datasets/)及 Poly Haven HDRI，分别核对来源授权和 m/cm/mm 单位。此应用无需运行原文旧版 `main_lm_upright.py`。
 
-在 UI 检查配置，导出到新的 `jobs/你的任务名`，先预检，再用新的输出目录试一个场景：
+先导入自己的资源，设置渲染中心、相机和输出名称；暂时没有遮挡物时，将“无遮挡样本”设为 100%。在 UI 检查配置，导出到新的任务目录，例如 `$BPROC_UI_ROOT/jobs/my-first-job`。再回到仓库根目录执行以下命令；UI 中的数据集名称在此示例设为 `dataset`：
 
 ```bash
-conda run --no-capture-output -n bop python jobs/你的任务名/run_job.py --check-only
-conda run --no-capture-output -n bop python jobs/你的任务名/run_job.py \
-  --num-scenes 1 --output /新的试渲染父目录
+cd "$BPROC_UI_ROOT"
+conda run --no-capture-output -n bop python jobs/my-first-job/run_job.py --check-only
+
+# 唯一的试渲染父目录，避免覆盖已有结果
+TRIAL_ROOT="$BPROC_UI_ROOT/renders/trial-$(date +%Y%m%d-%H%M%S)"
+conda run --no-capture-output -n bop python jobs/my-first-job/run_job.py \
+  --num-scenes 1 --output "$TRIAL_ROOT"
+
+# 默认 RGB 双掩码格式；名称不是 dataset 时替换最后一级目录
+.venv/bin/python tests/blender/check_rgb_masks.py "$TRIAL_ROOT/dataset"
 ```
 
 预检应通过且不创建数据集。实际任务结束后检查 `run_metadata/status.json`，并用下文检查器验证图片与标注。BOP 模式还应看到日志中的两个 `BOP EGL renderer` 检查均为真实 GPU。原文手动调用 `calc_gt_masks.py` / `calc_gt_info.py` 是旧流水线的步骤；本项目 BOP writer 已完成对应掩码及 GT 信息后处理，不要再次无差别覆盖标注。COCO/Linemod_preprocessed 转换不属于本工具输出职责。
